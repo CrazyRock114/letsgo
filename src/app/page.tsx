@@ -14,6 +14,7 @@ import {
   findBestHint,
   checkGameEnd,
   calculateFinalScore,
+  getKomi,
   type Stone,
   type Board,
   type Position,
@@ -183,11 +184,12 @@ export default function GoGamePage() {
   const [encSearch, setEncSearch] = useState('');
   const [selectedTerm, setSelectedTerm] = useState<GoTerm | null>(null);
 
-  // 计算比分（白方含贴目6.5）
+  // 计算比分（白方含贴目）
   useEffect(() => {
     const evaluation = evaluateBoard(board);
-    setScore({ black: evaluation.black, white: Math.round((evaluation.white + 6.5) * 10) / 10 });
-  }, [board]);
+    const komi = getKomi(boardSize);
+    setScore({ black: evaluation.black, white: Math.round((evaluation.white + komi) * 10) / 10 });
+  }, [board, boardSize]);
 
   // 聊天滚到底部（仅滚动内部容器，不影响页面）
   useEffect(() => {
@@ -316,14 +318,57 @@ export default function GoGamePage() {
 
       const validMoves = getValidMoves(newBoard, 'white');
       if (validMoves.length > 0) {
-        let aiMove: Position;
+        let aiMove: Position = validMoves[0];
 
-        if (difficulty === 'hard') {
-          aiMove = hardAIMove(newBoard, 'white') || validMoves[0];
-        } else if (difficulty === 'medium') {
-          aiMove = mediumAIMove(newBoard, 'white') || validMoves[0];
-        } else {
-          aiMove = easyAIMove(newBoard, 'white') || validMoves[0];
+        // 尝试使用GnuGo引擎
+        let usedGnuGo = false;
+        try {
+          const moveHistoryForEngine = historyWithThisMove.map(m => ({
+            row: m.position.row,
+            col: m.position.col,
+            color: m.color,
+          }));
+          const res = await fetch('/api/go-engine', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              boardSize,
+              moves: moveHistoryForEngine,
+              difficulty,
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.move && isValidMove(newBoard, data.move.row, data.move.col, 'white')) {
+              aiMove = data.move;
+              usedGnuGo = true;
+            } else if (data.pass) {
+              // AI停手
+              const newPasses = consecutivePasses + 1;
+              setConsecutivePasses(newPasses);
+              if (newPasses >= 2) {
+                const result = calculateFinalScore(newBoard);
+                setGameEnded(true);
+                setGameResult(result);
+              }
+              setCurrentPlayer('black');
+              setIsAIThinking(false);
+              return;
+            }
+          }
+        } catch {
+          // GnuGo引擎失败，使用本地AI
+        }
+
+        if (!usedGnuGo) {
+          // 本地AI兜底
+          if (difficulty === 'hard') {
+            aiMove = hardAIMove(newBoard, 'white') || validMoves[0];
+          } else if (difficulty === 'medium') {
+            aiMove = mediumAIMove(newBoard, 'white') || validMoves[0];
+          } else {
+            aiMove = easyAIMove(newBoard, 'white') || validMoves[0];
+          }
         }
 
         const { newBoard: finalBoard, captured: aiCaptured } = playMove(newBoard, aiMove.row, aiMove.col, 'white');
@@ -358,7 +403,7 @@ export default function GoGamePage() {
       setCurrentPlayer('black');
       setIsAIThinking(false);
     }
-  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, history, requestCommentary, gameEnded, consecutivePasses]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, history, requestCommentary, gameEnded, consecutivePasses, boardSize]);
 
 
   // ===== 悔棋 =====
@@ -426,13 +471,48 @@ export default function GoGamePage() {
     }
 
     // AI正常落子
-    let aiMove: Position;
-    if (difficulty === 'hard') {
-      aiMove = hardAIMove(board, 'white') || validMoves[0];
-    } else if (difficulty === 'medium') {
-      aiMove = mediumAIMove(board, 'white') || validMoves[0];
-    } else {
-      aiMove = easyAIMove(board, 'white') || validMoves[0];
+    let aiMove: Position = validMoves[0];
+    let usedGnuGo = false;
+    try {
+      const moveHistoryForEngine = history.map(m => ({
+        row: m.position.row,
+        col: m.position.col,
+        color: m.color,
+      }));
+      const res = await fetch('/api/go-engine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          boardSize,
+          moves: moveHistoryForEngine,
+          difficulty,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.move && isValidMove(board, data.move.row, data.move.col, 'white')) {
+          aiMove = data.move;
+          usedGnuGo = true;
+        } else if (data.pass) {
+          const result = calculateFinalScore(board);
+          setGameEnded(true);
+          setGameResult(result);
+          setIsAIThinking(false);
+          return;
+        }
+      }
+    } catch {
+      // GnuGo失败，使用本地AI
+    }
+
+    if (!usedGnuGo) {
+      if (difficulty === 'hard') {
+        aiMove = hardAIMove(board, 'white') || validMoves[0];
+      } else if (difficulty === 'medium') {
+        aiMove = mediumAIMove(board, 'white') || validMoves[0];
+      } else {
+        aiMove = easyAIMove(board, 'white') || validMoves[0];
+      }
     }
 
     const moveIdx = history.length;
@@ -456,7 +536,7 @@ export default function GoGamePage() {
 
     setCurrentPlayer('black');
     setIsAIThinking(false);
-  }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, history, requestCommentary]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, history, requestCommentary, boardSize]);
 
   // ===== 提示 =====
   const showHintFn = useCallback(() => {
@@ -827,7 +907,7 @@ export default function GoGamePage() {
                   <div className="w-7 h-7 rounded-full bg-white border-2 border-gray-300 shadow mb-1" />
                   <span className="text-xs text-gray-500">白方(AI)</span>
                   <span className="text-lg font-bold">{score.white}</span>
-                  <span className="text-[9px] text-gray-400">含贴目6.5</span>
+                  <span className="text-[9px] text-gray-400">含贴目{getKomi(boardSize)}</span>
                 </div>
               </div>
               <div className="mt-2 text-center">

@@ -663,11 +663,17 @@ export function checkGameEnd(
   return { ended: false, reason: '' };
 }
 
-// 计算最终得分（含贴目）
+// 获取贴目值（根据棋盘大小）
+export function getKomi(boardSize: number): number {
+  return boardSize <= 9 ? 2.5 : boardSize <= 13 ? 3.5 : 6.5;
+}
+
+// 计算最终得分（含贴目，根据棋盘大小调整）
 export function calculateFinalScore(board: Board): { black: number; white: number; winner: string; detail: string } {
   const evaluation = evaluateBoard(board);
-  // 贴目：白方额外加6.5目（中国规则简化）
-  const komi = 6.5;
+  // 贴目根据棋盘大小：9路2.5目、13路3.5目、19路6.5目
+  const size = board.length;
+  const komi = getKomi(size);
   const whiteWithKomi = evaluation.white + komi;
 
   const winner = evaluation.black > whiteWithKomi ? 'black' : 'white';

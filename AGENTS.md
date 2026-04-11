@@ -20,7 +20,9 @@ src/
 ├── app/
 │   ├── api/
 │   │   ├── go-ai/
-│   │   │   └── route.ts     # AI教学与解说API（真正LLM流式输出，含专业术语）
+│   │   │   └── route.ts     # AI教学与解说API（LLM流式输出）
+│   │   ├── go-engine/
+│   │   │   └── route.ts     # GnuGo围棋AI引擎（GTP协议桥接）
 │   │   ├── games/
 │   │   │   ├── route.ts     # 棋局保存/载入/列表/删除API
 │   │   │   └── [id]/route.ts # 单个棋局载入API
@@ -48,12 +50,12 @@ src/
 - 棋子落在交叉点上（SVG渲染）
 - 黑白双方轮流落子，自动提子
 - 最后一手标记（圆点标识）
-- AI白方：三级难度本地引擎（非LLM）
-  - 初级：随机+避傻（过滤明显自杀）
-  - 中级：评分选择（提子>打吃>占角>连接>切断）
-  - 高级：深度评估+1步前瞻（考虑对方最佳反击）
+- AI白方：GnuGo专业引擎（GTP协议）+ 本地AI回退
+  - 初级：GnuGo Level 1（随机倾向） / 本地随机+避傻
+  - 中级：GnuGo Level 5（基础战术） / 本地评分选择
+  - 高级：GnuGo Level 10+（深度搜索） / 本地1步前瞻
 - 停手(Pass)功能：双方连续停手结束棋局
-- 贴目6.5目（白方补偿）
+- 贴目规则：9路2.5目、13路3.5目、19路6.5目（白方补偿）
 - 自动结束：步数上限（9路60步/13路100步/19路200步）
 
 ### 2. 每步AI解说
@@ -76,7 +78,7 @@ src/
 - 悔棋功能（撤销2步：玩家+AI）
 - 停手功能（双方连续停手结束棋局）
 - 重新开始（支持切换棋盘大小）
-- 比分实时计算（白方含贴目6.5）
+- 比分实时计算（白方含动态贴目）
 - 游戏结束判定（停手/步数上限/棋盘满）
 
 ## API接口
@@ -96,6 +98,20 @@ LLM流式响应，Content-Type: text/event-stream
 **通用参数：**
 - `board`: 棋盘状态数组
 - `currentPlayer`: "black" | "white"
+
+### POST /api/go-engine
+GnuGo AI引擎桥接（GTP协议）
+
+**请求参数：**
+- `action`: "move" | "setup" | "final_score" | "quit"
+- `boardSize`: 9 | 13 | 19
+- `difficulty`: "beginner" | "intermediate" | "advanced"
+- `moves`: 落子历史字符串（如 "B D4 W Q16 B C16"）
+- `pass`: boolean（是否停手）
+
+**响应：**
+- `move`: AI落子坐标（如 "Q4"）或 "PASS" 或 "RESIGN"
+- `score`: 终局得分（仅final_score）
 
 ## 围棋逻辑说明
 
