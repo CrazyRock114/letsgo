@@ -2,7 +2,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { LLMClient, Config, HeaderUtils } from "coze-coding-dev-sdk";
-import { boardToString, positionToCoordinate, type Stone, type Board } from "@/lib/go-logic";
+import { boardToString, positionToCoordinate, getMoveContext, type Stone, type Board } from "@/lib/go-logic";
 
 const config = new Config();
 
@@ -14,13 +14,17 @@ const COMMENTARY_SYSTEM = `你是围棋比赛的"解说员"，正在为小朋友
 3. 用儿童能理解的语言解说：这步棋在做什么（占角、守边、连结、进攻、防守等）
 4. 如果有提子，说明提了几个子
 5. 语气活泼有趣，像体育解说员
-6. 【重要】在解说中适当使用围棋专业术语，并在括号中用简单语言解释该术语。例如：
+6.【最高优先级】你必须严格依据提供给你的"落子位置详情"和"相邻棋子气数"数据来说话！
+   - 不要自己数棋盘上的气，直接参考给出的气数信息
+   - 如果数据没有说某棋子"只剩1口气"，就绝对不能说"打吃"
+   - 如果数据没有说提子，就绝对不能说"提子"
+   - 相邻棋子的颜色（黑/白）以数据为准，不要自行判断
+7. 在解说中适当使用围棋专业术语，并在括号中用简单语言解释。例如：
    - "白方在这里打吃（就是让对方只剩一口气）了黑棋！"
    - "黑方占了星位（棋盘上四四位置的圆点），快速抢占角部。"
-   - "白方这步是挂角（在对方占角附近下子争夺角部），想来分一杯羹！"
-   - "黑棋征子不利（追击路线上有对方棋子接应），要小心！"
-7. 常见术语参考：气、提子、打吃、长、连、断、双打吃、关门吃、抱吃、征子、枷吃、扑、倒扑、接不归、眼、真眼、假眼、活棋、死棋、双活、星、小目、三三、挂角、守角、拆边、定式、劫、禁着点、先手、后手、厚势、实利、打入、弃子、腾挪、收官、见合、手筋、好形、愚形
-8. 不要每步都加术语，选择最相关的1个术语即可，保持解说流畅自然`;
+   注意：只有当数据确实显示对方只剩1口气时，才能说"打吃"
+8. 常见术语参考：气、提子、打吃、长、连、断、双打吃、关门吃、抱吃、征子、枷吃、扑、倒扑、接不归、眼、真眼、假眼、活棋、死棋、双活、星、小目、三三、挂角、守角、拆边、定式、劫、禁着点、先手、后手、厚势、实利、打入、弃子、腾挪、收官、见合、手筋、好形、愚形
+9. 不要每步都加术语，选择最相关的1个术语即可，保持解说流畅自然`;
 
 // AI教学系统提示
 const GO_TUTOR_SYSTEM = `你是"小围棋"，一个专为儿童围棋学习设计的AI围棋教练。
@@ -68,45 +72,154 @@ function getAIPlaySystem(difficulty: string): string {
 坐标格式：列用A-T表示（跳过I），行用1-19表示`;
 }
 
-// 构建棋局描述
+// 构建棋局描述（带行列标签 + 关键位置气数 + 落子历史）
 function buildBoardDescription(
   board: Board,
   currentPlayer: Stone,
   lastMove?: { row: number; col: number },
   moveColor?: Stone,
-  captured?: number
+  captured?: number,
+  moveHistory?: Array<{ position: { row: number; col: number }; color: Stone }>
 ): string {
   const boardStr = boardToString(board);
   const size = board.length;
-  let desc = `当前棋盘大小：${size}x${size}\n棋盘状态（X=黑棋, O=白棋, .=空位）：\n${boardStr}\n当前轮到：${currentPlayer === 'black' ? '黑棋' : '白棋'}`;
+  let desc = `棋盘大小：${size}x${size}\nX=黑棋 O=白棋 .=空位\n行号从上到下1-${size}，列号从左到右（跳过I列）\n\n${boardStr}`;
 
+  // 落子历史
+  if (moveHistory && moveHistory.length > 0) {
+    const historyStr = moveHistory.slice(-10).map((m, i) => {
+      const idx = moveHistory.length - Math.min(moveHistory.length, 10) + i + 1;
+      const coord = positionToCoordinate(m.position.row, m.position.col);
+      const color = m.color === 'black' ? '黑' : '白';
+      return `第${idx}手: ${color}方 ${coord}`;
+    }).join('\n');
+    desc += `\n\n最近落子记录：\n${historyStr}`;
+  }
+
+  // 最后一手详细上下文
   if (lastMove) {
     const coord = positionToCoordinate(lastMove.row, lastMove.col);
     const color = moveColor === 'black' ? '黑方' : '白方';
-    desc += `\n最后一手：${color}下在${coord}`;
+    desc += `\n\n最后一手：${color}下在${coord}`;
     if (captured && captured > 0) {
       desc += `，提了${captured}个子`;
     }
+
+    // === 关键局面事实（解说必须依据这些事实） ===
+    const facts: string[] = [];
+
+    // 落子位置的精确上下文（相邻棋子 + 气数）
+    const moveCtx = getMoveContext(board, lastMove.row, lastMove.col);
+    facts.push(`落子位置：${moveCtx}`);
+
+    // 相邻对方棋子的气数
+    const directions: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    const checkedGroups = new Set<string>();
+    for (const [dr, dc] of directions) {
+      const nr = lastMove.row + dr;
+      const nc = lastMove.col + dc;
+      if (nr >= 0 && nr < size && nc >= 0 && nc < size) {
+        const neighbor = board[nr][nc];
+        if (neighbor && neighbor !== moveColor) {
+          // 检查是否属于已检查的同一个棋组
+          const group = getGroupKey(board, nr, nc);
+          if (!checkedGroups.has(group)) {
+            checkedGroups.add(group);
+            const libs = getGroupLibertiesExport(board, nr, nc);
+            const nCoord = positionToCoordinate(nr, nc);
+            const nColor = neighbor === 'black' ? '黑棋' : '白棋';
+            if (libs === 1) {
+              facts.push(`【打吃】相邻${nColor}(${nCoord}所在的棋组)只剩1口气，被${color}打吃了！`);
+            } else {
+              facts.push(`相邻${nColor}(${nCoord}所在的棋组)有${libs}口气，未被威胁`);
+            }
+          }
+        }
+      }
+    }
+
+    if (captured && captured > 0) {
+      facts.push(`【提子】这步棋提了${captured}个${moveColor === 'black' ? '白' : '黑'}子`);
+    }
+
+    desc += '\n\n=== 局面事实（解说必须严格依据以下事实，不得自行推断） ===\n' + facts.join('\n');
   }
 
+  desc += `\n\n当前轮到：${currentPlayer === 'black' ? '黑棋' : '白棋'}`;
+
   return desc;
+}
+
+// 获取棋组唯一标识（避免重复报告同一组的气数）
+function getGroupKey(board: Board, row: number, col: number): string {
+  const stone = board[row][col];
+  if (!stone) return '';
+  const visited = new Set<string>();
+  const stack = [`${row},${col}`];
+  while (stack.length > 0) {
+    const key = stack.pop()!;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    const [r, c] = key.split(',').map(Number);
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = r + dr;
+      const nc = c + dc;
+      const nk = `${nr},${nc}`;
+      if (nr >= 0 && nr < board.length && nc >= 0 && nc < board.length && !visited.has(nk) && board[nr][nc] === stone) {
+        stack.push(nk);
+      }
+    }
+  }
+  return Array.from(visited).sort().join(';');
+}
+
+// 导出getGroupLiberties的别名
+function getGroupLibertiesExport(board: Board, row: number, col: number): number {
+  const stone = board[row][col];
+  if (!stone) return 0;
+  const visited = new Set<string>();
+  const liberties = new Set<string>();
+  const stack = [`${row},${col}`];
+  while (stack.length > 0) {
+    const key = stack.pop()!;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    const [r, c] = key.split(',').map(Number);
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = r + dr;
+      const nc = c + dc;
+      if (nr >= 0 && nr < board.length && nc >= 0 && nc < board.length) {
+        const nk = `${nr},${nc}`;
+        if (board[nr][nc] === null) {
+          liberties.add(nk);
+        } else if (board[nr][nc] === stone && !visited.has(nk)) {
+          stack.push(nk);
+        }
+      }
+    }
+  }
+  return liberties.size;
 }
 
 // 流式API端点
 export async function POST(request: NextRequest) {
   try {
-    const { type, board, currentPlayer, lastMove, moveColor, captured, question, difficulty } = await request.json();
+    const { type, board: rawBoard, currentPlayer, lastMove, moveColor, captured, question, difficulty, moveHistory } = await request.json();
+    // 标准化棋盘：前端用"empty"字符串表示空位，但围棋逻辑用null
+    const board: Board = (rawBoard as string[][]).map((row: string[]) =>
+      row.map((cell: string) => cell === 'empty' ? null : cell)
+    ) as Board;
     const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
     const client = new LLMClient(config, customHeaders);
 
     let messages: Array<{ role: 'system' | 'user'; content: string }> = [];
-    const boardDesc = buildBoardDescription(board, currentPlayer, lastMove, moveColor, captured);
+    const boardDesc = buildBoardDescription(board, currentPlayer, lastMove, moveColor, captured, moveHistory);
 
     if (type === 'commentary') {
       // 第三方观赛者解说
       messages = [
         { role: 'system', content: COMMENTARY_SYSTEM },
-        { role: 'user', content: boardDesc + '\n\n请以观赛解说员的身份，解说刚才这步棋。你只需要评述这步棋本身，不要建议下一步该怎么下。' }
+        { role: 'user', content: boardDesc + '\n\n请以观赛解说员的身份，解说刚才这步棋。只评述这步棋本身，不要建议下一步该怎么下。务必严格依据上面给出的"落子位置详情"和"相邻棋子气数"数据，不要自己从棋盘上数气。' }
       ];
     } else if (type === 'teach') {
       messages = [

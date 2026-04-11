@@ -287,26 +287,81 @@ function getTerritory(
   return { size: emptySpots.length, owner };
 }
 
-// 棋盘状态转字符串（用于AI）
+// 列标签（跳过I，符合围棋规范）
+function getColLabels(size: number): string[] {
+  const labels: string[] = [];
+  for (let i = 0; i < size; i++) {
+    // 跳过 I
+    const code = i >= 8 ? 65 + i + 1 : 65 + i;
+    labels.push(String.fromCharCode(code));
+  }
+  return labels;
+}
+
+// 棋盘状态转字符串（带行列标签，用于AI精确理解）
 export function boardToString(board: Board): string {
   const size = getBoardSize(board);
+  const colLabels = getColLabels(size);
   const lines: string[] = [];
   
+  // 列标签行
+  lines.push('   ' + colLabels.join(''));
+  
   for (let row = 0; row < size; row++) {
+    const rowNum = row + 1;
     const line = board[row].map(stone => {
       if (stone === 'black') return 'X';
       if (stone === 'white') return 'O';
       return '.';
     }).join('');
-    lines.push(line);
+    lines.push(`${rowNum.toString().padStart(2)} ${line}`);
   }
   
   return lines.join('\n');
 }
 
-// 坐标转换（从(row, col)到"A1"）
+// 获取某个位置周围棋子的详细描述（供LLM精确理解局面）
+export function getMoveContext(board: Board, row: number, col: number): string {
+  const size = getBoardSize(board);
+  const coord = positionToCoordinate(row, col);
+  const stone = board[row][col];
+  const colorName = stone === 'black' ? '黑棋' : stone === 'white' ? '白棋' : '空';
+  
+  const directions: { dr: number; dc: number; name: string }[] = [
+    { dr: -1, dc: 0, name: '上' },
+    { dr: 1, dc: 0, name: '下' },
+    { dr: 0, dc: -1, name: '左' },
+    { dr: 0, dc: 1, name: '右' },
+  ];
+  
+  const neighborDescs: string[] = [];
+  for (const { dr, dc, name } of directions) {
+    const nr = row + dr;
+    const nc = col + dc;
+    if (nr >= 0 && nr < size && nc >= 0 && nc < size) {
+      const neighbor = board[nr][nc];
+      const nCoord = positionToCoordinate(nr, nc);
+      const nColor = neighbor === 'black' ? '黑棋' : neighbor === 'white' ? '白棋' : '空';
+      neighborDescs.push(`${name}方${nCoord}=${nColor}`);
+    }
+  }
+  
+  // 计算气数（如果是棋子）
+  let libertyInfo = '';
+  if (stone) {
+    const liberties = getGroupLiberties(board, row, col);
+    const libertyDesc = liberties === 1 ? '只剩1口气(打吃状态!)' : liberties === 2 ? '有2口气' : `有${liberties}口气`;
+    libertyInfo = `，${libertyDesc}`;
+  }
+  
+  return `${coord}位置是${colorName}${libertyInfo}；相邻：${neighborDescs.join('、')}`;
+}
+
+// 坐标转换（从(row, col)到围棋坐标，跳过I列）
 export function positionToCoordinate(row: number, col: number): string {
-  return String.fromCharCode(65 + col) + (row + 1);
+  // 跳过 I 列
+  const colChar = col >= 8 ? String.fromCharCode(65 + col + 1) : String.fromCharCode(65 + col);
+  return colChar + (row + 1);
 }
 
 // AI简单策略（随机选择合法位置）

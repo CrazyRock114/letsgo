@@ -236,7 +236,8 @@ export default function GoGamePage() {
     movePos: Position,
     moveColor: Stone,
     capturedCount: number,
-    moveIdx: number
+    moveIdx: number,
+    currentHistory: MoveEntry[]
   ) => {
     setIsCommentaryStreaming(true);
     setStreamingText('');
@@ -252,6 +253,7 @@ export default function GoGamePage() {
           lastMove: movePos,
           moveColor,
           captured: capturedCount,
+          moveHistory: currentHistory,
         }),
       });
       if (response.ok) {
@@ -283,13 +285,16 @@ export default function GoGamePage() {
     const { newBoard, captured } = playMove(board, row, col, currentPlayer);
     const moveIdx = history.length;
 
+    // 构建含本手的落子历史
+    const historyWithThisMove = [...history, { position: { row, col }, color: currentPlayer, captured }];
+
     setBoard(newBoard);
     setLastMove({ row, col });
-    setHistory(prev => [...prev, { position: { row, col }, color: currentPlayer, captured }]);
+    setHistory(historyWithThisMove);
     setShowHint(null);
 
     // 请求黑方解说，等待完成后再让AI落子（避免解说竞态）
-    await requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx);
+    await requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx, historyWithThisMove);
 
     // AI回合
     if (currentPlayer === 'black') {
@@ -312,6 +317,7 @@ export default function GoGamePage() {
                 board: newBoard,
                 currentPlayer: 'white',
                 difficulty: 'hard',
+                moveHistory: historyWithThisMove,
               }),
             });
             const text = await res.text();
@@ -322,7 +328,9 @@ export default function GoGamePage() {
               if (coord) {
                 const colChar = coord.charAt(0);
                 const rowStr = coord.slice(1);
-                const aiCol = colChar.charCodeAt(0) - 65;
+                // 列标签跳过I：A=0,B=1,...,H=7,J=8,K=9,...
+                const colCode = colChar.charCodeAt(0) - 65;
+                const aiCol = colCode >= 8 ? colCode - 1 : colCode;
                 const aiRow = parseInt(rowStr) - 1;
                 if (isValidMove(newBoard, aiRow, aiCol, 'white')) {
                   aiMove = { row: aiRow, col: aiCol };
@@ -348,19 +356,20 @@ export default function GoGamePage() {
 
         const { newBoard: finalBoard, captured: aiCaptured } = playMove(newBoard, aiMove.row, aiMove.col, 'white');
         const aiMoveIdx = moveIdx + 1;
+        const historyWithAIMove = [...historyWithThisMove, { position: aiMove, color: 'white' as Stone, captured: aiCaptured }];
 
         setBoard(finalBoard);
         setLastMove({ row: aiMove.row, col: aiMove.col });
-        setHistory(prev => [...prev, { position: aiMove, color: 'white', captured: aiCaptured }]);
+        setHistory(historyWithAIMove);
 
         // AI落子解说，等待完成
-        await requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx);
+        await requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx, historyWithAIMove);
       }
 
       setCurrentPlayer('black');
       setIsAIThinking(false);
     }
-  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, history.length, requestCommentary]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, history, requestCommentary]);
 
 
   // ===== 悔棋 =====
