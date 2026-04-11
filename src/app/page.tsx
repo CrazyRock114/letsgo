@@ -8,6 +8,12 @@ import {
   positionToCoordinate,
   evaluateBoard,
   getValidMoves,
+  easyAIMove,
+  mediumAIMove,
+  hardAIMove,
+  findBestHint,
+  checkGameEnd,
+  calculateFinalScore,
   type Stone,
   type Board,
   type Position,
@@ -35,6 +41,8 @@ import {
   User,
   BookMarked,
   Search,
+  Pause,
+  Trophy,
   X,
   GraduationCap,
 } from 'lucide-react';
@@ -60,26 +68,6 @@ function getStarPoints(boardSize: number): [number, number][] {
   if (boardSize === 13) return [[3, 3], [3, 9], [6, 6], [9, 3], [9, 9], [3, 6], [6, 3], [6, 9], [9, 6]];
   if (boardSize === 19) return [[3, 3], [3, 9], [3, 15], [9, 3], [9, 9], [9, 15], [15, 3], [15, 9], [15, 15]];
   return [];
-}
-
-// AI落子策略（不依赖组件状态，移至组件外）
-function pickWeightedMove(moves: Position[], size: number): Position {
-  const corners = moves.filter(m => (m.row <= 2 || m.row >= size - 3) && (m.col <= 2 || m.col >= size - 3));
-  const edges = moves.filter(m => m.row <= 1 || m.row >= size - 2 || m.col <= 1 || m.col >= size - 2);
-  if (corners.length > 0 && Math.random() < 0.5) return corners[Math.floor(Math.random() * corners.length)];
-  if (edges.length > 0 && Math.random() < 0.4) return edges[Math.floor(Math.random() * edges.length)];
-  return moves[Math.floor(Math.random() * moves.length)];
-}
-
-function pickMediumMove(moves: Position[], currentBoard: Board): Position {
-  // 中等策略：优先吃子、其次占角、最后随机
-  for (const m of moves) {
-    const testBoard = createEmptyBoard(currentBoard.length);
-    for (let r = 0; r < currentBoard.length; r++) for (let c = 0; c < currentBoard.length; c++) testBoard[r][c] = currentBoard[r][c];
-    const { captured } = playMove(testBoard, m.row, m.col, 'white');
-    if (captured > 0) return m;
-  }
-  return pickWeightedMove(moves, currentBoard.length);
 }
 
 // 解说条目
@@ -145,6 +133,9 @@ export default function GoGamePage() {
   const [score, setScore] = useState({ black: 0, white: 0 });
   const [isAIThinking, setIsAIThinking] = useState(false);
   const [savedGameId, setSavedGameId] = useState<number | null>(null);
+  const [consecutivePasses, setConsecutivePasses] = useState(0);
+  const [gameEnded, setGameEnded] = useState(false);
+  const [gameResult, setGameResult] = useState<{ winner: string; detail: string } | null>(null);
 
   // ===== 解说历史 =====
   const [commentaries, setCommentaries] = useState<CommentaryEntry[]>([]);
@@ -192,9 +183,10 @@ export default function GoGamePage() {
   const [encSearch, setEncSearch] = useState('');
   const [selectedTerm, setSelectedTerm] = useState<GoTerm | null>(null);
 
-  // 计算比分
+  // 计算比分（白方含贴目6.5）
   useEffect(() => {
-    setScore(evaluateBoard(board));
+    const evaluation = evaluateBoard(board);
+    setScore({ black: evaluation.black, white: Math.round((evaluation.white + 6.5) * 10) / 10 });
   }, [board]);
 
   // 聊天滚到底部（仅滚动内部容器，不影响页面）
@@ -289,7 +281,7 @@ export default function GoGamePage() {
 
   // ===== 处理落子 =====
   const handleMove = useCallback(async (row: number, col: number) => {
-    if (!isValidMove(board, row, col, currentPlayer) || isAIThinking || isReplayMode) return;
+    if (!isValidMove(board, row, col, currentPlayer) || isAIThinking || isReplayMode || gameEnded) return;
 
     const { newBoard, captured } = playMove(board, row, col, currentPlayer);
     const moveIdx = history.length;
@@ -301,67 +293,37 @@ export default function GoGamePage() {
     setLastMove({ row, col });
     setHistory(historyWithThisMove);
     setShowHint(null);
+    setConsecutivePasses(0);
 
     // 请求黑方解说，等待完成后再让AI落子（避免解说竞态）
     await requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx, historyWithThisMove);
 
+    // 检查游戏是否应该结束
+    const endCheck = checkGameEnd(newBoard, 0, historyWithThisMove.length);
+    if (endCheck.ended) {
+      const result = calculateFinalScore(newBoard);
+      setGameEnded(true);
+      setGameResult(result);
+      setCurrentPlayer('black');
+      return;
+    }
+
     // AI回合
     if (currentPlayer === 'black') {
       setIsAIThinking(true);
-      // AI思考延迟1.5秒，给用户阅读解说的时间
-      await new Promise(r => setTimeout(r, 1500));
+      // AI思考延迟1秒
+      await new Promise(r => setTimeout(r, 1000));
 
       const validMoves = getValidMoves(newBoard, 'white');
       if (validMoves.length > 0) {
         let aiMove: Position;
 
         if (difficulty === 'hard') {
-          // 高难度：用LLM决定
-          try {
-            const res = await fetch('/api/go-ai', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                type: 'ai-move',
-                board: newBoard,
-                currentPlayer: 'white',
-                difficulty: 'hard',
-                moveHistory: historyWithThisMove,
-              }),
-            });
-            const text = await res.text();
-            const jsonMatch = text.match(/\{[\s\S]*?\}/);
-            if (jsonMatch) {
-              const data = JSON.parse(jsonMatch[0]);
-              const coord = data.position?.toUpperCase();
-              if (coord) {
-                const colChar = coord.charAt(0);
-                const rowStr = coord.slice(1);
-                // 列标签跳过I：A=0,B=1,...,H=7,J=8,K=9,...
-                const colCode = colChar.charCodeAt(0) - 65;
-                const aiCol = colCode >= 8 ? colCode - 1 : colCode;
-                // 行号从下往上：行1=数组最后一行，行N=数组第0行
-                const aiRow = newBoard.length - parseInt(rowStr);
-                if (isValidMove(newBoard, aiRow, aiCol, 'white')) {
-                  aiMove = { row: aiRow, col: aiCol };
-                } else {
-                  aiMove = pickWeightedMove(validMoves, newBoard.length);
-                }
-              } else {
-                aiMove = pickWeightedMove(validMoves, newBoard.length);
-              }
-            } else {
-              aiMove = pickWeightedMove(validMoves, newBoard.length);
-            }
-          } catch {
-            aiMove = pickWeightedMove(validMoves, newBoard.length);
-          }
+          aiMove = hardAIMove(newBoard, 'white') || validMoves[0];
         } else if (difficulty === 'medium') {
-          // 中等：加权随机，更倾向好位置
-          aiMove = pickMediumMove(validMoves, newBoard);
+          aiMove = mediumAIMove(newBoard, 'white') || validMoves[0];
         } else {
-          // 简单：纯随机
-          aiMove = validMoves[Math.floor(Math.random() * validMoves.length)];
+          aiMove = easyAIMove(newBoard, 'white') || validMoves[0];
         }
 
         const { newBoard: finalBoard, captured: aiCaptured } = playMove(newBoard, aiMove.row, aiMove.col, 'white');
@@ -374,12 +336,29 @@ export default function GoGamePage() {
 
         // AI落子解说，等待完成
         await requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx, historyWithAIMove);
+
+        // 检查游戏是否应该结束
+        const endCheck2 = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
+        if (endCheck2.ended) {
+          const result = calculateFinalScore(finalBoard);
+          setGameEnded(true);
+          setGameResult(result);
+        }
+      } else {
+        // AI无合法落子，自动停手
+        const newPasses = consecutivePasses + 1;
+        setConsecutivePasses(newPasses);
+        if (newPasses >= 2) {
+          const result = calculateFinalScore(newBoard);
+          setGameEnded(true);
+          setGameResult(result);
+        }
       }
 
       setCurrentPlayer('black');
       setIsAIThinking(false);
     }
-  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, history, requestCommentary]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, history, requestCommentary, gameEnded, consecutivePasses]);
 
 
   // ===== 悔棋 =====
@@ -411,35 +390,102 @@ export default function GoGamePage() {
     setIsReplayMode(false);
     setReplayIndex(0);
     setTeachingMessage('');
+    setConsecutivePasses(0);
+    setGameEnded(false);
+    setGameResult(null);
   }, [boardSize]);
+
+  // ===== 停手 =====
+  const passMove = useCallback(async () => {
+    if (currentPlayer !== 'black' || isAIThinking || isReplayMode || gameEnded) return;
+
+    const newPasses = consecutivePasses + 1;
+    setConsecutivePasses(newPasses);
+
+    if (newPasses >= 2) {
+      // 双方连续停手，游戏结束
+      const result = calculateFinalScore(board);
+      setGameEnded(true);
+      setGameResult(result);
+      return;
+    }
+
+    // AI回合
+    setIsAIThinking(true);
+    await new Promise(r => setTimeout(r, 800));
+
+    // AI也考虑停手（如果没好位置）
+    const validMoves = getValidMoves(board, 'white');
+    if (validMoves.length === 0) {
+      // AI也无子可下
+      const result = calculateFinalScore(board);
+      setGameEnded(true);
+      setGameResult(result);
+      setIsAIThinking(false);
+      return;
+    }
+
+    // AI正常落子
+    let aiMove: Position;
+    if (difficulty === 'hard') {
+      aiMove = hardAIMove(board, 'white') || validMoves[0];
+    } else if (difficulty === 'medium') {
+      aiMove = mediumAIMove(board, 'white') || validMoves[0];
+    } else {
+      aiMove = easyAIMove(board, 'white') || validMoves[0];
+    }
+
+    const moveIdx = history.length;
+    const { newBoard: finalBoard, captured: aiCaptured } = playMove(board, aiMove.row, aiMove.col, 'white');
+    const historyWithAIMove = [...history, { position: aiMove, color: 'white' as Stone, captured: aiCaptured }];
+
+    setBoard(finalBoard);
+    setLastMove({ row: aiMove.row, col: aiMove.col });
+    setHistory(historyWithAIMove);
+    setConsecutivePasses(0);
+
+    await requestCommentary(finalBoard, aiMove, 'white', aiCaptured, moveIdx, historyWithAIMove);
+
+    // 检查游戏结束
+    const endCheck = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
+    if (endCheck.ended) {
+      const result = calculateFinalScore(finalBoard);
+      setGameEnded(true);
+      setGameResult(result);
+    }
+
+    setCurrentPlayer('black');
+    setIsAIThinking(false);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, history, requestCommentary]);
 
   // ===== 提示 =====
   const showHintFn = useCallback(() => {
-    if (isReplayMode) return;
-    const validMoves = getValidMoves(board, currentPlayer);
-    if (validMoves.length === 0) return;
-    const corners = validMoves.filter(m => (m.row <= 2 || m.row >= boardSize - 3) && (m.col <= 2 || m.col >= boardSize - 3));
-    const hint = corners.length > 0
-      ? corners[Math.floor(Math.random() * corners.length)]
-      : validMoves[Math.floor(Math.random() * validMoves.length)];
-    setShowHint(hint);
-  }, [board, currentPlayer, boardSize, isReplayMode]);
+    if (isReplayMode || gameEnded) return null;
+    const hint = findBestHint(board, currentPlayer);
+    if (hint) setShowHint(hint);
+    return hint;
+  }, [board, currentPlayer, isReplayMode, gameEnded]);
 
   // ===== AI教学 =====
-  const getTeaching = useCallback(async () => {
+  const getTeaching = useCallback(async (hintPosition?: Position) => {
     if (isTeachStreaming) return;
     setIsTeachStreaming(true);
     setTeachingMessage('');
     try {
+      const teachingBody: Record<string, unknown> = {
+        type: 'teach',
+        board,
+        currentPlayer,
+        lastMove: lastMove ? { row: lastMove.row, col: lastMove.col } : undefined,
+      };
+      // 如果有提示位置，告诉AI要解释这个位置
+      if (hintPosition) {
+        teachingBody.hintPosition = positionToCoordinate(hintPosition.row, hintPosition.col, boardSize);
+      }
       const response = await fetch('/api/go-ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'teach',
-          board,
-          currentPlayer,
-          lastMove: lastMove ? { row: lastMove.row, col: lastMove.col } : undefined,
-        }),
+        body: JSON.stringify(teachingBody),
       });
       if (response.ok) await readStream(response, text => setTeachingMessage(text));
     } catch {
@@ -447,7 +493,7 @@ export default function GoGamePage() {
     } finally {
       setIsTeachStreaming(false);
     }
-  }, [board, currentPlayer, lastMove, isTeachStreaming]);
+  }, [board, currentPlayer, lastMove, isTeachStreaming, boardSize]);
 
   // ===== 聊天 =====
   const sendMessage = useCallback(async () => {
@@ -781,11 +827,12 @@ export default function GoGamePage() {
                   <div className="w-7 h-7 rounded-full bg-white border-2 border-gray-300 shadow mb-1" />
                   <span className="text-xs text-gray-500">白方(AI)</span>
                   <span className="text-lg font-bold">{score.white}</span>
+                  <span className="text-[9px] text-gray-400">含贴目6.5</span>
                 </div>
               </div>
               <div className="mt-2 text-center">
                 <Badge variant={currentPlayer === 'black' ? 'default' : 'secondary'} className="text-xs px-3">
-                  {isReplayMode ? `复盘 ${replayIndex}/${replayMoves.length}步` : isAIThinking ? 'AI思考中...' : currentPlayer === 'black' ? '轮到你落子' : '白方回合'}
+                  {gameEnded ? '棋局结束' : isReplayMode ? `复盘 ${replayIndex}/${replayMoves.length}步` : isAIThinking ? 'AI思考中...' : currentPlayer === 'black' ? `轮到你落子 (${history.length}手)` : '白方回合'}
                   {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
                 </Badge>
               </div>
@@ -800,6 +847,9 @@ export default function GoGamePage() {
               </Button>
               <Button onClick={undoMove} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={history.length === 0 || isReplayMode}>
                 <RotateCcw className="w-3 h-3" /> 悔棋
+              </Button>
+              <Button onClick={passMove} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={currentPlayer !== 'black' || isAIThinking || isReplayMode || gameEnded}>
+                <Pause className="w-3 h-3" /> 停手
               </Button>
 
               {/* 保存/载入 */}
@@ -884,14 +934,14 @@ export default function GoGamePage() {
           <Card className="bg-gradient-to-br from-amber-50 to-yellow-50 border-amber-200">
             <CardContent className="py-3">
               <Button
-                onClick={async () => {
-                  showHintFn();
-                  if (!isTeachStreaming) await getTeaching();
+                onClick={() => {
+                  const hint = showHintFn();
+                  if (!isTeachStreaming) getTeaching(hint || undefined);
                 }}
                 variant="default"
                 size="sm"
                 className="w-full gap-1.5 h-9 bg-amber-600 hover:bg-amber-700"
-                disabled={isReplayMode || isTeachStreaming}
+                disabled={isReplayMode || isTeachStreaming || gameEnded}
               >
                 <Lightbulb className="w-4 h-4" /> 提示与教学
                 {isTeachStreaming && <Spinner className="w-3 h-3 ml-1" />}
@@ -910,6 +960,22 @@ export default function GoGamePage() {
               )}
             </CardContent>
           </Card>
+
+          {/* 游戏结束 */}
+          {gameEnded && gameResult && (
+            <Card className="bg-gradient-to-br from-yellow-50 to-amber-50 border-yellow-300">
+              <CardContent className="py-3 text-center">
+                <Trophy className="w-8 h-8 mx-auto mb-1 text-yellow-500" />
+                <p className="text-sm font-bold text-amber-800">
+                  {gameResult.winner === 'black' ? '你赢了!' : '白方(AI)获胜'}
+                </p>
+                <p className="text-xs text-gray-600 mt-1">{gameResult.detail}</p>
+                <Button onClick={restartGame} variant="default" size="sm" className="mt-2 bg-amber-700 hover:bg-amber-800">
+                  再来一局
+                </Button>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* 中间：棋盘 + 聊天 */}

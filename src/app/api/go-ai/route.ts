@@ -199,7 +199,7 @@ function getGroupLibertiesExport(board: Board, row: number, col: number): number
 // 流式API端点
 export async function POST(request: NextRequest) {
   try {
-    const { type, board: rawBoard, currentPlayer, lastMove, moveColor, captured, question, difficulty, moveHistory } = await request.json();
+    const { type, board: rawBoard, currentPlayer, lastMove, moveColor, captured, question, difficulty, moveHistory, hintPosition } = await request.json();
     // 标准化棋盘：前端用"empty"字符串表示空位，但围棋逻辑用null
     const board: Board = (rawBoard as string[][]).map((row: string[]) =>
       row.map((cell: string) => cell === 'empty' ? null : cell)
@@ -217,9 +217,13 @@ export async function POST(request: NextRequest) {
         { role: 'user', content: boardDesc + '\n\n用1句话简短解说这步棋，严格依据上面"局面事实"的数据。不要提气数，除非是打吃或提子。' }
       ];
     } else if (type === 'teach') {
+      let teachPrompt = boardDesc + '\n\n请给这个孩子一些围棋指导。';
+      if (hintPosition) {
+        teachPrompt = boardDesc + `\n\n系统建议的落子位置是${hintPosition}。请解释为什么这个位置好（1-2句话），用简单有趣的语言告诉孩子。`;
+      }
       messages = [
         { role: 'system', content: GO_TUTOR_SYSTEM },
-        { role: 'user', content: boardDesc + '\n\n请给这个孩子一些围棋指导。' }
+        { role: 'user', content: teachPrompt }
       ];
     } else if (type === 'chat') {
       messages = [
