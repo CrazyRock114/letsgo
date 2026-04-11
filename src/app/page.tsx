@@ -846,7 +846,7 @@ export default function GoGamePage() {
   // ===== 登录界面 =====
   if (showLogin) {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-amber-100 via-amber-50 to-orange-50 flex items-center justify-center p-4">
+      <div className="min-h-[100dvh] bg-gradient-to-b from-amber-100 via-amber-50 to-orange-50 flex items-center justify-center p-4">
         <Card className="w-full max-w-md bg-white/95 shadow-2xl">
           <CardHeader className="text-center">
             <CardTitle className="text-2xl flex items-center justify-center gap-2">
@@ -856,20 +856,21 @@ export default function GoGamePage() {
             </CardTitle>
             <p className="text-amber-600 text-sm">输入昵称开始下棋吧！</p>
           </CardHeader>
-          <CardContent>
-            <div className="flex gap-2">
-              <Input
-                value={nickname}
-                onChange={e => setNickname(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleLogin()}
-                placeholder="你的昵称..."
-                className="flex-1"
-                maxLength={20}
-              />
-              <Button onClick={handleLogin} disabled={!nickname.trim()} className="bg-amber-700 hover:bg-amber-800">
-                进入
-              </Button>
-            </div>
+          <CardContent className="space-y-4">
+            <Input
+              value={nickname}
+              onChange={e => setNickname(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleLogin()}
+              placeholder="你的昵称..."
+              maxLength={20}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              enterKeyHint="done"
+            />
+            <Button onClick={handleLogin} disabled={!nickname.trim()} className="w-full bg-amber-700 hover:bg-amber-800 h-12 text-base">
+              进入
+            </Button>
           </CardContent>
         </Card>
       </div>
