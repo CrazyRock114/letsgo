@@ -1058,21 +1058,8 @@ export default function GoGamePage() {
             </CardContent>
           </Card>
 
-          {/* 游戏结束 */}
-          {gameEnded && gameResult && (
-            <Card className="bg-gradient-to-br from-yellow-50 to-amber-50 border-yellow-300">
-              <CardContent className="py-3 text-center">
-                <Trophy className="w-8 h-8 mx-auto mb-1 text-yellow-500" />
-                <p className="text-sm font-bold text-amber-800">
-                  {gameResult.winner === 'black' ? '你赢了!' : '白方(AI)获胜'}
-                </p>
-                <p className="text-xs text-gray-600 mt-1">{gameResult.detail}</p>
-                <Button onClick={restartGame} variant="default" size="sm" className="mt-2 bg-amber-700 hover:bg-amber-800">
-                  再来一局
-                </Button>
-              </CardContent>
-            </Card>
-          )}
+          {/* 游戏结束 - 居中弹窗 */}
+
         </div>
 
         {/* 中间：棋盘 + 聊天 */}
@@ -1392,6 +1379,24 @@ export default function GoGamePage() {
           </Card>
         </div>
       </div>
+
+      {/* 游戏结束弹窗 - 居中显示 */}
+      <Dialog open={gameEnded && !!gameResult} onOpenChange={() => {}}>
+        <DialogContent className="sm:max-w-md" onPointerDownOutside={(e) => e.preventDefault()} onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader className="items-center">
+            <DialogTitle className="flex flex-col items-center gap-2">
+              <Trophy className="w-12 h-12 text-yellow-500" />
+              <span className="text-xl">{gameResult?.winner === 'black' ? '你赢了!' : '白方(AI)获胜'}</span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="text-center space-y-3 py-2">
+            <p className="text-sm text-gray-600">{gameResult?.detail}</p>
+            <Button onClick={restartGame} size="lg" className="bg-amber-700 hover:bg-amber-800 text-white px-8">
+              再来一局
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
