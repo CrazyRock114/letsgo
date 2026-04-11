@@ -312,8 +312,8 @@ export default function GoGamePage() {
     setShowHint(null);
     setConsecutivePasses(0);
 
-    // 玩家落子解说 - 非阻塞（后台流式显示，不等待完成）
-    requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx, historyWithThisMove);
+    // 玩家落子解说 - 阻塞等待（确保玩家看到解说后再进入AI回合）
+    await requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx, historyWithThisMove);
 
     // 检查游戏是否应该结束
     const endCheck = checkGameEnd(newBoard, 0, historyWithThisMove.length);
@@ -328,6 +328,8 @@ export default function GoGamePage() {
     // AI回合
     if (currentPlayer === 'black') {
       setIsAIThinking(true);
+      // AI思考延迟，让体验更自然
+      await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
 
       const validMoves = getValidMoves(newBoard, 'white');
       if (validMoves.length > 0) {
@@ -470,6 +472,8 @@ export default function GoGamePage() {
 
     // AI回合
     setIsAIThinking(true);
+    // AI思考延迟，让体验更自然
+    await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
 
     // AI也考虑停手（如果没好位置）
     const validMoves = getValidMoves(board, 'white');
