@@ -276,13 +276,13 @@ export default function GoGamePage() {
         moveIndex: moveIdx,
         color: moveColor,
         position: movePos,
-        commentary: `${moveColor === 'black' ? '黑方' : '白方'}下在${positionToCoordinate(movePos.row, movePos.col)}`,
+        commentary: `${moveColor === 'black' ? '黑方' : '白方'}下在${positionToCoordinate(movePos.row, movePos.col, boardSize)}`,
       }]);
     } finally {
       setIsCommentaryStreaming(false);
       setStreamingText('');
     }
-  }, []);
+  }, [boardSize]);
 
   // ===== 处理落子 =====
   const handleMove = useCallback(async (row: number, col: number) => {
@@ -337,7 +337,8 @@ export default function GoGamePage() {
                 // 列标签跳过I：A=0,B=1,...,H=7,J=8,K=9,...
                 const colCode = colChar.charCodeAt(0) - 65;
                 const aiCol = colCode >= 8 ? colCode - 1 : colCode;
-                const aiRow = parseInt(rowStr) - 1;
+                // 行号从下往上：行1=数组最后一行，行N=数组第0行
+                const aiRow = newBoard.length - parseInt(rowStr);
                 if (isValidMove(newBoard, aiRow, aiCol, 'white')) {
                   aiMove = { row: aiRow, col: aiCol };
                 } else {
@@ -1147,7 +1148,7 @@ export default function GoGamePage() {
                       <div className="flex items-center gap-1.5 mb-0.5">
                         <div className={`w-4 h-4 rounded-full ${entry.color === 'black' ? 'bg-gray-800' : 'bg-white border border-gray-300'}`} />
                         <span className="text-xs font-medium text-gray-600">
-                          第{entry.moveIndex + 1}手 | {entry.color === 'black' ? '黑方' : '白方'} {positionToCoordinate(entry.position.row, entry.position.col)}
+                          第{entry.moveIndex + 1}手 | {entry.color === 'black' ? '黑方' : '白方'} {positionToCoordinate(entry.position.row, entry.position.col, boardSize)}
                         </span>
                       </div>
                       <p className="text-xs text-gray-700 leading-relaxed">{entry.commentary}</p>

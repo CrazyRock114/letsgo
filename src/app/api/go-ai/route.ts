@@ -79,13 +79,13 @@ function buildBoardDescription(
 ): string {
   const boardStr = boardToString(board);
   const size = board.length;
-  let desc = `棋盘大小：${size}x${size}\nX=黑棋 O=白棋 .=空位\n行号从上到下1-${size}，列号从左到右（跳过I列）\n\n${boardStr}`;
+  let desc = `棋盘大小：${size}x${size}\nX=黑棋 O=白棋 .=空位\n行号从下到上1-${size}（1在底部），列号从左到右（跳过I列）\n\n${boardStr}`;
 
   // 落子历史
   if (moveHistory && moveHistory.length > 0) {
     const historyStr = moveHistory.slice(-10).map((m, i) => {
       const idx = moveHistory.length - Math.min(moveHistory.length, 10) + i + 1;
-      const coord = positionToCoordinate(m.position.row, m.position.col);
+      const coord = positionToCoordinate(m.position.row, m.position.col, size);
       const color = m.color === 'black' ? '黑' : '白';
       return `第${idx}手: ${color}方 ${coord}`;
     }).join('\n');
@@ -94,7 +94,7 @@ function buildBoardDescription(
 
   // 最后一手详细上下文
   if (lastMove) {
-    const coord = positionToCoordinate(lastMove.row, lastMove.col);
+    const coord = positionToCoordinate(lastMove.row, lastMove.col, size);
     const color = moveColor === 'black' ? '黑方' : '白方';
     desc += `\n\n最后一手：${color}下在${coord}`;
     if (captured && captured > 0) {
@@ -122,7 +122,7 @@ function buildBoardDescription(
           if (!checkedGroups.has(group)) {
             checkedGroups.add(group);
             const libs = getGroupLibertiesExport(board, nr, nc);
-            const nCoord = positionToCoordinate(nr, nc);
+            const nCoord = positionToCoordinate(nr, nc, size);
             const nColor = neighbor === 'black' ? '黑棋' : '白棋';
             if (libs === 1) {
               facts.push(`【打吃】相邻${nColor}(${nCoord}所在的棋组)只剩1口气，被${color}打吃了！`);

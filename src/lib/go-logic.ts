@@ -308,7 +308,8 @@ export function boardToString(board: Board): string {
   lines.push('   ' + colLabels.join(''));
   
   for (let row = 0; row < size; row++) {
-    const rowNum = row + 1;
+    // 围棋行号从下往上：视觉顶部(数组第0行)=最大行号
+    const rowNum = size - row;
     const line = board[row].map(stone => {
       if (stone === 'black') return 'X';
       if (stone === 'white') return 'O';
@@ -323,7 +324,7 @@ export function boardToString(board: Board): string {
 // 获取某个位置周围棋子的详细描述（供LLM精确理解局面）
 export function getMoveContext(board: Board, row: number, col: number): string {
   const size = getBoardSize(board);
-  const coord = positionToCoordinate(row, col);
+  const coord = positionToCoordinate(row, col, size);
   const stone = board[row][col];
   const colorName = stone === 'black' ? '黑棋' : stone === 'white' ? '白棋' : '空';
   
@@ -340,7 +341,7 @@ export function getMoveContext(board: Board, row: number, col: number): string {
     const nc = col + dc;
     if (nr >= 0 && nr < size && nc >= 0 && nc < size) {
       const neighbor = board[nr][nc];
-      const nCoord = positionToCoordinate(nr, nc);
+      const nCoord = positionToCoordinate(nr, nc, size);
       const nColor = neighbor === 'black' ? '黑棋' : neighbor === 'white' ? '白棋' : '空';
       neighborDescs.push(`${name}方${nCoord}=${nColor}`);
     }
@@ -357,11 +358,13 @@ export function getMoveContext(board: Board, row: number, col: number): string {
   return `${coord}位置是${colorName}${libertyInfo}；相邻：${neighborDescs.join('、')}`;
 }
 
-// 坐标转换（从(row, col)到围棋坐标，跳过I列）
-export function positionToCoordinate(row: number, col: number): string {
+// 坐标转换（从(row, col)到围棋坐标，跳过I列，行号从下往上）
+export function positionToCoordinate(row: number, col: number, boardSize: number = 19): string {
   // 跳过 I 列
   const colChar = col >= 8 ? String.fromCharCode(65 + col + 1) : String.fromCharCode(65 + col);
-  return colChar + (row + 1);
+  // 围棋行号从下往上：数组第0行(视觉顶部) = 最大行号，数组最后一行(视觉底部) = 1
+  const rowNum = boardSize - row;
+  return colChar + rowNum;
 }
 
 // AI简单策略（随机选择合法位置）
