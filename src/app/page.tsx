@@ -288,13 +288,14 @@ export default function GoGamePage() {
     setHistory(prev => [...prev, { position: { row, col }, color: currentPlayer, captured }]);
     setShowHint(null);
 
-    // 请求解说
-    requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx);
+    // 请求黑方解说，等待完成后再让AI落子（避免解说竞态）
+    await requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx);
 
     // AI回合
     if (currentPlayer === 'black') {
       setIsAIThinking(true);
-      await new Promise(r => setTimeout(r, 600));
+      // AI思考延迟1.5秒，给用户阅读解说的时间
+      await new Promise(r => setTimeout(r, 1500));
 
       const validMoves = getValidMoves(newBoard, 'white');
       if (validMoves.length > 0) {
@@ -352,8 +353,8 @@ export default function GoGamePage() {
         setLastMove({ row: aiMove.row, col: aiMove.col });
         setHistory(prev => [...prev, { position: aiMove, color: 'white', captured: aiCaptured }]);
 
-        // AI落子解说
-        requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx);
+        // AI落子解说，等待完成
+        await requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx);
       }
 
       setCurrentPlayer('black');
@@ -979,9 +980,9 @@ export default function GoGamePage() {
                   </div>
                 </div>
               ) : (
-                <div>
+                <div className="flex flex-col" style={{ maxHeight: '420px' }}>
                   {/* 百科搜索 */}
-                  <div className="flex gap-1.5 mb-2">
+                  <div className="flex gap-1.5 mb-2 shrink-0">
                     <div className="relative flex-1">
                       <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400" />
                       <input
@@ -999,7 +1000,7 @@ export default function GoGamePage() {
                     </div>
                   </div>
                   {/* 分类筛选 */}
-                  <div className="flex gap-1 mb-2 flex-wrap">
+                  <div className="flex gap-1 mb-2 flex-wrap shrink-0">
                     <button
                       className={`text-[10px] px-1.5 py-0.5 rounded ${encCategory === 'all' ? 'bg-amber-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
                       onClick={() => setEncCategory('all')}
@@ -1016,39 +1017,39 @@ export default function GoGamePage() {
                       </button>
                     ))}
                   </div>
-                  {/* 术语列表 */}
-                  {selectedTerm ? (
-                    <div>
-                      <button
-                        className="text-[10px] text-amber-600 hover:text-amber-800 mb-1 flex items-center gap-0.5"
-                        onClick={() => setSelectedTerm(null)}
-                      >
-                        <ChevronLeft className="w-3 h-3" /> 返回列表
-                      </button>
-                      <div className="space-y-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-sm font-bold text-amber-800">{selectedTerm.term}</span>
-                          {selectedTerm.reading && <span className="text-[10px] text-gray-400">({selectedTerm.reading})</span>}
-                          <span className={`text-[9px] px-1 py-0.5 rounded ${selectedTerm.difficulty === 1 ? 'bg-green-100 text-green-700' : selectedTerm.difficulty === 2 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
-                            {selectedTerm.difficulty === 1 ? '入门' : selectedTerm.difficulty === 2 ? '进阶' : '高级'}
-                          </span>
+                  {/* 术语内容区（可滚动） */}
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    {selectedTerm ? (
+                      <div className="pr-1">
+                        <button
+                          className="text-[10px] text-amber-600 hover:text-amber-800 mb-1 flex items-center gap-0.5"
+                          onClick={() => setSelectedTerm(null)}
+                        >
+                          <ChevronLeft className="w-3 h-3" /> 返回列表
+                        </button>
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-sm font-bold text-amber-800">{selectedTerm.term}</span>
+                            {selectedTerm.reading && <span className="text-[10px] text-gray-400">({selectedTerm.reading})</span>}
+                            <span className={`text-[9px] px-1 py-0.5 rounded ${selectedTerm.difficulty === 1 ? 'bg-green-100 text-green-700' : selectedTerm.difficulty === 2 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                              {selectedTerm.difficulty === 1 ? '入门' : selectedTerm.difficulty === 2 ? '进阶' : '高级'}
+                            </span>
+                          </div>
+                          <p className="text-xs text-amber-700 font-medium">{selectedTerm.shortDesc}</p>
+                          <p className="text-xs text-gray-600 leading-relaxed">{selectedTerm.fullDesc}</p>
+                          {selectedTerm.analogy && (
+                            <div className="px-2 py-1 bg-blue-50 rounded border border-blue-200">
+                              <p className="text-[10px] text-blue-700">🎯 {selectedTerm.analogy}</p>
+                            </div>
+                          )}
+                          {selectedTerm.tip && (
+                            <div className="px-2 py-1 bg-green-50 rounded border border-green-200">
+                              <p className="text-[10px] text-green-700">💡 {selectedTerm.tip}</p>
+                            </div>
+                          )}
                         </div>
-                        <p className="text-xs text-amber-700 font-medium">{selectedTerm.shortDesc}</p>
-                        <p className="text-xs text-gray-600 leading-relaxed">{selectedTerm.fullDesc}</p>
-                        {selectedTerm.analogy && (
-                          <div className="px-2 py-1 bg-blue-50 rounded border border-blue-200">
-                            <p className="text-[10px] text-blue-700">🎯 {selectedTerm.analogy}</p>
-                          </div>
-                        )}
-                        {selectedTerm.tip && (
-                          <div className="px-2 py-1 bg-green-50 rounded border border-green-200">
-                            <p className="text-[10px] text-green-700">💡 {selectedTerm.tip}</p>
-                          </div>
-                        )}
                       </div>
-                    </div>
-                  ) : (
-                    <ScrollArea className="max-h-[300px]">
+                    ) : (
                       <div className="space-y-1 pr-1">
                         {GO_TERMS
                           .filter(t => encCategory === 'all' || t.category === encCategory)
@@ -1082,8 +1083,8 @@ export default function GoGamePage() {
                           <p className="text-center text-gray-300 text-xs py-4">没有找到匹配的术语</p>
                         )}
                       </div>
-                    </ScrollArea>
-                  )}
+                    )}
+                  </div>
                 </div>
               )}
             </CardContent>

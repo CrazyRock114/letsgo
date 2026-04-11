@@ -106,7 +106,7 @@ export async function POST(request: NextRequest) {
       // 第三方观赛者解说
       messages = [
         { role: 'system', content: COMMENTARY_SYSTEM },
-        { role: 'user', content: boardDesc + '\n\n请用1-2句话，以观赛解说员的身份解说这步棋。' }
+        { role: 'user', content: boardDesc + '\n\n请以观赛解说员的身份，解说刚才这步棋。你只需要评述这步棋本身，不要建议下一步该怎么下。' }
       ];
     } else if (type === 'teach') {
       messages = [
