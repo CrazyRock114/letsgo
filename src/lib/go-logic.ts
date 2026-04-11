@@ -347,12 +347,14 @@ export function getMoveContext(board: Board, row: number, col: number): string {
     }
   }
   
-  // 计算气数（如果是棋子）
+  // 计算气数（只在打吃状态时标注）
   let libertyInfo = '';
   if (stone) {
     const liberties = getGroupLiberties(board, row, col);
-    const libertyDesc = liberties === 1 ? '只剩1口气(打吃状态!)' : liberties === 2 ? '有2口气' : `有${liberties}口气`;
-    libertyInfo = `，${libertyDesc}`;
+    if (liberties === 1) {
+      libertyInfo = '，只剩1口气(打吃状态!)';
+    }
+    // 2口气及以上不提及，避免解说啰嗦
   }
   
   return `${coord}位置是${colorName}${libertyInfo}；相邻：${neighborDescs.join('、')}`;

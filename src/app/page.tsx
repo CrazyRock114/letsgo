@@ -23,7 +23,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from '@/components/ui/input';
 import {
   RotateCcw,
-  HelpCircle,
   MessageCircle,
   Lightbulb,
   Send,
@@ -799,12 +798,6 @@ export default function GoGamePage() {
               <Button onClick={undoMove} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={history.length === 0 || isReplayMode}>
                 <RotateCcw className="w-3 h-3" /> 悔棋
               </Button>
-              <Button onClick={showHintFn} variant="secondary" size="sm" className="gap-1 h-8 text-xs" disabled={isReplayMode}>
-                <Lightbulb className="w-3 h-3" /> 提示
-              </Button>
-              <Button onClick={getTeaching} variant="secondary" size="sm" className="gap-1 h-8 text-xs" disabled={isTeachStreaming}>
-                <HelpCircle className="w-3 h-3" /> 教学
-              </Button>
 
               {/* 保存/载入 */}
               <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
@@ -883,6 +876,134 @@ export default function GoGamePage() {
               </CardContent>
             </Card>
           )}
+
+          {/* 提示+教学 */}
+          <Card className="bg-gradient-to-br from-amber-50 to-yellow-50 border-amber-200">
+            <CardContent className="py-3">
+              <Button
+                onClick={async () => {
+                  showHintFn();
+                  if (!isTeachStreaming) await getTeaching();
+                }}
+                variant="default"
+                size="sm"
+                className="w-full gap-1.5 h-9 bg-amber-600 hover:bg-amber-700"
+                disabled={isReplayMode || isTeachStreaming}
+              >
+                <Lightbulb className="w-4 h-4" /> 提示与教学
+                {isTeachStreaming && <Spinner className="w-3 h-3 ml-1" />}
+              </Button>
+              {(teachingMessage || isTeachStreaming) && (
+                <div className="mt-2 space-y-1">
+                  {showHint && (
+                    <p className="text-xs text-amber-700 font-medium">
+                      建议落在 {positionToCoordinate(showHint.row, showHint.col, boardSize)}
+                    </p>
+                  )}
+                  <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">
+                    {teachingMessage || (isTeachStreaming ? '正在分析...' : '')}
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* 中间：棋盘 + 解说 */}
+        <div className="lg:col-span-5 space-y-3">
+          <div className="flex justify-center overflow-x-auto">
+            {renderSVGBoard()}
+          </div>
+
+          {/* 棋局解说（棋盘正下方） */}
+          <Card className="bg-white/95 shadow-lg">
+            <CardHeader className="pb-1">
+              <CardTitle className="text-sm flex items-center gap-1">
+                <Play className="w-4 h-4 text-amber-600" /> 棋局解说
+                {commentaries.length > 0 && <Badge variant="secondary" className="text-xs ml-1">{commentaries.length}</Badge>}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <ScrollArea className="h-[200px]">
+                <div className="space-y-2 pr-1">
+                  {commentaries.length === 0 && !isCommentaryStreaming && (
+                    <p className="text-center text-gray-300 text-xs py-4">落子后，解说员会为你解说每一步</p>
+                  )}
+                  {commentaries.map((entry, idx) => (
+                    <div key={idx} className={`rounded-lg px-3 py-2 ${entry.color === 'black' ? 'bg-gray-50 border-l-3 border-gray-700' : 'bg-orange-50 border-l-3 border-orange-400'}`}>
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <div className={`w-4 h-4 rounded-full ${entry.color === 'black' ? 'bg-gray-800' : 'bg-white border border-gray-300'}`} />
+                        <span className="text-xs font-medium text-gray-600">
+                          第{entry.moveIndex + 1}手 | {entry.color === 'black' ? '黑方' : '白方'} {positionToCoordinate(entry.position.row, entry.position.col, boardSize)}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-700 leading-relaxed">{entry.commentary}</p>
+                    </div>
+                  ))}
+                  {isCommentaryStreaming && streamingText && (
+                    <div className="rounded-lg px-3 py-2 bg-amber-50 border-l-3 border-amber-400">
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <Spinner className="w-3 h-3" />
+                        <span className="text-xs text-gray-400">解说中...</span>
+                      </div>
+                      <p className="text-xs text-gray-700 leading-relaxed">{streamingText}</p>
+                    </div>
+                  )}
+                  {isCommentaryStreaming && !streamingText && (
+                    <div className="flex items-center gap-2 text-gray-400 text-xs py-2">
+                      <Spinner className="w-3 h-3" /> 解说员正在分析...
+                    </div>
+                  )}
+                  <div ref={commentaryEndRef} />
+                </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* 右侧：聊天 + 学习 */}
+        <div className="lg:col-span-4 space-y-3">
+          {/* 聊天 */}
+          <Card className="bg-white/95 shadow-lg">
+            <CardHeader className="pb-1">
+              <CardTitle className="text-sm flex items-center gap-1">
+                <MessageCircle className="w-4 h-4 text-purple-500" /> 问我围棋问题
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <ScrollArea className="h-[200px] mb-2">
+                <div className="space-y-2 pr-1">
+                  {messages.length === 0 && (
+                    <div className="text-center text-gray-300 text-xs py-4">
+                      <p>结合当前棋局回答你的问题</p>
+                    </div>
+                  )}
+                  {messages.map((msg, idx) => (
+                    <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[85%] rounded-2xl px-3 py-1.5 text-xs ${msg.role === 'user' ? 'bg-purple-500 text-white rounded-br-sm' : 'bg-gray-100 text-gray-800 rounded-bl-sm'}`}>
+                        {msg.content || <span className="flex items-center gap-1"><Spinner className="w-3 h-3" /> 思考中...</span>}
+                      </div>
+                    </div>
+                  ))}
+                  <div ref={chatEndRef} />
+                </div>
+              </ScrollArea>
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={inputMessage}
+                  onChange={e => setInputMessage(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && !isChatStreaming && sendMessage()}
+                  placeholder="问我围棋问题..."
+                  className="flex-1 px-3 py-1.5 border rounded-full text-xs focus:outline-none focus:ring-2 focus:ring-purple-400"
+                  disabled={isChatStreaming}
+                />
+                <Button onClick={sendMessage} disabled={!inputMessage.trim() || isChatStreaming} size="sm" className="bg-purple-500 hover:bg-purple-600 rounded-full px-2.5 h-8">
+                  <Send className="w-3.5 h-3.5" />
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
 
           {/* 学习面板：教程 + 百科 */}
           <Card className="bg-white/90 shadow-lg">
@@ -996,7 +1117,7 @@ export default function GoGamePage() {
                   </div>
                 </div>
               ) : (
-                <div className="flex flex-col" style={{ maxHeight: '420px' }}>
+                <div className="flex flex-col" style={{ maxHeight: '300px' }}>
                   {/* 百科搜索 */}
                   <div className="flex gap-1.5 mb-2 shrink-0">
                     <div className="relative flex-1">
@@ -1103,117 +1224,6 @@ export default function GoGamePage() {
                   </div>
                 </div>
               )}
-            </CardContent>
-          </Card>
-
-          {/* AI教学 */}
-          {teachingMessage && (
-            <Card className="bg-gradient-to-br from-blue-50 to-purple-50 border-blue-200">
-              <CardHeader className="pb-1">
-                <CardTitle className="text-xs flex items-center gap-1 text-blue-700"><MessageCircle className="w-3 h-3" /> 小围棋说</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">{teachingMessage}</p>
-                {isTeachStreaming && <Spinner className="w-3 h-3 mt-1" />}
-              </CardContent>
-            </Card>
-          )}
-        </div>
-
-        {/* 棋盘 */}
-        <div className="lg:col-span-5 flex flex-col items-center">
-          <div className="overflow-x-auto w-full flex justify-center">
-            {renderSVGBoard()}
-          </div>
-        </div>
-
-        {/* 右侧：解说+聊天 */}
-        <div className="lg:col-span-4 space-y-3">
-          {/* 解说历史 */}
-          <Card className="bg-white/95 shadow-lg">
-            <CardHeader className="pb-1">
-              <CardTitle className="text-sm flex items-center gap-1">
-                <Play className="w-4 h-4 text-amber-600" /> 棋局解说
-                {commentaries.length > 0 && <Badge variant="secondary" className="text-xs ml-1">{commentaries.length}</Badge>}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <ScrollArea className="h-[280px]">
-                <div className="space-y-2 pr-1">
-                  {commentaries.length === 0 && !isCommentaryStreaming && (
-                    <p className="text-center text-gray-300 text-xs py-4">落子后，解说员会为你解说每一步</p>
-                  )}
-                  {commentaries.map((entry, idx) => (
-                    <div key={idx} className={`rounded-lg px-3 py-2 ${entry.color === 'black' ? 'bg-gray-50 border-l-3 border-gray-700' : 'bg-orange-50 border-l-3 border-orange-400'}`}>
-                      <div className="flex items-center gap-1.5 mb-0.5">
-                        <div className={`w-4 h-4 rounded-full ${entry.color === 'black' ? 'bg-gray-800' : 'bg-white border border-gray-300'}`} />
-                        <span className="text-xs font-medium text-gray-600">
-                          第{entry.moveIndex + 1}手 | {entry.color === 'black' ? '黑方' : '白方'} {positionToCoordinate(entry.position.row, entry.position.col, boardSize)}
-                        </span>
-                      </div>
-                      <p className="text-xs text-gray-700 leading-relaxed">{entry.commentary}</p>
-                    </div>
-                  ))}
-                  {/* 当前正在流式输出的解说 */}
-                  {isCommentaryStreaming && streamingText && (
-                    <div className="rounded-lg px-3 py-2 bg-amber-50 border-l-3 border-amber-400">
-                      <div className="flex items-center gap-1.5 mb-0.5">
-                        <Spinner className="w-3 h-3" />
-                        <span className="text-xs text-gray-400">解说中...</span>
-                      </div>
-                      <p className="text-xs text-gray-700 leading-relaxed">{streamingText}</p>
-                    </div>
-                  )}
-                  {isCommentaryStreaming && !streamingText && (
-                    <div className="flex items-center gap-2 text-gray-400 text-xs py-2">
-                      <Spinner className="w-3 h-3" /> 解说员正在分析...
-                    </div>
-                  )}
-                  <div ref={commentaryEndRef} />
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-
-          {/* 聊天 */}
-          <Card className="bg-white/95 shadow-lg">
-            <CardHeader className="pb-1">
-              <CardTitle className="text-sm flex items-center gap-1">
-                <MessageCircle className="w-4 h-4 text-purple-500" /> 问我围棋问题
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <ScrollArea className="h-[200px] mb-2">
-                <div className="space-y-2 pr-1">
-                  {messages.length === 0 && (
-                    <div className="text-center text-gray-300 text-xs py-4">
-                      <p>结合当前棋局回答你的问题</p>
-                    </div>
-                  )}
-                  {messages.map((msg, idx) => (
-                    <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[85%] rounded-2xl px-3 py-1.5 text-xs ${msg.role === 'user' ? 'bg-purple-500 text-white rounded-br-sm' : 'bg-gray-100 text-gray-800 rounded-bl-sm'}`}>
-                        {msg.content || <span className="flex items-center gap-1"><Spinner className="w-3 h-3" /> 思考中...</span>}
-                      </div>
-                    </div>
-                  ))}
-                  <div ref={chatEndRef} />
-                </div>
-              </ScrollArea>
-              <div className="flex gap-1.5">
-                <input
-                  type="text"
-                  value={inputMessage}
-                  onChange={e => setInputMessage(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && !isChatStreaming && sendMessage()}
-                  placeholder="问我围棋问题..."
-                  className="flex-1 px-3 py-1.5 border rounded-full text-xs focus:outline-none focus:ring-2 focus:ring-purple-400"
-                  disabled={isChatStreaming}
-                />
-                <Button onClick={sendMessage} disabled={!inputMessage.trim() || isChatStreaming} size="sm" className="bg-purple-500 hover:bg-purple-600 rounded-full px-2.5 h-8">
-                  <Send className="w-3.5 h-3.5" />
-                </Button>
-              </div>
             </CardContent>
           </Card>
         </div>

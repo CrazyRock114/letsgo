@@ -9,18 +9,17 @@ const config = new Config();
 // 第三方观赛者视角的解说系统提示
 const COMMENTARY_SYSTEM = `你是围棋解说员，为小朋友解说对局。第三方视角，不是棋手。
 规则：
-1. 只说1-2句话，言简意赅，不要啰嗦
+1. 只说1句话，言简意赅，绝不啰嗦
 2. 明确说"黑方"还是"白方"下的
 3. 简述这步棋的作用（占角、连接、进攻、防守等）
 4. 如有提子，说明提了几个
-5. 语气轻松简短
-6.【最高优先级】严格依据"局面事实"数据说话！
+5.【最高优先级】严格依据"局面事实"数据说话！
    - 不要自己从棋盘数气，直接看给出的气数
    - 事实没说"只剩1口气"，就不能说"打吃"
    - 事实没说提子，就不能说"提子"
    - 棋子颜色以事实为准
-7. 最多用1个围棋术语，在括号中简短解释。例如：打吃（只剩一口气）、星位（四四位置的圆点）
-   只有事实确实显示只剩1口气时才能说"打吃"`;
+6. 不要每次都说"有几口气"，只在打吃(对方只剩1口气)或提子时才提到气
+7. 最多用1个围棋术语，在括号中简短解释。只有事实确实显示只剩1口气时才能说"打吃"`;
 
 // AI教学系统提示
 const GO_TUTOR_SYSTEM = `你是"小围棋"，一个专为儿童围棋学习设计的AI围棋教练。
@@ -104,11 +103,11 @@ function buildBoardDescription(
     // === 关键局面事实（解说必须依据这些事实） ===
     const facts: string[] = [];
 
-    // 落子位置的精确上下文（相邻棋子 + 气数）
+    // 落子位置的精确上下文（相邻棋子）
     const moveCtx = getMoveContext(board, lastMove.row, lastMove.col);
     facts.push(`落子位置：${moveCtx}`);
 
-    // 相邻对方棋子的气数
+    // 相邻对方棋子的气数（只标注关键状态）
     const directions: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
     const checkedGroups = new Set<string>();
     for (const [dr, dc] of directions) {
@@ -117,7 +116,6 @@ function buildBoardDescription(
       if (nr >= 0 && nr < size && nc >= 0 && nc < size) {
         const neighbor = board[nr][nc];
         if (neighbor && neighbor !== moveColor) {
-          // 检查是否属于已检查的同一个棋组
           const group = getGroupKey(board, nr, nc);
           if (!checkedGroups.has(group)) {
             checkedGroups.add(group);
@@ -126,9 +124,10 @@ function buildBoardDescription(
             const nColor = neighbor === 'black' ? '黑棋' : '白棋';
             if (libs === 1) {
               facts.push(`【打吃】相邻${nColor}(${nCoord}所在的棋组)只剩1口气，被${color}打吃了！`);
-            } else {
-              facts.push(`相邻${nColor}(${nCoord}所在的棋组)有${libs}口气，未被威胁`);
+            } else if (libs === 2) {
+              facts.push(`相邻${nColor}(${nCoord}所在的棋组)剩2口气`);
             }
+            // 3口气及以上不提及，避免解说啰嗦
           }
         }
       }
@@ -215,7 +214,7 @@ export async function POST(request: NextRequest) {
       // 第三方观赛者解说
       messages = [
         { role: 'system', content: COMMENTARY_SYSTEM },
-        { role: 'user', content: boardDesc + '\n\n用1-2句话简短解说这步棋，严格依据上面"局面事实"的数据。' }
+        { role: 'user', content: boardDesc + '\n\n用1句话简短解说这步棋，严格依据上面"局面事实"的数据。不要提气数，除非是打吃或提子。' }
       ];
     } else if (type === 'teach') {
       messages = [
