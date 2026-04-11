@@ -111,9 +111,9 @@ function getKomi(boardSize: number): number {
 // KataGo难度映射 - 通过maxVisits控制
 // visits越少越弱，越多越强（CPU模式下需要平衡速度）
 function getKataGoVisits(difficulty: string): number {
-  if (difficulty === "easy") return 30;     // 很少搜索，类似业余初学
-  if (difficulty === "medium") return 100;   // 中等搜索，有基本战术
-  return 300;                                // 大量搜索，有深度计算
+  if (difficulty === "easy") return 15;     // 极少搜索，速度最快
+  if (difficulty === "medium") return 50;    // 中等搜索，速度和强度平衡
+  return 150;                               // 较多搜索，有深度计算
 }
 
 // GnuGo难度映射
@@ -140,8 +140,8 @@ async function getKataGoMove(
     "-override-config", `maxVisits=${maxVisits},komi=${komi}`,
   ]);
 
-  // KataGo启动较慢，需要更长等待时间
-  await new Promise(r => setTimeout(r, 500));
+  // KataGo启动很快（实测<300ms），短暂等待即可
+  await new Promise(r => setTimeout(r, 100));
 
   const gtpCommands: string[] = [
     `boardsize ${boardSize}`,

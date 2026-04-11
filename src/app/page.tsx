@@ -144,6 +144,9 @@ export default function GoGamePage() {
 
   const [streamingText, setStreamingText] = useState('');
 
+  // 解说请求ID，用于非阻塞时取消旧请求的流式输出
+  const commentaryRequestId = useRef(0);
+
   // ===== 复盘模式 =====
   const [isReplayMode, setIsReplayMode] = useState(false);
   const [replayIndex, setReplayIndex] = useState(0);
@@ -242,6 +245,8 @@ export default function GoGamePage() {
     moveIdx: number,
     currentHistory: MoveEntry[]
   ) => {
+    // 每次新请求递增ID，旧请求的回调会被忽略
+    const thisRequestId = ++commentaryRequestId.current;
     setIsCommentaryStreaming(true);
     setStreamingText('');
 
@@ -259,25 +264,35 @@ export default function GoGamePage() {
           moveHistory: currentHistory,
         }),
       });
-      if (response.ok) {
-        const fullText = await readStream(response, (text) => setStreamingText(text));
+      if (response.ok && commentaryRequestId.current === thisRequestId) {
+        const fullText = await readStream(response, (text) => {
+          if (commentaryRequestId.current === thisRequestId) {
+            setStreamingText(text);
+          }
+        });
+        if (commentaryRequestId.current === thisRequestId) {
+          setCommentaries(prev => [...prev, {
+            moveIndex: moveIdx,
+            color: moveColor,
+            position: movePos,
+            commentary: fullText,
+          }]);
+        }
+      }
+    } catch {
+      if (commentaryRequestId.current === thisRequestId) {
         setCommentaries(prev => [...prev, {
           moveIndex: moveIdx,
           color: moveColor,
           position: movePos,
-          commentary: fullText,
+          commentary: `${moveColor === 'black' ? '黑方' : '白方'}下在${positionToCoordinate(movePos.row, movePos.col, boardSize)}`,
         }]);
       }
-    } catch {
-      setCommentaries(prev => [...prev, {
-        moveIndex: moveIdx,
-        color: moveColor,
-        position: movePos,
-        commentary: `${moveColor === 'black' ? '黑方' : '白方'}下在${positionToCoordinate(movePos.row, movePos.col, boardSize)}`,
-      }]);
     } finally {
-      setIsCommentaryStreaming(false);
-      setStreamingText('');
+      if (commentaryRequestId.current === thisRequestId) {
+        setIsCommentaryStreaming(false);
+        setStreamingText('');
+      }
     }
   }, [boardSize]);
 
@@ -297,8 +312,8 @@ export default function GoGamePage() {
     setShowHint(null);
     setConsecutivePasses(0);
 
-    // 请求黑方解说，等待完成后再让AI落子（避免解说竞态）
-    await requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx, historyWithThisMove);
+    // 玩家落子解说 - 非阻塞（后台流式显示，不等待完成）
+    requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx, historyWithThisMove);
 
     // 检查游戏是否应该结束
     const endCheck = checkGameEnd(newBoard, 0, historyWithThisMove.length);
@@ -313,8 +328,6 @@ export default function GoGamePage() {
     // AI回合
     if (currentPlayer === 'black') {
       setIsAIThinking(true);
-      // AI思考延迟1秒
-      await new Promise(r => setTimeout(r, 1000));
 
       const validMoves = getValidMoves(newBoard, 'white');
       if (validMoves.length > 0) {
@@ -379,8 +392,8 @@ export default function GoGamePage() {
         setLastMove({ row: aiMove.row, col: aiMove.col });
         setHistory(historyWithAIMove);
 
-        // AI落子解说，等待完成
-        await requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx, historyWithAIMove);
+        // AI落子解说 - 非阻塞（后台流式显示）
+        requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx, historyWithAIMove);
 
         // 检查游戏是否应该结束
         const endCheck2 = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
@@ -457,7 +470,6 @@ export default function GoGamePage() {
 
     // AI回合
     setIsAIThinking(true);
-    await new Promise(r => setTimeout(r, 800));
 
     // AI也考虑停手（如果没好位置）
     const validMoves = getValidMoves(board, 'white');
@@ -524,7 +536,8 @@ export default function GoGamePage() {
     setHistory(historyWithAIMove);
     setConsecutivePasses(0);
 
-    await requestCommentary(finalBoard, aiMove, 'white', aiCaptured, moveIdx, historyWithAIMove);
+    // AI落子解说 - 非阻塞（后台流式显示）
+    requestCommentary(finalBoard, aiMove, 'white', aiCaptured, moveIdx, historyWithAIMove);
 
     // 检查游戏结束
     const endCheck = checkGameEnd(finalBoard, 0, historyWithAIMove.length);

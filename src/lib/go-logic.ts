@@ -216,6 +216,27 @@ export function evaluateBoard(board: Board): { black: number; white: number } {
   let black = 0;
   let white = 0;
   
+  // 先统计棋子数，用于判断棋局阶段
+  let blackStones = 0;
+  let whiteStones = 0;
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      if (board[row][col] === 'black') blackStones++;
+      else if (board[row][col] === 'white') whiteStones++;
+    }
+  }
+  
+  // 棋子覆盖率：棋盘上棋子越多，领地估算越可靠
+  const totalStones = blackStones + whiteStones;
+  const totalIntersections = size * size;
+  const stoneRatio = totalStones / totalIntersections;
+  
+  // 开局阶段（覆盖率 < 15%），领地估算极不准确，只显示棋子数
+  // 这样避免了"第一手棋就显示361目"的问题
+  if (stoneRatio < 0.15) {
+    return { black: blackStones, white: whiteStones };
+  }
+  
   const visited = new Set<string>();
   
   for (let row = 0; row < size; row++) {
