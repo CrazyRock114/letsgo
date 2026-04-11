@@ -6,93 +6,119 @@ import { boardToString, positionToCoordinate, type Stone, type Board } from "@/l
 
 const config = new Config();
 
-// 围棋教学系统提示
+// 第三方观赛者视角的解说系统提示
+const COMMENTARY_SYSTEM = `你是围棋比赛的"解说员"，正在为小朋友观众解说一盘围棋对局。
+你是第三方观赛者，不是棋手本人。规则：
+1. 简短1-2句话解说
+2. 明确说明是"黑方"还是"白方"下的这步棋
+3. 用儿童能理解的语言解说：这步棋在做什么（占角、守边、连结、进攻、防守等）
+4. 如果有提子，说明提了几个子
+5. 语气活泼有趣，像体育解说员`;
+
+// AI教学系统提示
 const GO_TUTOR_SYSTEM = `你是"小围棋"，一个专为儿童围棋学习设计的AI围棋教练。
 规则：
 1. 用简单有趣的语言教孩子下围棋，像讲故事一样
 2. 鼓励孩子的每一步尝试，即使下错了也要温和引导
-3. 用生活化的比喻解释围棋概念（比如：气就像呼吸，围地就像圈地盘）
-4. 解说要简短，1-3句话即可，不要太长
+3. 用生活化的比喻解释围棋概念
+4. 解说要简短，1-3句话即可
 5. 适当使用儿童喜欢的语气词`;
 
-// 棋局解说系统提示
-const COMMENTARY_SYSTEM = `你是"小围棋"，一个儿童围棋教练。你正在为孩子的每一步棋做简短解说。
-要求：
-1. 简短1-2句话，用儿童能理解的语言
-2. 如果是好棋，给予鼓励
-3. 可以简单提一下这步棋的作用（占角、连结、防守、进攻等）
-4. 如果这步棋有提子，说明提了几个子
-5. 语气活泼可爱`;
+// AI对弈系统提示 - 根据难度调整
+function getAIPlaySystem(difficulty: string): string {
+  if (difficulty === 'hard') {
+    return `你是一个有实力的围棋AI，正在和初学者下棋。但你要认真下，下出有水平的棋。
+策略优先级：
+1. 攻击对方弱子，切断对方连结
+2. 抢占大场，扩展自己的势力
+3. 防守自己的弱子
+4. 占角、守边
+用JSON格式回复：{"position": "坐标", "reason": "1句话"}
+坐标格式：列用A-T表示（跳过I），行用1-19表示`;
+  }
+  if (difficulty === 'medium') {
+    return `你是一个中等水平的围棋AI，正在和初学者孩子下棋。
+策略：
+1. 优先占角，然后守边
+2. 如果对方棋子只有1-2口气，尝试吃掉
+3. 连结自己的棋子
+4. 不要故意下烂棋，但不要太难
+用JSON格式回复：{"position": "坐标", "reason": "1句话"}
+坐标格式：列用A-T表示（跳过I），行用1-19表示`;
+  }
+  // easy
+  return `你是一个温柔的围棋AI，正在教初学者孩子下棋。
+策略：
+1. 随机下在合法位置
+2. 偶尔占角，偶尔占边
+3. 不主动进攻，让孩子有发挥空间
+4. 如果自己的棋子快被吃了，尝试逃跑
+用JSON格式回复：{"position": "坐标", "reason": "1句话"}
+坐标格式：列用A-T表示（跳过I），行用1-19表示`;
+}
 
-// AI对弈系统提示
-const AI_PLAY_SYSTEM = `你是儿童围棋AI，正在和一个初学者孩子下棋。
-你要选择一个合理的落子位置。要求：
-1. 选择合法的空位落子
-2. 优先考虑：占角 > 守边 > 连结自己的棋子 > 堵对方
-3. 不要下在已经被占的位置
-4. 用JSON格式回复：{"position": "坐标", "reason": "1句话说明原因"}
-坐标格式：列用A-T表示（跳过I），行用1-19表示，如"D4"`;
-
-// 构建棋局描述文本
-function buildBoardDescription(board: Board, currentPlayer: Stone, lastMove?: { row: number; col: number }, moveColor?: Stone, captured?: number): string {
+// 构建棋局描述
+function buildBoardDescription(
+  board: Board,
+  currentPlayer: Stone,
+  lastMove?: { row: number; col: number },
+  moveColor?: Stone,
+  captured?: number
+): string {
   const boardStr = boardToString(board);
   const size = board.length;
   let desc = `当前棋盘大小：${size}x${size}\n棋盘状态（X=黑棋, O=白棋, .=空位）：\n${boardStr}\n当前轮到：${currentPlayer === 'black' ? '黑棋' : '白棋'}`;
-  
+
   if (lastMove) {
     const coord = positionToCoordinate(lastMove.row, lastMove.col);
-    const color = moveColor === 'black' ? '黑棋' : '白棋';
+    const color = moveColor === 'black' ? '黑方' : '白方';
     desc += `\n最后一手：${color}下在${coord}`;
     if (captured && captured > 0) {
       desc += `，提了${captured}个子`;
     }
   }
-  
+
   return desc;
 }
 
 // 流式API端点
 export async function POST(request: NextRequest) {
   try {
-    const { type, board, currentPlayer, lastMove, moveColor, captured, question } = await request.json();
+    const { type, board, currentPlayer, lastMove, moveColor, captured, question, difficulty } = await request.json();
     const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
     const client = new LLMClient(config, customHeaders);
-    
+
     let messages: Array<{ role: 'system' | 'user'; content: string }> = [];
     const boardDesc = buildBoardDescription(board, currentPlayer, lastMove, moveColor, captured);
-    
+
     if (type === 'commentary') {
-      // 每步棋的简短解说
+      // 第三方观赛者解说
       messages = [
         { role: 'system', content: COMMENTARY_SYSTEM },
-        { role: 'user', content: boardDesc + '\n\n请用1-2句话简短解说这步棋。' }
+        { role: 'user', content: boardDesc + '\n\n请用1-2句话，以观赛解说员的身份解说这步棋。' }
       ];
     } else if (type === 'teach') {
-      // 教学解读
       messages = [
         { role: 'system', content: GO_TUTOR_SYSTEM },
-        { role: 'user', content: boardDesc + '\n\n请给这个孩子一些围棋指导，用简单有趣的方式解释当前局面并给出建议。' }
+        { role: 'user', content: boardDesc + '\n\n请给这个孩子一些围棋指导。' }
       ];
     } else if (type === 'chat') {
-      // 结合棋局的问答
       messages = [
-        { role: 'system', content: GO_TUTOR_SYSTEM + '\n\n你要结合当前棋局来回答问题，参考棋盘上棋子的位置和形势来给出具体的、有针对性的回答，不要给笼统的回答。' },
+        { role: 'system', content: GO_TUTOR_SYSTEM + '\n\n你要结合当前棋局来回答问题，参考棋盘上棋子的位置和形势来给出具体的、有针对性的回答。' },
         { role: 'user', content: boardDesc + '\n\n孩子的问题：' + question }
       ];
     } else if (type === 'ai-move') {
-      // AI对弈落子
       messages = [
-        { role: 'system', content: AI_PLAY_SYSTEM },
+        { role: 'system', content: getAIPlaySystem(difficulty || 'easy') },
         { role: 'user', content: boardDesc + '\n\n你是白棋(O)，请选择下一步落子位置。只回复JSON。' }
       ];
     }
-    
-    // 使用LLM流式输出，直接pipe到HTTP响应
+
     const llmStream = client.stream(messages, {
       temperature: type === 'ai-move' ? 0.4 : 0.8,
-      model: 'doubao-seed-1-6-251015'
+      model: type === 'ai-move' ? 'doubao-seed-1-6-251015' : 'doubao-seed-1-6-251015',
     });
-    
+
     const encoder = new TextEncoder();
     const readableStream = new ReadableStream({
       async start(controller) {
@@ -109,7 +135,7 @@ export async function POST(request: NextRequest) {
         }
       }
     });
-    
+
     return new Response(readableStream, {
       headers: {
         'Content-Type': 'text/event-stream',

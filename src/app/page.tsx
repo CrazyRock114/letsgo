@@ -17,46 +17,99 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import {
   RotateCcw,
   HelpCircle,
   BookOpen,
-  Play,
   MessageCircle,
   Lightbulb,
-  Trophy,
   Send,
+  Save,
+  FolderOpen,
+  Trash2,
+  ChevronLeft,
+  ChevronRight,
+  Play,
+  User,
 } from 'lucide-react';
 
-// 棋盘尺寸选项
+// ========== 常量 ==========
 const BOARD_SIZES = [
   { size: 9, label: '9路', desc: '初学入门' },
   { size: 13, label: '13路', desc: '进阶练习' },
   { size: 19, label: '19路', desc: '正式对局' },
 ] as const;
 
-// 围棋坐标字母（跳过I）
+const DIFFICULTIES = [
+  { key: 'easy', label: '初级', emoji: '🌱', desc: 'AI温柔陪练' },
+  { key: 'medium', label: '中级', emoji: '⚔️', desc: 'AI认真对弈' },
+  { key: 'hard', label: '高级', emoji: '🐉', desc: 'AI全力出击' },
+] as const;
+
 const COL_LABELS = 'ABCDEFGHJKLMNOPQRST';
 
 // 星位坐标
 function getStarPoints(boardSize: number): [number, number][] {
-  if (boardSize === 9) {
-    return [[2, 2], [2, 6], [4, 4], [6, 2], [6, 6]];
-  }
-  if (boardSize === 13) {
-    return [[3, 3], [3, 9], [6, 6], [9, 3], [9, 9], [3, 6], [6, 3], [6, 9], [9, 6]];
-  }
-  if (boardSize === 19) {
-    return [[3, 3], [3, 9], [3, 15], [9, 3], [9, 9], [9, 15], [15, 3], [15, 9], [15, 15]];
-  }
+  if (boardSize === 9) return [[2, 2], [2, 6], [4, 4], [6, 2], [6, 6]];
+  if (boardSize === 13) return [[3, 3], [3, 9], [6, 6], [9, 3], [9, 9], [3, 6], [6, 3], [6, 9], [9, 6]];
+  if (boardSize === 19) return [[3, 3], [3, 9], [3, 15], [9, 3], [9, 9], [9, 15], [15, 3], [15, 9], [15, 15]];
   return [];
 }
 
-// 流式读取工具
-async function readStream(
-  response: Response,
-  onChunk: (text: string) => void
-): Promise<string> {
+// AI落子策略（不依赖组件状态，移至组件外）
+function pickWeightedMove(moves: Position[], size: number): Position {
+  const corners = moves.filter(m => (m.row <= 2 || m.row >= size - 3) && (m.col <= 2 || m.col >= size - 3));
+  const edges = moves.filter(m => m.row <= 1 || m.row >= size - 2 || m.col <= 1 || m.col >= size - 2);
+  if (corners.length > 0 && Math.random() < 0.5) return corners[Math.floor(Math.random() * corners.length)];
+  if (edges.length > 0 && Math.random() < 0.4) return edges[Math.floor(Math.random() * edges.length)];
+  return moves[Math.floor(Math.random() * moves.length)];
+}
+
+function pickMediumMove(moves: Position[], currentBoard: Board): Position {
+  // 中等策略：优先吃子、其次占角、最后随机
+  for (const m of moves) {
+    const testBoard = createEmptyBoard(currentBoard.length);
+    for (let r = 0; r < currentBoard.length; r++) for (let c = 0; c < currentBoard.length; c++) testBoard[r][c] = currentBoard[r][c];
+    const { captured } = playMove(testBoard, m.row, m.col, 'white');
+    if (captured > 0) return m;
+  }
+  return pickWeightedMove(moves, currentBoard.length);
+}
+
+// 解说条目
+interface CommentaryEntry {
+  moveIndex: number;
+  color: Stone;
+  position: Position;
+  commentary: string;
+}
+
+// 棋局历史步
+interface MoveEntry {
+  position: Position;
+  color: Stone;
+  captured: number;
+}
+
+// 保存的棋局
+interface SavedGame {
+  id?: number;
+  board_size: number;
+  difficulty: string;
+  moves: MoveEntry[];
+  commentaries: CommentaryEntry[];
+  final_board: Board | null;
+  black_score: number;
+  white_score: number;
+  status: string;
+  title: string;
+  created_at?: string;
+}
+
+// 流式读取
+async function readStream(response: Response, onChunk: (text: string) => void): Promise<string> {
   const reader = response.body?.getReader();
   if (!reader) return '';
   const decoder = new TextDecoder();
@@ -72,22 +125,37 @@ async function readStream(
 }
 
 export default function GoGamePage() {
+  // ===== 玩家身份 =====
+  const [nickname, setNickname] = useState('');
+  const [playerId, setPlayerId] = useState<number | null>(null);
+  const [showLogin, setShowLogin] = useState(true);
+
   // ===== 游戏状态 =====
   const [boardSize, setBoardSize] = useState(9);
+  const [difficulty, setDifficulty] = useState<string>('easy');
   const [board, setBoard] = useState<Board>(() => createEmptyBoard(9));
   const [currentPlayer, setCurrentPlayer] = useState<Stone>('black');
-  const [history, setHistory] = useState<Array<{ position: Position; color: Stone; captured: number }>>([]);
+  const [history, setHistory] = useState<MoveEntry[]>([]);
   const [lastMove, setLastMove] = useState<Position | null>(null);
   const [showHint, setShowHint] = useState<Position | null>(null);
   const [score, setScore] = useState({ black: 0, white: 0 });
   const [isAIThinking, setIsAIThinking] = useState(false);
+  const [savedGameId, setSavedGameId] = useState<number | null>(null);
 
-  // ===== AI解说 =====
-  const [moveCommentary, setMoveCommentary] = useState<string>('');
+  // ===== 解说历史 =====
+  const [commentaries, setCommentaries] = useState<CommentaryEntry[]>([]);
   const [isCommentaryStreaming, setIsCommentaryStreaming] = useState(false);
 
+  const [streamingText, setStreamingText] = useState('');
+
+  // ===== 复盘模式 =====
+  const [isReplayMode, setIsReplayMode] = useState(false);
+  const [replayIndex, setReplayIndex] = useState(0);
+  const [replayMoves, setReplayMoves] = useState<MoveEntry[]>([]);
+
+
   // ===== AI教学 =====
-  const [teachingMessage, setTeachingMessage] = useState<string>('');
+  const [teachingMessage, setTeachingMessage] = useState('');
   const [isTeachStreaming, setIsTeachStreaming] = useState(false);
 
   // ===== 聊天 =====
@@ -96,7 +164,13 @@ export default function GoGamePage() {
   const [isChatStreaming, setIsChatStreaming] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // ===== 学习模式 =====
+  // ===== 弹窗 =====
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [showLoadDialog, setShowLoadDialog] = useState(false);
+  const [saveTitle, setSaveTitle] = useState('');
+  const [savedGames, setSavedGames] = useState<SavedGame[]>([]);
+
+  // ===== 学习 =====
   const [lessonStep, setLessonStep] = useState(0);
 
   // 计算比分
@@ -104,10 +178,31 @@ export default function GoGamePage() {
     setScore(evaluateBoard(board));
   }, [board]);
 
-  // 聊天自动滚到底部
+  // 聊天滚到底部
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // ===== 登录 =====
+  const handleLogin = useCallback(async () => {
+    if (!nickname.trim()) return;
+    try {
+      const res = await fetch('/api/players', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nickname: nickname.trim() }),
+      });
+      const data = await res.json();
+      if (data.player) {
+        setPlayerId(data.player.id);
+        setShowLogin(false);
+      }
+    } catch {
+      // 降级：允许无身份使用
+      setPlayerId(0);
+      setShowLogin(false);
+    }
+  }, [nickname]);
 
   // ===== 切换棋盘大小 =====
   const changeBoardSize = useCallback((newSize: number) => {
@@ -117,20 +212,24 @@ export default function GoGamePage() {
     setHistory([]);
     setLastMove(null);
     setShowHint(null);
-    setMoveCommentary('');
+    setCommentaries([]);
+    setSavedGameId(null);
+    setIsReplayMode(false);
     setTeachingMessage('');
     setLessonStep(0);
   }, []);
 
-  // ===== 请求AI解说 =====
+  // ===== 请求AI解说（第三方观赛视角） =====
   const requestCommentary = useCallback(async (
     newBoard: Board,
     movePos: Position,
     moveColor: Stone,
-    capturedCount: number
+    capturedCount: number,
+    moveIdx: number
   ) => {
     setIsCommentaryStreaming(true);
-    setMoveCommentary('');
+    setStreamingText('');
+
     try {
       const response = await fetch('/api/go-ai', {
         method: 'POST',
@@ -145,85 +244,129 @@ export default function GoGamePage() {
         }),
       });
       if (response.ok) {
-        await readStream(response, (text) => setMoveCommentary(text));
+        const fullText = await readStream(response, (text) => setStreamingText(text));
+        setCommentaries(prev => [...prev, {
+          moveIndex: moveIdx,
+          color: moveColor,
+          position: movePos,
+          commentary: fullText,
+        }]);
       }
     } catch {
-      setMoveCommentary('这步棋下得不错！');
+      setCommentaries(prev => [...prev, {
+        moveIndex: moveIdx,
+        color: moveColor,
+        position: movePos,
+        commentary: `${moveColor === 'black' ? '黑方' : '白方'}下在${positionToCoordinate(movePos.row, movePos.col)}`,
+      }]);
     } finally {
       setIsCommentaryStreaming(false);
+      setStreamingText('');
     }
   }, []);
 
   // ===== 处理落子 =====
   const handleMove = useCallback(async (row: number, col: number) => {
-    if (!isValidMove(board, row, col, currentPlayer) || isAIThinking) return;
+    if (!isValidMove(board, row, col, currentPlayer) || isAIThinking || isReplayMode) return;
 
     const { newBoard, captured } = playMove(board, row, col, currentPlayer);
+    const moveIdx = history.length;
+
     setBoard(newBoard);
     setLastMove({ row, col });
-    setHistory((prev) => [...prev, { position: { row, col }, color: currentPlayer, captured }]);
+    setHistory(prev => [...prev, { position: { row, col }, color: currentPlayer, captured }]);
     setShowHint(null);
 
-    // 请求这步棋的解说
-    requestCommentary(newBoard, { row, col }, currentPlayer, captured);
+    // 请求解说
+    requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx);
 
-    // AI回合（白棋）
+    // AI回合
     if (currentPlayer === 'black') {
       setIsAIThinking(true);
-      await new Promise((r) => setTimeout(r, 600));
+      await new Promise(r => setTimeout(r, 600));
 
-      // 简单AI：随机选择合法位置
       const validMoves = getValidMoves(newBoard, 'white');
       if (validMoves.length > 0) {
-        // 加权随机：优先角和边
         let aiMove: Position;
-        const cornerMoves = validMoves.filter(
-          (m) => (m.row <= 2 || m.row >= boardSize - 3) && (m.col <= 2 || m.col >= boardSize - 3)
-        );
-        const edgeMoves = validMoves.filter(
-          (m) => m.row <= 1 || m.row >= boardSize - 2 || m.col <= 1 || m.col >= boardSize - 2
-        );
 
-        if (cornerMoves.length > 0 && Math.random() < 0.5) {
-          aiMove = cornerMoves[Math.floor(Math.random() * cornerMoves.length)];
-        } else if (edgeMoves.length > 0 && Math.random() < 0.4) {
-          aiMove = edgeMoves[Math.floor(Math.random() * edgeMoves.length)];
+        if (difficulty === 'hard') {
+          // 高难度：用LLM决定
+          try {
+            const res = await fetch('/api/go-ai', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                type: 'ai-move',
+                board: newBoard,
+                currentPlayer: 'white',
+                difficulty: 'hard',
+              }),
+            });
+            const text = await res.text();
+            const jsonMatch = text.match(/\{[\s\S]*?\}/);
+            if (jsonMatch) {
+              const data = JSON.parse(jsonMatch[0]);
+              const coord = data.position?.toUpperCase();
+              if (coord) {
+                const colChar = coord.charAt(0);
+                const rowStr = coord.slice(1);
+                const aiCol = colChar.charCodeAt(0) - 65;
+                const aiRow = parseInt(rowStr) - 1;
+                if (isValidMove(newBoard, aiRow, aiCol, 'white')) {
+                  aiMove = { row: aiRow, col: aiCol };
+                } else {
+                  aiMove = pickWeightedMove(validMoves, newBoard.length);
+                }
+              } else {
+                aiMove = pickWeightedMove(validMoves, newBoard.length);
+              }
+            } else {
+              aiMove = pickWeightedMove(validMoves, newBoard.length);
+            }
+          } catch {
+            aiMove = pickWeightedMove(validMoves, newBoard.length);
+          }
+        } else if (difficulty === 'medium') {
+          // 中等：加权随机，更倾向好位置
+          aiMove = pickMediumMove(validMoves, newBoard);
         } else {
+          // 简单：纯随机
           aiMove = validMoves[Math.floor(Math.random() * validMoves.length)];
         }
 
         const { newBoard: finalBoard, captured: aiCaptured } = playMove(newBoard, aiMove.row, aiMove.col, 'white');
+        const aiMoveIdx = moveIdx + 1;
+
         setBoard(finalBoard);
         setLastMove({ row: aiMove.row, col: aiMove.col });
-        setHistory((prev) => [...prev, { position: aiMove, color: 'white', captured: aiCaptured }]);
+        setHistory(prev => [...prev, { position: aiMove, color: 'white', captured: aiCaptured }]);
 
         // AI落子解说
-        requestCommentary(finalBoard, aiMove, 'white', aiCaptured);
+        requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx);
       }
 
       setCurrentPlayer('black');
       setIsAIThinking(false);
     }
-  }, [board, currentPlayer, isAIThinking, boardSize, requestCommentary]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, history.length, requestCommentary]);
+
 
   // ===== 悔棋 =====
   const undoMove = useCallback(() => {
-    if (history.length === 0) return;
+    if (history.length === 0 || isReplayMode) return;
     const stepsToUndo = history.length >= 2 ? 2 : 1;
     const newHistory = history.slice(0, -stepsToUndo);
-
     let newBoard = createEmptyBoard(boardSize);
     for (const move of newHistory) {
       const result = playMove(newBoard, move.position.row, move.position.col, move.color);
       newBoard = result.newBoard;
     }
-
     setBoard(newBoard);
     setHistory(newHistory);
     setCurrentPlayer('black');
     setLastMove(newHistory.length > 0 ? newHistory[newHistory.length - 1].position : null);
-    setMoveCommentary('');
-  }, [history, boardSize]);
+    setCommentaries(prev => prev.slice(0, -stepsToUndo));
+  }, [history, boardSize, isReplayMode]);
 
   // ===== 重新开始 =====
   const restartGame = useCallback(() => {
@@ -232,25 +375,26 @@ export default function GoGamePage() {
     setHistory([]);
     setLastMove(null);
     setShowHint(null);
-    setMoveCommentary('');
+    setCommentaries([]);
+    setSavedGameId(null);
+    setIsReplayMode(false);
+    setReplayIndex(0);
     setTeachingMessage('');
     setLessonStep(0);
   }, [boardSize]);
 
   // ===== 提示 =====
   const showHintFn = useCallback(() => {
+    if (isReplayMode) return;
     const validMoves = getValidMoves(board, currentPlayer);
     if (validMoves.length === 0) return;
-    // 优先角部提示
-    const corners = validMoves.filter(
-      (m) => (m.row <= 2 || m.row >= boardSize - 3) && (m.col <= 2 || m.col >= boardSize - 3)
-    );
+    const corners = validMoves.filter(m => (m.row <= 2 || m.row >= boardSize - 3) && (m.col <= 2 || m.col >= boardSize - 3));
     const hint = corners.length > 0
       ? corners[Math.floor(Math.random() * corners.length)]
       : validMoves[Math.floor(Math.random() * validMoves.length)];
     setShowHint(hint);
     setTimeout(() => setShowHint(null), 3000);
-  }, [board, currentPlayer, boardSize]);
+  }, [board, currentPlayer, boardSize, isReplayMode]);
 
   // ===== AI教学 =====
   const getTeaching = useCallback(async () => {
@@ -268,9 +412,7 @@ export default function GoGamePage() {
           lastMove: lastMove ? { row: lastMove.row, col: lastMove.col } : undefined,
         }),
       });
-      if (response.ok) {
-        await readStream(response, (text) => setTeachingMessage(text));
-      }
+      if (response.ok) await readStream(response, text => setTeachingMessage(text));
     } catch {
       setTeachingMessage('小围棋正在思考中...');
     } finally {
@@ -278,14 +420,13 @@ export default function GoGamePage() {
     }
   }, [board, currentPlayer, lastMove, isTeachStreaming]);
 
-  // ===== 聊天（结合棋局） =====
+  // ===== 聊天 =====
   const sendMessage = useCallback(async () => {
     if (!inputMessage.trim() || isChatStreaming) return;
     const userMsg = inputMessage.trim();
     setInputMessage('');
-    setMessages((prev) => [...prev, { role: 'user', content: userMsg }]);
+    setMessages(prev => [...prev, { role: 'user', content: userMsg }]);
     setIsChatStreaming(true);
-
     try {
       const response = await fetch('/api/go-ai', {
         method: 'POST',
@@ -299,26 +440,130 @@ export default function GoGamePage() {
         }),
       });
       if (response.ok) {
-        setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
-        await readStream(response, (text) => {
-          setMessages((prev) => {
-            const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: text };
-            return updated;
+        setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+        await readStream(response, text => {
+          setMessages(prev => {
+            const u = [...prev];
+            u[u.length - 1] = { role: 'assistant', content: text };
+            return u;
           });
         });
       }
     } catch {
-      setMessages((prev) => [...prev, { role: 'assistant', content: '抱歉，我遇到了一点问题，请再试一次。' }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: '抱歉，遇到问题了，请再试。' }]);
     } finally {
       setIsChatStreaming(false);
     }
   }, [inputMessage, isChatStreaming, board, currentPlayer, lastMove]);
 
-  // ===== SVG棋盘渲染 =====
+  // ===== 保存棋局 =====
+  const saveGame = useCallback(async () => {
+    if (!playerId) return;
+    try {
+      const res = await fetch('/api/games', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: savedGameId,
+          player_id: playerId,
+          board_size: boardSize,
+          difficulty,
+          moves: history,
+          commentaries,
+          final_board: board,
+          black_score: score.black,
+          white_score: score.white,
+          status: 'playing',
+          title: saveTitle || `${boardSize}路${difficulty === 'easy' ? '初级' : difficulty === 'medium' ? '中级' : '高级'}对局`,
+        }),
+      });
+      const data = await res.json();
+      if (data.game) setSavedGameId(data.game.id);
+      setShowSaveDialog(false);
+      setSaveTitle('');
+    } catch {
+      // 静默失败
+    }
+  }, [playerId, savedGameId, boardSize, difficulty, history, commentaries, board, score, saveTitle]);
+
+  // ===== 载入棋局列表 =====
+  const loadGames = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/games${playerId ? `?player_id=${playerId}` : ''}`);
+      const data = await res.json();
+      if (data.games) setSavedGames(data.games as SavedGame[]);
+    } catch {
+      // 静默
+    }
+  }, [playerId]);
+
+  // ===== 载入棋局 =====
+  const loadGame = useCallback(async (gameId: number) => {
+    try {
+      const res = await fetch(`/api/games/${gameId}`);
+      const data = await res.json();
+      const game = data.game as SavedGame;
+      if (!game) return;
+
+      setBoardSize(game.board_size);
+      setDifficulty(game.difficulty);
+      setHistory(game.moves || []);
+      setCommentaries(game.commentaries || []);
+      setSavedGameId(game.id ?? null);
+      setIsReplayMode(true);
+      setReplayIndex(0);
+
+      // 重放棋步到初始状态
+      setBoard(createEmptyBoard(game.board_size));
+      setLastMove(null);
+      setCurrentPlayer('black');
+
+      // 存储复盘数据
+      setReplayMoves(game.moves || []);
+
+      setShowLoadDialog(false);
+    } catch {
+      // 静默
+    }
+  }, []);
+
+  // ===== 删除棋局 =====
+  const deleteGame = useCallback(async (gameId: number) => {
+    try {
+      await fetch(`/api/games?id=${gameId}`, { method: 'DELETE' });
+      setSavedGames(prev => prev.filter(g => g.id !== gameId));
+    } catch {
+      // 静默
+    }
+  }, []);
+
+  // ===== 复盘导航 =====
+  const replayStep = useCallback((direction: number) => {
+    const newIdx = Math.max(0, Math.min(replayMoves.length, replayIndex + direction));
+    setReplayIndex(newIdx);
+
+    // 重放到指定步数
+    let newBoard = createEmptyBoard(boardSize);
+    for (let i = 0; i < newIdx; i++) {
+      const move = replayMoves[i];
+      const result = playMove(newBoard, move.position.row, move.position.col, move.color);
+      newBoard = result.newBoard;
+    }
+    setBoard(newBoard);
+    setLastMove(newIdx > 0 ? replayMoves[newIdx - 1].position : null);
+    setCurrentPlayer(newIdx % 2 === 0 ? 'black' : 'white');
+  }, [replayIndex, replayMoves, boardSize]);
+
+  // 退出复盘
+  const exitReplay = useCallback(() => {
+    setIsReplayMode(false);
+    setReplayIndex(0);
+    restartGame();
+  }, [restartGame]);
+
+  // ===== SVG棋盘 =====
   const renderSVGBoard = () => {
     const size = boardSize;
-    // 动态计算格子大小
     const cellSize = size <= 9 ? 44 : size <= 13 ? 34 : 26;
     const padding = cellSize;
     const stoneRadius = cellSize * 0.44;
@@ -333,7 +578,6 @@ export default function GoGamePage() {
         className="max-w-full h-auto"
         style={{ filter: 'drop-shadow(0 8px 24px rgba(0,0,0,0.18))' }}
       >
-        {/* 棋盘木纹背景 */}
         <defs>
           <radialGradient id="bgGrad" cx="50%" cy="50%">
             <stop offset="0%" stopColor="#dcb87a" />
@@ -354,205 +598,169 @@ export default function GoGamePage() {
           </filter>
         </defs>
 
-        {/* 背景 */}
         <rect width={boardPx} height={boardPx} rx="6" fill="url(#bgGrad)" />
 
-        {/* 网格线 */}
         {Array.from({ length: size }, (_, i) => (
           <g key={`line-${i}`}>
-            <line
-              x1={padding} y1={padding + i * cellSize}
-              x2={padding + (size - 1) * cellSize} y2={padding + i * cellSize}
-              stroke="#6b5a3e" strokeWidth={size >= 19 ? 0.7 : 1}
-            />
-            <line
-              x1={padding + i * cellSize} y1={padding}
-              x2={padding + i * cellSize} y2={padding + (size - 1) * cellSize}
-              stroke="#6b5a3e" strokeWidth={size >= 19 ? 0.7 : 1}
-            />
+            <line x1={padding} y1={padding + i * cellSize} x2={padding + (size - 1) * cellSize} y2={padding + i * cellSize} stroke="#6b5a3e" strokeWidth={size >= 19 ? 0.7 : 1} />
+            <line x1={padding + i * cellSize} y1={padding} x2={padding + i * cellSize} y2={padding + (size - 1) * cellSize} stroke="#6b5a3e" strokeWidth={size >= 19 ? 0.7 : 1} />
           </g>
         ))}
 
-        {/* 边框加粗 */}
-        <rect
-          x={padding} y={padding}
-          width={(size - 1) * cellSize} height={(size - 1) * cellSize}
-          fill="none" stroke="#5a4a3a" strokeWidth={size >= 19 ? 1.5 : 2}
-        />
+        <rect x={padding} y={padding} width={(size - 1) * cellSize} height={(size - 1) * cellSize} fill="none" stroke="#5a4a3a" strokeWidth={size >= 19 ? 1.5 : 2} />
 
-        {/* 星位 */}
         {starPts.map(([r, c]) => (
-          <circle
-            key={`star-${r}-${c}`}
-            cx={padding + c * cellSize} cy={padding + r * cellSize}
-            r={size >= 19 ? 3 : 4}
-            fill="#5a4a3a"
-          />
+          <circle key={`star-${r}-${c}`} cx={padding + c * cellSize} cy={padding + r * cellSize} r={size >= 19 ? 3 : 4} fill="#5a4a3a" />
         ))}
 
-        {/* 坐标标签 */}
         {Array.from({ length: size }, (_, i) => (
           <g key={`label-${i}`}>
-            {/* 列标签 - 上方 */}
-            <text
-              x={padding + i * cellSize} y={padding - cellSize * 0.4}
-              textAnchor="middle" fontSize={size >= 19 ? 9 : 11}
-              fill="#8b7355" fontFamily="sans-serif"
-            >
-              {COL_LABELS[i]}
-            </text>
-            {/* 行标签 - 左侧 */}
-            <text
-              x={padding - cellSize * 0.4} y={padding + i * cellSize + 4}
-              textAnchor="middle" fontSize={size >= 19 ? 9 : 11}
-              fill="#8b7355" fontFamily="sans-serif"
-            >
-              {size - i}
-            </text>
+            <text x={padding + i * cellSize} y={padding - cellSize * 0.4} textAnchor="middle" fontSize={size >= 19 ? 9 : 11} fill="#8b7355" fontFamily="sans-serif">{COL_LABELS[i]}</text>
+            <text x={padding - cellSize * 0.4} y={padding + i * cellSize + 4} textAnchor="middle" fontSize={size >= 19 ? 9 : 11} fill="#8b7355" fontFamily="sans-serif">{size - i}</text>
           </g>
         ))}
 
-        {/* 棋子 */}
         {board.map((row, r) =>
           row.map((stone, c) => {
             if (!stone) return null;
             const isLast = lastMove?.row === r && lastMove?.col === c;
             return (
               <g key={`s-${r}-${c}`} filter="url(#stoneShadow)">
-                <circle
-                  cx={padding + c * cellSize}
-                  cy={padding + r * cellSize}
-                  r={stoneRadius}
-                  fill={stone === 'black' ? 'url(#blackStone)' : 'url(#whiteStone)'}
-                  stroke={stone === 'white' ? '#bbb' : 'none'}
-                  strokeWidth={0.5}
-                />
-                {/* 最后一手标记 */}
-                {isLast && (
-                  <circle
-                    cx={padding + c * cellSize}
-                    cy={padding + r * cellSize}
-                    r={stoneRadius * 0.28}
-                    fill={stone === 'black' ? '#fff' : '#333'}
-                  />
-                )}
+                <circle cx={padding + c * cellSize} cy={padding + r * cellSize} r={stoneRadius} fill={stone === 'black' ? 'url(#blackStone)' : 'url(#whiteStone)'} stroke={stone === 'white' ? '#bbb' : 'none'} strokeWidth={0.5} />
+                {isLast && <circle cx={padding + c * cellSize} cy={padding + r * cellSize} r={stoneRadius * 0.28} fill={stone === 'black' ? '#fff' : '#333'} />}
               </g>
             );
           })
         )}
 
-        {/* 提示标记 */}
         {showHint && !board[showHint.row][showHint.col] && (
-          <circle
-            cx={padding + showHint.col * cellSize}
-            cy={padding + showHint.row * cellSize}
-            r={stoneRadius}
-            fill="rgba(59, 130, 246, 0.25)"
-            stroke="rgba(59, 130, 246, 0.6)"
-            strokeWidth={2}
-          >
+          <circle cx={padding + showHint.col * cellSize} cy={padding + showHint.row * cellSize} r={stoneRadius} fill="rgba(59,130,246,0.25)" stroke="rgba(59,130,246,0.6)" strokeWidth={2}>
             <animate attributeName="opacity" values="0.4;0.8;0.4" dur="1.5s" repeatCount="indefinite" />
           </circle>
         )}
 
-        {/* 可点击区域（透明覆盖） */}
-        {!isAIThinking && board.map((row, r) =>
+        {!isAIThinking && !isReplayMode && board.map((row, r) =>
           row.map((stone, c) => {
             if (stone) return null;
             return (
-              <circle
-                key={`c-${r}-${c}`}
-                cx={padding + c * cellSize}
-                cy={padding + r * cellSize}
-                r={stoneRadius}
-                fill="transparent"
-                cursor="pointer"
-                onClick={() => handleMove(r, c)}
-              >
-                <animate
-                  attributeName="r"
-                  from={stoneRadius * 0.8}
-                  to={stoneRadius}
-                  dur="0.15s"
-                  begin="mouseover"
-                  fill="freeze"
-                />
-              </circle>
+              <circle key={`c-${r}-${c}`} cx={padding + c * cellSize} cy={padding + r * cellSize} r={stoneRadius} fill="transparent" cursor="pointer" onClick={() => handleMove(r, c)} />
             );
           })
         )}
-
-        {/* 悬停预览（半透明棋子）- 由CSS hover处理 */}
       </svg>
     );
   };
 
-  // 围棋规则教程
+  // 教程
   const lessons = [
     { title: '认识棋盘', content: '围棋棋盘由横竖线交叉组成，标准棋盘是19x19路。棋子要下在线的交叉点上，不是格子里面哦！我们先用9路小棋盘来练习。' },
     { title: '认识棋子', content: '围棋有黑白两色棋子，黑棋先走。双方轮流在交叉点上放一颗棋子，棋子一旦放下就不能再移动了。' },
     { title: '什么是"气"？', content: '每颗棋子旁边上下左右的空交叉点就是它的"气"。中间的棋子有4口气，边上的3口气，角落的2口气。气就像棋子的呼吸！' },
-    { title: '如何吃子', content: '当一颗棋子所有的气都被对方堵住，它就"没气"了，会被从棋盘上拿走，这就叫"提子"。就像把对方包围起来！' },
+    { title: '如何吃子', content: '当一颗棋子所有的气都被对方堵住，它就被"提"走了！就像把对方包围起来。' },
     { title: '围地获胜', content: '围棋的目的是围住更多的地盘。用你的棋子围住空交叉点，谁围的地盘大谁就赢！记住：金角银边草肚皮，先占角，再占边！' },
   ];
+
+  // ===== 登录界面 =====
+  if (showLogin) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-amber-100 via-amber-50 to-orange-50 flex items-center justify-center p-4">
+        <Card className="w-full max-w-md bg-white/95 shadow-2xl">
+          <CardHeader className="text-center">
+            <CardTitle className="text-2xl flex items-center justify-center gap-2">
+              <span className="inline-block w-7 h-7 rounded-full bg-gray-800 shadow" />
+              小围棋乐园
+              <span className="inline-block w-7 h-7 rounded-full bg-white border-2 border-gray-300 shadow" />
+            </CardTitle>
+            <p className="text-amber-600 text-sm">输入昵称开始下棋吧！</p>
+          </CardHeader>
+          <CardContent>
+            <div className="flex gap-2">
+              <Input
+                value={nickname}
+                onChange={e => setNickname(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleLogin()}
+                placeholder="你的昵称..."
+                className="flex-1"
+                maxLength={20}
+              />
+              <Button onClick={handleLogin} disabled={!nickname.trim()} className="bg-amber-700 hover:bg-amber-800">
+                进入
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-amber-100 via-amber-50 to-orange-50">
       {/* 头部 */}
-      <header className="text-center py-4 px-4">
-        <h1 className="text-3xl sm:text-4xl font-bold text-amber-800 flex items-center justify-center gap-2">
-          <span className="inline-block w-8 h-8 rounded-full bg-gray-800 shadow" />
+      <header className="text-center py-3 px-4">
+        <h1 className="text-2xl sm:text-3xl font-bold text-amber-800 flex items-center justify-center gap-2">
+          <span className="inline-block w-6 h-6 rounded-full bg-gray-800 shadow" />
           小围棋乐园
-          <span className="inline-block w-8 h-8 rounded-full bg-white border-2 border-gray-300 shadow" />
+          <span className="inline-block w-6 h-6 rounded-full bg-white border-2 border-gray-300 shadow" />
         </h1>
-        <p className="text-amber-600 mt-1 text-sm">和AI一起学围棋，下棋真快乐！</p>
+        <div className="flex items-center justify-center gap-2 mt-2 flex-wrap">
+          {/* 用户信息 */}
+          <Badge variant="outline" className="text-xs gap-1">
+            <User className="w-3 h-3" /> {nickname}
+          </Badge>
 
-        {/* 棋盘尺寸选择 */}
-        <div className="flex items-center justify-center gap-2 mt-3">
-          <span className="text-sm text-amber-700 font-medium">棋盘大小：</span>
+          {/* 棋盘尺寸 */}
           {BOARD_SIZES.map(({ size, label, desc }) => (
             <Button
               key={size}
               size="sm"
               variant={boardSize === size ? 'default' : 'outline'}
               onClick={() => changeBoardSize(size)}
-              className={boardSize === size ? 'bg-amber-700 hover:bg-amber-800' : 'border-amber-300 text-amber-700'}
+              className={boardSize === size ? 'bg-amber-700 hover:bg-amber-800 h-7 text-xs' : 'h-7 text-xs'}
+              disabled={isReplayMode}
             >
-              {label}
-              <span className="ml-1 text-xs opacity-70">{desc}</span>
+              {label}<span className="ml-0.5 opacity-60">{desc}</span>
+            </Button>
+          ))}
+
+          {/* 难度 */}
+          {DIFFICULTIES.map(({ key, label, emoji }) => (
+            <Button
+              key={key}
+              size="sm"
+              variant={difficulty === key ? 'default' : 'outline'}
+              onClick={() => { setDifficulty(key); restartGame(); }}
+              className={difficulty === key ? 'bg-amber-700 hover:bg-amber-800 h-7 text-xs' : 'h-7 text-xs'}
+              disabled={isReplayMode}
+            >
+              {emoji} {label}
             </Button>
           ))}
         </div>
       </header>
 
       {/* 主内容 */}
-      <div className="max-w-7xl mx-auto px-4 pb-8 grid grid-cols-1 lg:grid-cols-12 gap-4">
+      <div className="max-w-7xl mx-auto px-3 pb-8 grid grid-cols-1 lg:grid-cols-12 gap-3">
         {/* 左侧面板 */}
-        <div className="lg:col-span-3 space-y-4">
+        <div className="lg:col-span-3 space-y-3">
           {/* 比分 */}
           <Card className="bg-white/90 shadow-lg">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base flex items-center gap-2">
-                <Trophy className="w-4 h-4 text-amber-500" /> 当前局面
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
+            <CardContent className="py-3">
               <div className="flex justify-around text-center">
                 <div className="flex flex-col items-center">
-                  <div className="w-8 h-8 rounded-full bg-gray-800 shadow mb-1" />
+                  <div className="w-7 h-7 rounded-full bg-gray-800 shadow mb-1" />
                   <span className="text-xs text-gray-500">黑方(你)</span>
-                  <span className="text-xl font-bold">{score.black}</span>
+                  <span className="text-lg font-bold">{score.black}</span>
                 </div>
-                <div className="flex items-center text-gray-300 text-sm">VS</div>
+                <div className="flex items-center text-gray-300 text-xs">VS</div>
                 <div className="flex flex-col items-center">
-                  <div className="w-8 h-8 rounded-full bg-white border-2 border-gray-300 shadow mb-1" />
+                  <div className="w-7 h-7 rounded-full bg-white border-2 border-gray-300 shadow mb-1" />
                   <span className="text-xs text-gray-500">白方(AI)</span>
-                  <span className="text-xl font-bold">{score.white}</span>
+                  <span className="text-lg font-bold">{score.white}</span>
                 </div>
               </div>
-              <div className="mt-3 text-center">
+              <div className="mt-2 text-center">
                 <Badge variant={currentPlayer === 'black' ? 'default' : 'secondary'} className="text-xs px-3">
-                  {isAIThinking ? 'AI思考中...' : currentPlayer === 'black' ? '轮到你落子' : '白方回合'}
+                  {isReplayMode ? `复盘 ${replayIndex}/${replayMoves.length}步` : isAIThinking ? 'AI思考中...' : currentPlayer === 'black' ? '轮到你落子' : '白方回合'}
                   {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
                 </Badge>
               </div>
@@ -561,51 +769,119 @@ export default function GoGamePage() {
 
           {/* 控制按钮 */}
           <Card className="bg-white/90 shadow-lg">
-            <CardContent className="pt-4 grid grid-cols-2 gap-2">
-              <Button onClick={restartGame} variant="outline" size="sm" className="gap-1">
+            <CardContent className="py-3 grid grid-cols-2 gap-1.5">
+              <Button onClick={restartGame} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={isReplayMode}>
                 <RotateCcw className="w-3 h-3" /> 重新开始
               </Button>
-              <Button onClick={undoMove} variant="outline" size="sm" className="gap-1" disabled={history.length === 0}>
+              <Button onClick={undoMove} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={history.length === 0 || isReplayMode}>
                 <RotateCcw className="w-3 h-3" /> 悔棋
               </Button>
-              <Button onClick={showHintFn} variant="secondary" size="sm" className="gap-1">
+              <Button onClick={showHintFn} variant="secondary" size="sm" className="gap-1 h-8 text-xs" disabled={isReplayMode}>
                 <Lightbulb className="w-3 h-3" /> 提示
               </Button>
-              <Button onClick={getTeaching} variant="secondary" size="sm" className="gap-1" disabled={isTeachStreaming}>
+              <Button onClick={getTeaching} variant="secondary" size="sm" className="gap-1 h-8 text-xs" disabled={isTeachStreaming}>
                 <HelpCircle className="w-3 h-3" /> 教学
               </Button>
+
+              {/* 保存/载入 */}
+              <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
+                <DialogTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={history.length === 0}>
+                    <Save className="w-3 h-3" /> 保存棋局
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>保存棋局</DialogTitle>
+                  </DialogHeader>
+                  <Input value={saveTitle} onChange={e => setSaveTitle(e.target.value)} placeholder="棋局名称（可选）" />
+                  <Button onClick={saveGame} className="bg-amber-700 hover:bg-amber-800">确认保存</Button>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog open={showLoadDialog} onOpenChange={(open) => { setShowLoadDialog(open); if (open) loadGames(); }}>
+                <DialogTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-1 h-8 text-xs">
+                    <FolderOpen className="w-3 h-3" /> 载入棋局
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-h-[70vh]">
+                  <DialogHeader>
+                    <DialogTitle>载入棋局</DialogTitle>
+                  </DialogHeader>
+                  <ScrollArea className="max-h-[50vh]">
+                    {savedGames.length === 0 ? (
+                      <p className="text-center text-gray-400 text-sm py-8">还没有保存的棋局</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {savedGames.map(g => (
+                          <div key={g.id} className="flex items-center justify-between p-2 border rounded-lg hover:bg-gray-50">
+                            <button
+                              className="flex-1 text-left"
+                              onClick={() => loadGame(g.id!)}
+                            >
+                              <p className="text-sm font-medium">{g.title || '未命名棋局'}</p>
+                              <p className="text-xs text-gray-400">
+                                {g.board_size}路 | {g.difficulty === 'easy' ? '初级' : g.difficulty === 'medium' ? '中级' : '高级'} | 黑{g.black_score} - 白{g.white_score}
+                              </p>
+                            </button>
+                            <Button variant="ghost" size="sm" onClick={() => deleteGame(g.id!)} className="text-red-400 hover:text-red-600">
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </ScrollArea>
+                </DialogContent>
+              </Dialog>
             </CardContent>
           </Card>
 
-          {/* 学习步骤 */}
+          {/* 复盘控制 */}
+          {isReplayMode && (
+            <Card className="bg-blue-50 border-blue-200">
+              <CardHeader className="pb-1">
+                <CardTitle className="text-sm text-blue-700">复盘模式</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-center gap-2">
+                  <Button size="sm" variant="outline" onClick={() => replayStep(-1)} disabled={replayIndex <= 0}>
+                    <ChevronLeft className="w-4 h-4" />
+                  </Button>
+                  <span className="text-sm font-medium min-w-[60px] text-center">{replayIndex}/{replayMoves.length}</span>
+                  <Button size="sm" variant="outline" onClick={() => replayStep(1)} disabled={replayIndex >= replayMoves.length}>
+                    <ChevronRight className="w-4 h-4" />
+                  </Button>
+                </div>
+                <Button size="sm" variant="destructive" className="w-full mt-2" onClick={exitReplay}>
+                  退出复盘
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* 教程 */}
           <Card className="bg-white/90 shadow-lg">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base flex items-center gap-2">
-                <BookOpen className="w-4 h-4 text-blue-500" /> 围棋入门
-              </CardTitle>
+            <CardHeader className="pb-1">
+              <CardTitle className="text-sm flex items-center gap-1"><BookOpen className="w-4 h-4 text-blue-500" /> 围棋入门</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-sm font-medium text-amber-800 mb-1">{lessons[lessonStep].title}</p>
-              <p className="text-xs text-gray-600 leading-relaxed">{lessons[lessonStep].content}</p>
-              <div className="flex justify-between mt-3">
-                <Button size="sm" variant="outline" onClick={() => setLessonStep(Math.max(0, lessonStep - 1))} disabled={lessonStep === 0}>
-                  上一步
-                </Button>
+              <p className="text-xs font-medium text-amber-800">{lessons[lessonStep].title}</p>
+              <p className="text-xs text-gray-600 leading-relaxed mt-1">{lessons[lessonStep].content}</p>
+              <div className="flex justify-between mt-2">
+                <Button size="sm" variant="outline" onClick={() => setLessonStep(Math.max(0, lessonStep - 1))} disabled={lessonStep === 0} className="h-7 text-xs">上一步</Button>
                 <span className="text-xs text-gray-400 self-center">{lessonStep + 1}/{lessons.length}</span>
-                <Button size="sm" variant="default" onClick={() => setLessonStep(Math.min(lessons.length - 1, lessonStep + 1))} disabled={lessonStep === lessons.length - 1}>
-                  下一步
-                </Button>
+                <Button size="sm" variant="default" onClick={() => setLessonStep(Math.min(lessons.length - 1, lessonStep + 1))} disabled={lessonStep === lessons.length - 1} className="h-7 text-xs">下一步</Button>
               </div>
             </CardContent>
           </Card>
 
-          {/* AI教学反馈 */}
+          {/* AI教学 */}
           {teachingMessage && (
             <Card className="bg-gradient-to-br from-blue-50 to-purple-50 border-blue-200">
               <CardHeader className="pb-1">
-                <CardTitle className="text-sm flex items-center gap-1 text-blue-700">
-                  <MessageCircle className="w-4 h-4" /> 小围棋说
-                </CardTitle>
+                <CardTitle className="text-xs flex items-center gap-1 text-blue-700"><MessageCircle className="w-3 h-3" /> 小围棋说</CardTitle>
               </CardHeader>
               <CardContent>
                 <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">{teachingMessage}</p>
@@ -615,94 +891,97 @@ export default function GoGamePage() {
           )}
         </div>
 
-        {/* 棋盘区域 */}
+        {/* 棋盘 */}
         <div className="lg:col-span-5 flex flex-col items-center">
           <div className="overflow-x-auto w-full flex justify-center">
             {renderSVGBoard()}
           </div>
-
-          {/* 每步棋解说 */}
-          <Card className="w-full mt-3 bg-gradient-to-r from-amber-50 to-orange-50 border-amber-200">
-            <CardContent className="py-3 px-4">
-              <div className="flex items-start gap-2">
-                <Play className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
-                <div className="min-h-[2rem]">
-                  {lastMove && (
-                    <span className="text-xs text-amber-600 font-medium">
-                      {board[lastMove.row][lastMove.col] === 'black' ? '黑' : '白'}方 {positionToCoordinate(lastMove.row, lastMove.col)} -{' '}
-                    </span>
-                  )}
-                  {isCommentaryStreaming && !moveCommentary ? (
-                    <span className="text-xs text-gray-400 flex items-center gap-1">
-                      <Spinner className="w-3 h-3" /> AI正在解说...
-                    </span>
-                  ) : (
-                    <span className="text-sm text-gray-700">{moveCommentary || '点击棋盘交叉点开始落子'}</span>
-                  )}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
         </div>
 
-        {/* 右侧聊天面板 */}
-        <div className="lg:col-span-4">
-          <Card className="bg-white/95 shadow-lg h-full flex flex-col">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base flex items-center gap-2">
+        {/* 右侧：解说+聊天 */}
+        <div className="lg:col-span-4 space-y-3">
+          {/* 解说历史 */}
+          <Card className="bg-white/95 shadow-lg">
+            <CardHeader className="pb-1">
+              <CardTitle className="text-sm flex items-center gap-1">
+                <Play className="w-4 h-4 text-amber-600" /> 棋局解说
+                {commentaries.length > 0 && <Badge variant="secondary" className="text-xs ml-1">{commentaries.length}</Badge>}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <ScrollArea className="h-[280px]">
+                <div className="space-y-2 pr-1">
+                  {commentaries.length === 0 && !isCommentaryStreaming && (
+                    <p className="text-center text-gray-300 text-xs py-4">落子后，解说员会为你解说每一步</p>
+                  )}
+                  {commentaries.map((entry, idx) => (
+                    <div key={idx} className={`rounded-lg px-3 py-2 ${entry.color === 'black' ? 'bg-gray-50 border-l-3 border-gray-700' : 'bg-orange-50 border-l-3 border-orange-400'}`}>
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <div className={`w-4 h-4 rounded-full ${entry.color === 'black' ? 'bg-gray-800' : 'bg-white border border-gray-300'}`} />
+                        <span className="text-xs font-medium text-gray-600">
+                          第{entry.moveIndex + 1}手 | {entry.color === 'black' ? '黑方' : '白方'} {positionToCoordinate(entry.position.row, entry.position.col)}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-700 leading-relaxed">{entry.commentary}</p>
+                    </div>
+                  ))}
+                  {/* 当前正在流式输出的解说 */}
+                  {isCommentaryStreaming && streamingText && (
+                    <div className="rounded-lg px-3 py-2 bg-amber-50 border-l-3 border-amber-400">
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <Spinner className="w-3 h-3" />
+                        <span className="text-xs text-gray-400">解说中...</span>
+                      </div>
+                      <p className="text-xs text-gray-700 leading-relaxed">{streamingText}</p>
+                    </div>
+                  )}
+                  {isCommentaryStreaming && !streamingText && (
+                    <div className="flex items-center gap-2 text-gray-400 text-xs py-2">
+                      <Spinner className="w-3 h-3" /> 解说员正在分析...
+                    </div>
+                  )}
+                </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+
+          {/* 聊天 */}
+          <Card className="bg-white/95 shadow-lg">
+            <CardHeader className="pb-1">
+              <CardTitle className="text-sm flex items-center gap-1">
                 <MessageCircle className="w-4 h-4 text-purple-500" /> 问我围棋问题
               </CardTitle>
-              <p className="text-xs text-gray-400">我会结合当前棋局来回答你</p>
             </CardHeader>
-            <CardContent className="flex-1 flex flex-col pt-0">
-              <ScrollArea className="flex-1 h-[400px] lg:h-[500px] mb-3">
-                <div className="space-y-3 pr-2">
+            <CardContent className="pt-0">
+              <ScrollArea className="h-[200px] mb-2">
+                <div className="space-y-2 pr-1">
                   {messages.length === 0 && (
-                    <div className="text-center text-gray-300 text-sm py-8">
-                      <p>试试问我：</p>
-                      <p className="mt-1">&ldquo;我现在应该下在哪里？&rdquo;</p>
-                      <p>&ldquo;这步棋是什么意思？&rdquo;</p>
-                      <p>&ldquo;怎么才能吃掉对方的棋子？&rdquo;</p>
+                    <div className="text-center text-gray-300 text-xs py-4">
+                      <p>结合当前棋局回答你的问题</p>
                     </div>
                   )}
                   {messages.map((msg, idx) => (
                     <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div
-                        className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${
-                          msg.role === 'user'
-                            ? 'bg-purple-500 text-white rounded-br-sm'
-                            : 'bg-gray-100 text-gray-800 rounded-bl-sm'
-                        }`}
-                      >
-                        {msg.content || (
-                          <span className="flex items-center gap-1">
-                            <Spinner className="w-3 h-3" /> 思考中...
-                          </span>
-                        )}
+                      <div className={`max-w-[85%] rounded-2xl px-3 py-1.5 text-xs ${msg.role === 'user' ? 'bg-purple-500 text-white rounded-br-sm' : 'bg-gray-100 text-gray-800 rounded-bl-sm'}`}>
+                        {msg.content || <span className="flex items-center gap-1"><Spinner className="w-3 h-3" /> 思考中...</span>}
                       </div>
                     </div>
                   ))}
                   <div ref={chatEndRef} />
                 </div>
               </ScrollArea>
-
-              <div className="flex gap-2">
+              <div className="flex gap-1.5">
                 <input
                   type="text"
                   value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && !isChatStreaming && sendMessage()}
-                  placeholder="问我关于围棋的问题..."
-                  className="flex-1 px-3 py-2 border rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"
+                  onChange={e => setInputMessage(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && !isChatStreaming && sendMessage()}
+                  placeholder="问我围棋问题..."
+                  className="flex-1 px-3 py-1.5 border rounded-full text-xs focus:outline-none focus:ring-2 focus:ring-purple-400"
                   disabled={isChatStreaming}
                 />
-                <Button
-                  onClick={sendMessage}
-                  disabled={!inputMessage.trim() || isChatStreaming}
-                  size="sm"
-                  className="bg-purple-500 hover:bg-purple-600 rounded-full px-3"
-                >
-                  <Send className="w-4 h-4" />
+                <Button onClick={sendMessage} disabled={!inputMessage.trim() || isChatStreaming} size="sm" className="bg-purple-500 hover:bg-purple-600 rounded-full px-2.5 h-8">
+                  <Send className="w-3.5 h-3.5" />
                 </Button>
               </div>
             </CardContent>
