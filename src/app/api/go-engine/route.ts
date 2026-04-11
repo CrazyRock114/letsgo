@@ -10,16 +10,28 @@ import fs from "fs";
 const KATAGO_PATH = "/usr/local/katago/katago";
 const KATAGO_MODEL = "/usr/local/katago/g170-b6c96-s175395328-d26788732.bin.gz";
 const KATAGO_CONFIG = "/usr/local/katago/gtp.cfg";
-const GNUGO_PATH = "/usr/games/gnugo";
+// GnuGo：优先项目捆绑版本（生产环境），备选系统安装路径（开发环境）
+const GNUGO_PATHS = [
+  process.cwd() + "/bin/gnugo",  // 项目捆绑，生产环境可用
+  "/usr/games/gnugo",             // 系统安装，开发环境
+];
 
 // 检查KataGo是否可用
 function isKataGoAvailable(): boolean {
   return fs.existsSync(KATAGO_PATH) && fs.existsSync(KATAGO_MODEL);
 }
 
+// 查找可用的GnuGo路径
+function findGnuGoPath(): string | null {
+  for (const p of GNUGO_PATHS) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 // 检查GnuGo是否可用
 function isGnuGoAvailable(): boolean {
-  return fs.existsSync(GNUGO_PATH);
+  return findGnuGoPath() !== null;
 }
 
 // 围棋坐标转GTP坐标
@@ -217,7 +229,10 @@ async function getGnuGoMove(
   const komi = getKomi(boardSize);
   const gnugoLevel = getGnuGoLevel(difficulty);
 
-  const proc = spawn(GNUGO_PATH, [
+  const gnugoPath = findGnuGoPath();
+  if (!gnugoPath) throw new Error("GnuGo not found");
+
+  const proc = spawn(gnugoPath, [
     "--mode", "gtp",
     "--level", String(gnugoLevel),
     "--boardsize", String(boardSize),
