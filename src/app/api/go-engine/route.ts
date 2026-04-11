@@ -300,33 +300,44 @@ async function getGnuGoMove(
 
 export async function POST(request: NextRequest) {
   try {
-    const { boardSize, moves, difficulty } = await request.json();
+    const { boardSize, moves, difficulty, engine: requestedEngine } = await request.json();
 
-    // 优先使用KataGo（强得多），不可用时回退GnuGo
-    if (isKataGoAvailable()) {
+    // 根据请求的引擎选择
+    if (requestedEngine === "katago" && isKataGoAvailable()) {
       try {
         const result = await getKataGoMove(boardSize, moves, difficulty);
         return NextResponse.json(result);
       } catch (katagoError) {
-        console.error("KataGo failed, falling back to GnuGo:", katagoError);
-        // KataGo失败，回退GnuGo
+        console.error("KataGo failed:", katagoError);
+        return NextResponse.json({ move: null, engine: "katago", engineError: true });
       }
     }
 
-    // 回退到GnuGo
-    if (isGnuGoAvailable()) {
+    if (requestedEngine === "gnugo" && isGnuGoAvailable()) {
       try {
         const result = await getGnuGoMove(boardSize, moves, difficulty);
         return NextResponse.json(result);
       } catch (gtpError) {
-        console.error("GTP error:", gtpError);
+        console.error("GnuGo failed:", gtpError);
+        return NextResponse.json({ move: null, engine: "gnugo", engineError: true });
       }
     }
 
-    // 所有引擎不可用，返回标识让前端用本地AI
-    return NextResponse.json({ move: null, engine: "none", noEngine: true });
+    // requestedEngine === "local" 或引擎不可用：返回标识让前端用本地AI
+    return NextResponse.json({ move: null, engine: requestedEngine || "local", noEngine: true });
   } catch (error) {
     console.error("Go engine API error:", error);
     return NextResponse.json({ error: "引擎错误" }, { status: 500 });
   }
+}
+
+// GET: 返回可用引擎列表
+export async function GET() {
+  return NextResponse.json({
+    engines: [
+      { id: "katago", name: "KataGo", available: isKataGoAvailable(), desc: "深度学习引擎，棋力最强" },
+      { id: "gnugo", name: "GnuGo", available: isGnuGoAvailable(), desc: "经典围棋引擎，棋力扎实" },
+      { id: "local", name: "本地AI", available: true, desc: "内置启发式AI，随时可用" },
+    ],
+  });
 }

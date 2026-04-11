@@ -61,6 +61,14 @@ const DIFFICULTIES = [
   { key: 'hard', label: '高级', emoji: '🐉', desc: 'AI全力出击' },
 ] as const;
 
+type EngineId = 'katago' | 'gnugo' | 'local';
+
+const ENGINE_OPTIONS: { id: EngineId; name: string; desc: string }[] = [
+  { id: 'katago', name: 'KataGo', desc: '深度学习引擎' },
+  { id: 'gnugo', name: 'GnuGo', desc: '经典围棋引擎' },
+  { id: 'local', name: '本地AI', desc: '内置启发式' },
+];
+
 const COL_LABELS = 'ABCDEFGHJKLMNOPQRST';
 
 // 星位坐标
@@ -125,6 +133,8 @@ export default function GoGamePage() {
   // ===== 游戏状态 =====
   const [boardSize, setBoardSize] = useState(9);
   const [difficulty, setDifficulty] = useState<string>('easy');
+  const [engine, setEngine] = useState<EngineId>('local');
+  const [availableEngines, setAvailableEngines] = useState<Record<EngineId, boolean>>({ katago: false, gnugo: false, local: true });
   const [board, setBoard] = useState<Board>(() => createEmptyBoard(9));
   const [currentPlayer, setCurrentPlayer] = useState<Stone>('black');
   const [history, setHistory] = useState<MoveEntry[]>([]);
@@ -187,6 +197,26 @@ export default function GoGamePage() {
   const [encCategory, setEncCategory] = useState<string>('all');
   const [encSearch, setEncSearch] = useState('');
   const [selectedTerm, setSelectedTerm] = useState<GoTerm | null>(null);
+
+  // 检测可用引擎
+  useEffect(() => {
+    fetch('/api/go-engine')
+      .then(res => res.json())
+      .then(data => {
+        if (data.engines) {
+          const avail: Record<EngineId, boolean> = { katago: false, gnugo: false, local: true };
+          for (const e of data.engines) {
+            avail[e.id as EngineId] = e.available;
+          }
+          setAvailableEngines(avail);
+          // 自动选择最高可用引擎
+          if (avail.katago) setEngine('katago');
+          else if (avail.gnugo) setEngine('gnugo');
+          else setEngine('local');
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // 计算比分（白方含贴目）
   useEffect(() => {
@@ -341,49 +371,51 @@ export default function GoGamePage() {
       const validMoves = getValidMoves(newBoard, 'white');
       if (validMoves.length > 0) {
         let aiMove: Position = validMoves[0];
+        let usedEngine = false;
 
-        // 尝试使用GnuGo引擎
-        let usedGnuGo = false;
-        try {
-          const moveHistoryForEngine = historyWithThisMove.map(m => ({
-            row: m.position.row,
-            col: m.position.col,
-            color: m.color,
-          }));
-          const res = await fetch('/api/go-engine', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              boardSize,
-              moves: moveHistoryForEngine,
-              difficulty,
-            }),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.move && isValidMove(newBoard, data.move.row, data.move.col, 'white')) {
-              aiMove = data.move;
-              usedGnuGo = true;
-            } else if (data.pass) {
-              // AI停手
-              const newPasses = consecutivePasses + 1;
-              setConsecutivePasses(newPasses);
-              if (newPasses >= 2) {
-                const result = calculateFinalScore(newBoard);
-                setGameEnded(true);
-                setGameResult(result);
+        // 根据引擎选择获取AI落子
+        if (engine !== 'local') {
+          try {
+            const moveHistoryForEngine = historyWithThisMove.map(m => ({
+              row: m.position.row,
+              col: m.position.col,
+              color: m.color,
+            }));
+            const res = await fetch('/api/go-engine', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                boardSize,
+                moves: moveHistoryForEngine,
+                difficulty,
+                engine,
+              }),
+            });
+            if (res.ok) {
+              const data = await res.json();
+              if (data.move && isValidMove(newBoard, data.move.row, data.move.col, 'white')) {
+                aiMove = data.move;
+                usedEngine = true;
+              } else if (data.pass) {
+                const newPasses = consecutivePasses + 1;
+                setConsecutivePasses(newPasses);
+                if (newPasses >= 2) {
+                  const result = calculateFinalScore(newBoard);
+                  setGameEnded(true);
+                  setGameResult(result);
+                }
+                setCurrentPlayer('black');
+                setIsAIThinking(false);
+                return;
               }
-              setCurrentPlayer('black');
-              setIsAIThinking(false);
-              return;
             }
+          } catch {
+            // 引擎失败，使用本地AI
           }
-        } catch {
-          // GnuGo引擎失败，使用本地AI
         }
 
-        if (!usedGnuGo) {
-          // 本地AI兜底
+        if (!usedEngine) {
+          // 本地AI
           if (difficulty === 'hard') {
             aiMove = hardAIMove(newBoard, 'white') || validMoves[0];
           } else if (difficulty === 'medium') {
@@ -431,7 +463,7 @@ export default function GoGamePage() {
       setCurrentPlayer('black');
       setIsAIThinking(false);
     }
-  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, history, requestCommentary, gameEnded, consecutivePasses, boardSize]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, engine, history, requestCommentary, gameEnded, consecutivePasses, boardSize]);
 
 
   // ===== 悔棋 =====
@@ -501,40 +533,44 @@ export default function GoGamePage() {
 
     // AI正常落子
     let aiMove: Position = validMoves[0];
-    let usedGnuGo = false;
-    try {
-      const moveHistoryForEngine = history.map(m => ({
-        row: m.position.row,
-        col: m.position.col,
-        color: m.color,
-      }));
-      const res = await fetch('/api/go-engine', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          boardSize,
-          moves: moveHistoryForEngine,
-          difficulty,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.move && isValidMove(board, data.move.row, data.move.col, 'white')) {
-          aiMove = data.move;
-          usedGnuGo = true;
-        } else if (data.pass) {
-          const result = calculateFinalScore(board);
-          setGameEnded(true);
-          setGameResult(result);
-          setIsAIThinking(false);
-          return;
+    let usedEngine = false;
+
+    if (engine !== 'local') {
+      try {
+        const moveHistoryForEngine = history.map(m => ({
+          row: m.position.row,
+          col: m.position.col,
+          color: m.color,
+        }));
+        const res = await fetch('/api/go-engine', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            boardSize,
+            moves: moveHistoryForEngine,
+            difficulty,
+            engine,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.move && isValidMove(board, data.move.row, data.move.col, 'white')) {
+            aiMove = data.move;
+            usedEngine = true;
+          } else if (data.pass) {
+            const result = calculateFinalScore(board);
+            setGameEnded(true);
+            setGameResult(result);
+            setIsAIThinking(false);
+            return;
+          }
         }
+      } catch {
+        // 引擎失败，使用本地AI
       }
-    } catch {
-      // GnuGo失败，使用本地AI
     }
 
-    if (!usedGnuGo) {
+    if (!usedEngine) {
       if (difficulty === 'hard') {
         aiMove = hardAIMove(board, 'white') || validMoves[0];
       } else if (difficulty === 'medium') {
@@ -572,7 +608,7 @@ export default function GoGamePage() {
 
     setCurrentPlayer('black');
     setIsAIThinking(false);
-  }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, history, requestCommentary, boardSize]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, engine, history, requestCommentary, boardSize]);
 
   // ===== 提示 =====
   const showHintFn = useCallback(() => {
@@ -876,6 +912,33 @@ export default function GoGamePage() {
               {label}<span className="ml-0.5 opacity-60">{desc}</span>
             </Button>
           ))}
+
+          {/* 引擎选择 */}
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] text-amber-600 mr-0.5">引擎</span>
+            {ENGINE_OPTIONS.map(({ id, name, desc }) => {
+              const avail = availableEngines[id];
+              return (
+                <button
+                  key={id}
+                  onClick={() => { if (avail) { setEngine(id); restartGame(); } }}
+                  disabled={isReplayMode || !avail}
+                  title={avail ? desc : `${name}不可用`}
+                  className={`
+                    h-7 px-2 text-xs rounded-md border transition-colors
+                    ${engine === id && avail
+                      ? 'bg-amber-700 text-white border-amber-700 hover:bg-amber-800'
+                      : avail
+                        ? 'bg-white border-gray-200 hover:border-amber-400 text-gray-700'
+                        : 'bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed line-through'
+                    }
+                  `}
+                >
+                  {name}
+                </button>
+              );
+            })}
+          </div>
 
           {/* 难度 */}
           {DIFFICULTIES.map(({ key, label, emoji }) => (
