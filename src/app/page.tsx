@@ -121,7 +121,6 @@ export default function GoGamePage() {
   // ===== 玩家身份 =====
   const [nickname, setNickname] = useState('');
   const [playerId, setPlayerId] = useState<number | null>(null);
-  const [showLogin, setShowLogin] = useState(true);
 
   // ===== 游戏状态 =====
   const [boardSize, setBoardSize] = useState(9);
@@ -204,25 +203,30 @@ export default function GoGamePage() {
   }, [messages]);
 
   // ===== 登录 =====
-  const handleLogin = useCallback(async () => {
-    if (!nickname.trim()) return;
+  // ===== 保存时注册/查找玩家 =====
+  const ensurePlayer = useCallback(async () => {
+    if (playerId) return playerId;
+    const name = nickname.trim() || '棋手';
     try {
       const res = await fetch('/api/players', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nickname: nickname.trim() }),
+        body: JSON.stringify({ nickname: name }),
       });
       const data = await res.json();
       if (data.player) {
         setPlayerId(data.player.id);
-        setShowLogin(false);
+        if (!nickname.trim()) setNickname(name);
+        return data.player.id;
       }
     } catch {
-      // 降级：允许无身份使用
-      setPlayerId(0);
-      setShowLogin(false);
+      // 降级
     }
-  }, [nickname]);
+    const fallbackId = 0;
+    setPlayerId(fallbackId);
+    if (!nickname.trim()) setNickname(name);
+    return fallbackId;
+  }, [nickname, playerId]);
 
   // ===== 切换棋盘大小 =====
   const changeBoardSize = useCallback((newSize: number) => {
@@ -645,14 +649,15 @@ export default function GoGamePage() {
 
   // ===== 保存棋局 =====
   const saveGame = useCallback(async () => {
-    if (!playerId) return;
+    const pid = await ensurePlayer();
+    if (!pid && pid !== 0) return;
     try {
       const res = await fetch('/api/games', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: savedGameId,
-          player_id: playerId,
+          player_id: pid,
           board_size: boardSize,
           difficulty,
           moves: history,
@@ -671,7 +676,7 @@ export default function GoGamePage() {
     } catch {
       // 静默失败
     }
-  }, [playerId, savedGameId, boardSize, difficulty, history, commentaries, board, score, saveTitle]);
+  }, [ensurePlayer, savedGameId, boardSize, difficulty, history, commentaries, board, score, saveTitle]);
 
   // ===== 载入棋局列表 =====
   const loadGames = useCallback(async () => {
@@ -843,42 +848,8 @@ export default function GoGamePage() {
   const currentChapter = GO_TUTORIAL[tutorialChapterIdx];
   const currentStep = currentChapter?.steps[tutorialStepIdx];
 
-  // ===== 登录界面 =====
-  if (showLogin) {
-    return (
-      <div className="min-h-[100dvh] bg-gradient-to-b from-amber-100 via-amber-50 to-orange-50 flex items-center justify-center p-4">
-        <Card className="w-full max-w-md bg-white/95 shadow-2xl">
-          <CardHeader className="text-center">
-            <CardTitle className="text-2xl flex items-center justify-center gap-2">
-              <span className="inline-block w-7 h-7 rounded-full bg-gray-800 shadow" />
-              小围棋乐园
-              <span className="inline-block w-7 h-7 rounded-full bg-white border-2 border-gray-300 shadow" />
-            </CardTitle>
-            <p className="text-amber-600 text-sm">输入昵称开始下棋吧！</p>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Input
-              value={nickname}
-              onChange={e => setNickname(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleLogin()}
-              placeholder="你的昵称..."
-              maxLength={20}
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              enterKeyHint="done"
-            />
-            <Button onClick={handleLogin} disabled={!nickname.trim()} className="w-full bg-amber-700 hover:bg-amber-800 h-12 text-base">
-              进入
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-gradient-to-b from-amber-100 via-amber-50 to-orange-50">
+    <div className="min-h-[100dvh] bg-gradient-to-b from-amber-100 via-amber-50 to-orange-50">
       {/* 头部 */}
       <header className="text-center py-3 px-4">
         <h1 className="text-2xl sm:text-3xl font-bold text-amber-800 flex items-center justify-center gap-2">
@@ -889,7 +860,7 @@ export default function GoGamePage() {
         <div className="flex items-center justify-center gap-2 mt-2 flex-wrap">
           {/* 用户信息 */}
           <Badge variant="outline" className="text-xs gap-1">
-            <User className="w-3 h-3" /> {nickname}
+            <User className="w-3 h-3" /> {nickname || '棋手'}
           </Badge>
 
           {/* 棋盘尺寸 */}
@@ -976,8 +947,11 @@ export default function GoGamePage() {
                   <DialogHeader>
                     <DialogTitle>保存棋局</DialogTitle>
                   </DialogHeader>
-                  <Input value={saveTitle} onChange={e => setSaveTitle(e.target.value)} placeholder="棋局名称（可选）" />
-                  <Button onClick={saveGame} className="bg-amber-700 hover:bg-amber-800">确认保存</Button>
+                  <div className="space-y-3">
+                    <Input value={nickname} onChange={e => setNickname(e.target.value)} placeholder="你的昵称" maxLength={20} />
+                    <Input value={saveTitle} onChange={e => setSaveTitle(e.target.value)} placeholder="棋局名称（可选）" />
+                    <Button onClick={saveGame} className="w-full bg-amber-700 hover:bg-amber-800">确认保存</Button>
+                  </div>
                 </DialogContent>
               </Dialog>
 
