@@ -1,56 +1,107 @@
-# 项目上下文
+# 小围棋乐园 - 项目规范
 
-### 版本技术栈
+## 项目概述
+
+专为儿童设计的围棋AI对弈与教学平台，通过有趣可爱的界面和AI互动，帮助孩子轻松学习围棋。
+
+## 技术栈
 
 - **Framework**: Next.js 16 (App Router)
 - **Core**: React 19
 - **Language**: TypeScript 5
 - **UI 组件**: shadcn/ui (基于 Radix UI)
 - **Styling**: Tailwind CSS 4
+- **AI 集成**: coze-coding-dev-sdk (LLM)
 
-## 目录结构
+## 项目结构
 
 ```
-├── public/                 # 静态资源
-├── scripts/                # 构建与启动脚本
-│   ├── build.sh            # 构建脚本
-│   ├── dev.sh              # 开发环境启动脚本
-│   ├── prepare.sh          # 预处理脚本
-│   └── start.sh            # 生产环境启动脚本
-├── src/
-│   ├── app/                # 页面路由与布局
-│   ├── components/ui/      # Shadcn UI 组件库
-│   ├── hooks/              # 自定义 Hooks
-│   ├── lib/                # 工具库
-│   │   └── utils.ts        # 通用工具函数 (cn)
-│   └── server.ts           # 自定义服务端入口
-├── next.config.ts          # Next.js 配置
-├── package.json            # 项目依赖管理
-└── tsconfig.json           # TypeScript 配置
+src/
+├── app/
+│   ├── api/
+│   │   └── go-ai/
+│   │       └── route.ts     # AI对弈与教学API
+│   ├── globals.css           # 全局样式
+│   ├── layout.tsx            # 布局组件
+│   └── page.tsx              # 主页面（围棋游戏）
+├── components/
+│   └── ui/                   # shadcn/ui 组件库
+├── lib/
+│   ├── go-logic.ts          # 围棋游戏核心逻辑
+│   └── utils.ts              # 通用工具函数
+└── server.ts                 # 自定义服务端入口
 ```
 
-- 项目文件（如 app 目录、pages 目录、components 等）默认初始化到 `src/` 目录下。
+## 核心功能
 
-## 包管理规范
+### 1. 围棋对弈
+- 9路简化棋盘，适合初学者
+- 黑白双方轮流落子
+- 自动提子功能
+- 最后一手标记
 
-**仅允许使用 pnpm** 作为包管理器，**严禁使用 npm 或 yarn**。
-**常用命令**：
-- 安装依赖：`pnpm add <package>`
-- 安装开发依赖：`pnpm add -D <package>`
-- 安装所有依赖：`pnpm install`
-- 移除依赖：`pnpm remove <package>`
+### 2. AI对战
+- AI随机落子（白方）
+- 实时显示AI思考状态
 
-## 开发规范
+### 3. AI教学
+- 流式AI教学解读
+- 围棋规则教程（5个步骤）
+- 实时问答功能
 
-### Hydration 问题防范
+### 4. 辅助功能
+- 提示功能（显示合法落子位置）
+- 悔棋功能
+- 重新开始
+- 比分实时计算
 
-1. 严禁在 JSX 渲染逻辑中直接使用 typeof window、Date.now()、Math.random() 等动态数据。**必须使用 'use client' 并配合 useEffect + useState 确保动态内容仅在客户端挂载后渲染**；同时严禁非法 HTML 嵌套（如 <p> 嵌套 <div>）。
-2. **禁止使用 head 标签**，优先使用 metadata，详见文档：https://nextjs.org/docs/app/api-reference/functions/generate-metadata
-   1. 三方 CSS、字体等资源可在 `globals.css` 中顶部通过 `@import` 引入或使用 next/font
-   2. preload, preconnect, dns-prefetch 通过 ReactDOM 的 preload、preconnect、dns-prefetch 方法引入
-   3. json-ld 可阅读 https://nextjs.org/docs/app/guides/json-ld
+## 开发命令
 
-## UI 设计与组件规范 (UI & Styling Standards)
+```bash
+pnpm dev          # 启动开发服务器
+pnpm build        # 构建生产版本
+pnpm start        # 启动生产服务器
+pnpm lint         # 代码检查
+pnpm ts-check     # TypeScript类型检查
+```
 
-- 模板默认预装核心组件库 `shadcn/ui`，位于`src/components/ui/`目录下
-- Next.js 项目**必须默认**采用 shadcn/ui 组件、风格和规范，**除非用户指定用其他的组件和规范。**
+## 围棋逻辑说明
+
+### 核心概念
+- **气 (Liberty)**: 棋子相邻的空交叉点
+- **提子 (Capture)**: 气被堵住时被吃掉
+- **合法落子**: 不能落在无气的位置（除非能提子）
+
+### API接口
+
+#### POST /api/go-ai
+获取AI教学解读（流式响应）
+
+Request:
+```json
+{
+  "type": "teach" | "rule",
+  "board": [["X", "O", null, ...], ...],
+  "currentPlayer": "black" | "white",
+  "lastMove": { "row": 4, "col": 4 },
+  "question": "这步棋是什么意思？"
+}
+```
+
+## 设计规范
+
+### 配色
+- 主色调：琥珀色/金色 (#d4a574)
+- 背景：渐变琥珀色
+- 棋子：黑/白渐变效果
+
+### 响应式
+- 移动端：单列布局
+- 桌面端：三列布局
+
+## 注意事项
+
+1. 棋盘使用9路（适合初学者）
+2. AI使用随机落子策略（简化版）
+3. 教学使用流式LLM响应
+4. 所有API调用通过 `/api/go-ai` 路由
