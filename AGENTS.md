@@ -22,7 +22,7 @@ src/
 │   │   ├── go-ai/
 │   │   │   └── route.ts     # AI教学与解说API（LLM流式输出）
 │   │   ├── go-engine/
-│   │   │   └── route.ts     # GnuGo围棋AI引擎（GTP协议桥接）
+│   │   │   └── route.ts     # KataGo/GnuGo围棋AI引擎（GTP协议桥接）
 │   │   ├── games/
 │   │   │   ├── route.ts     # 棋局保存/载入/列表/删除API
 │   │   │   └── [id]/route.ts # 单个棋局载入API
@@ -50,10 +50,10 @@ src/
 - 棋子落在交叉点上（SVG渲染）
 - 黑白双方轮流落子，自动提子
 - 最后一手标记（圆点标识）
-- AI白方：GnuGo专业引擎（GTP协议）+ 本地AI回退
-  - 初级：GnuGo Level 1（随机倾向） / 本地随机+避傻
-  - 中级：GnuGo Level 5（基础战术） / 本地评分选择
-  - 高级：GnuGo Level 10+（深度搜索） / 本地1步前瞻
+- AI白方：KataGo深度学习引擎（GTP协议，优先） + GnuGo回退 + 本地AI兜底
+  - 初级：KataGo maxVisits=30（少量搜索） / GnuGo Level 3 / 本地随机+避傻
+  - 中级：KataGo maxVisits=100（中等搜索） / GnuGo Level 7 / 本地评分选择
+  - 高级：KataGo maxVisits=300（深度搜索） / GnuGo Level 10 / 本地1步前瞻
 - 停手(Pass)功能：双方连续停手结束棋局
 - 贴目规则：9路2.5目、13路3.5目、19路6.5目（白方补偿）
 - 自动结束：步数上限（9路60步/13路100步/19路200步）
@@ -100,17 +100,18 @@ LLM流式响应，Content-Type: text/event-stream
 - `currentPlayer`: "black" | "white"
 
 ### POST /api/go-engine
-GnuGo AI引擎桥接（GTP协议）
+KataGo/GnuGo AI引擎桥接（GTP协议），优先KataGo，GnuGo回退
 
 **请求参数：**
-- `action`: "move" | "setup" | "final_score" | "quit"
 - `boardSize`: 9 | 13 | 19
-- `difficulty`: "beginner" | "intermediate" | "advanced"
-- `moves`: 落子历史字符串（如 "B D4 W Q16 B C16"）
-- `pass`: boolean（是否停手）
+- `difficulty`: "easy" | "medium" | "hard"
+- `moves`: 落子历史数组 [{row, col, color}, ...]
 
 **响应：**
-- `move`: AI落子坐标（如 "Q4"）或 "PASS" 或 "RESIGN"
+- `move`: AI落子坐标 {row, col} 或 null（停手/认输）
+- `pass`: boolean（AI停手）
+- `resign`: boolean（AI认输）
+- `engine`: "katago" | "gnugo"（使用的引擎）
 - `score`: 终局得分（仅final_score）
 
 ## 围棋逻辑说明
