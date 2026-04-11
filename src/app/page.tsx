@@ -168,6 +168,12 @@ export default function GoGamePage() {
   const [inputMessage, setInputMessage] = useState('');
   const [isChatStreaming, setIsChatStreaming] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const commentaryEndRef = useRef<HTMLDivElement>(null);
+
+  // 解说区自动滚到底部
+  useEffect(() => {
+    commentaryEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [commentaries, streamingText]);
 
   // ===== 弹窗 =====
   const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -1162,6 +1168,7 @@ export default function GoGamePage() {
                       <Spinner className="w-3 h-3" /> 解说员正在分析...
                     </div>
                   )}
+                  <div ref={commentaryEndRef} />
                 </div>
               </ScrollArea>
             </CardContent>
