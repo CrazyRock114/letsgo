@@ -12,6 +12,8 @@ import {
   type Board,
   type Position,
 } from '@/lib/go-logic';
+import { GO_TERMS, TERM_CATEGORIES, type GoTerm } from '@/lib/go-encyclopedia';
+import { GO_TUTORIAL, getAllSteps } from '@/lib/go-tutorial';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -22,7 +24,6 @@ import { Input } from '@/components/ui/input';
 import {
   RotateCcw,
   HelpCircle,
-  BookOpen,
   MessageCircle,
   Lightbulb,
   Send,
@@ -33,6 +34,10 @@ import {
   ChevronRight,
   Play,
   User,
+  BookMarked,
+  Search,
+  X,
+  GraduationCap,
 } from 'lucide-react';
 
 // ========== 常量 ==========
@@ -170,8 +175,15 @@ export default function GoGamePage() {
   const [saveTitle, setSaveTitle] = useState('');
   const [savedGames, setSavedGames] = useState<SavedGame[]>([]);
 
-  // ===== 学习 =====
-  const [lessonStep, setLessonStep] = useState(0);
+  // ===== 学习面板 =====
+  const [learnTab, setLearnTab] = useState<'tutorial' | 'encyclopedia'>('tutorial');
+  // 教程
+  const [tutorialChapterIdx, setTutorialChapterIdx] = useState(0);
+  const [tutorialStepIdx, setTutorialStepIdx] = useState(0);
+  // 百科
+  const [encCategory, setEncCategory] = useState<string>('all');
+  const [encSearch, setEncSearch] = useState('');
+  const [selectedTerm, setSelectedTerm] = useState<GoTerm | null>(null);
 
   // 计算比分
   useEffect(() => {
@@ -216,7 +228,6 @@ export default function GoGamePage() {
     setSavedGameId(null);
     setIsReplayMode(false);
     setTeachingMessage('');
-    setLessonStep(0);
   }, []);
 
   // ===== 请求AI解说（第三方观赛视角） =====
@@ -380,7 +391,6 @@ export default function GoGamePage() {
     setIsReplayMode(false);
     setReplayIndex(0);
     setTeachingMessage('');
-    setLessonStep(0);
   }, [boardSize]);
 
   // ===== 提示 =====
@@ -651,14 +661,10 @@ export default function GoGamePage() {
     );
   };
 
-  // 教程
-  const lessons = [
-    { title: '认识棋盘', content: '围棋棋盘由横竖线交叉组成，标准棋盘是19x19路。棋子要下在线的交叉点上，不是格子里面哦！我们先用9路小棋盘来练习。' },
-    { title: '认识棋子', content: '围棋有黑白两色棋子，黑棋先走。双方轮流在交叉点上放一颗棋子，棋子一旦放下就不能再移动了。' },
-    { title: '什么是"气"？', content: '每颗棋子旁边上下左右的空交叉点就是它的"气"。中间的棋子有4口气，边上的3口气，角落的2口气。气就像棋子的呼吸！' },
-    { title: '如何吃子', content: '当一颗棋子所有的气都被对方堵住，它就被"提"走了！就像把对方包围起来。' },
-    { title: '围地获胜', content: '围棋的目的是围住更多的地盘。用你的棋子围住空交叉点，谁围的地盘大谁就赢！记住：金角银边草肚皮，先占角，再占边！' },
-  ];
+  // 教程与百科数据
+  const allTutorialSteps = getAllSteps();
+  const currentChapter = GO_TUTORIAL[tutorialChapterIdx];
+  const currentStep = currentChapter?.steps[tutorialStepIdx];
 
   // ===== 登录界面 =====
   if (showLogin) {
@@ -861,19 +867,225 @@ export default function GoGamePage() {
             </Card>
           )}
 
-          {/* 教程 */}
+          {/* 学习面板：教程 + 百科 */}
           <Card className="bg-white/90 shadow-lg">
             <CardHeader className="pb-1">
-              <CardTitle className="text-sm flex items-center gap-1"><BookOpen className="w-4 h-4 text-blue-500" /> 围棋入门</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-xs font-medium text-amber-800">{lessons[lessonStep].title}</p>
-              <p className="text-xs text-gray-600 leading-relaxed mt-1">{lessons[lessonStep].content}</p>
-              <div className="flex justify-between mt-2">
-                <Button size="sm" variant="outline" onClick={() => setLessonStep(Math.max(0, lessonStep - 1))} disabled={lessonStep === 0} className="h-7 text-xs">上一步</Button>
-                <span className="text-xs text-gray-400 self-center">{lessonStep + 1}/{lessons.length}</span>
-                <Button size="sm" variant="default" onClick={() => setLessonStep(Math.min(lessons.length - 1, lessonStep + 1))} disabled={lessonStep === lessons.length - 1} className="h-7 text-xs">下一步</Button>
+              <div className="flex items-center gap-1">
+                <Button
+                  size="sm"
+                  variant={learnTab === 'tutorial' ? 'default' : 'ghost'}
+                  onClick={() => setLearnTab('tutorial')}
+                  className={`h-7 text-xs gap-1 ${learnTab === 'tutorial' ? 'bg-amber-700 hover:bg-amber-800' : ''}`}
+                >
+                  <GraduationCap className="w-3.5 h-3.5" /> 教程
+                </Button>
+                <Button
+                  size="sm"
+                  variant={learnTab === 'encyclopedia' ? 'default' : 'ghost'}
+                  onClick={() => setLearnTab('encyclopedia')}
+                  className={`h-7 text-xs gap-1 ${learnTab === 'encyclopedia' ? 'bg-amber-700 hover:bg-amber-800' : ''}`}
+                >
+                  <BookMarked className="w-3.5 h-3.5" /> 百科
+                </Button>
               </div>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {learnTab === 'tutorial' ? (
+                <div>
+                  {/* 章节标题 */}
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <span className="text-sm">{currentChapter?.emoji}</span>
+                    <span className="text-xs font-bold text-amber-800">{currentChapter?.chapter}</span>
+                    <span className="text-[10px] text-gray-400 ml-auto">
+                      第{tutorialChapterIdx + 1}/{GO_TUTORIAL.length}章
+                    </span>
+                  </div>
+                  {/* 步骤内容 */}
+                  {currentStep && (
+                    <>
+                      <p className="text-xs font-medium text-amber-900">{currentStep.title}</p>
+                      <p className="text-xs text-gray-600 leading-relaxed mt-1">{currentStep.content}</p>
+                      {currentStep.keyPoint && (
+                        <div className="mt-1.5 px-2 py-1 bg-amber-50 rounded border border-amber-200">
+                          <p className="text-[10px] text-amber-700 font-medium">💡 {currentStep.keyPoint}</p>
+                        </div>
+                      )}
+                      {currentStep.termIds && currentStep.termIds.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {currentStep.termIds.map(tid => {
+                            const term = GO_TERMS.find(t => t.id === tid);
+                            if (!term) return null;
+                            return (
+                              <button
+                                key={tid}
+                                className="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-full hover:bg-blue-100 border border-blue-200"
+                                onClick={() => { setSelectedTerm(term); setLearnTab('encyclopedia'); }}
+                              >
+                                {term.term}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {/* 章节内导航 */}
+                  <div className="flex justify-between mt-2">
+                    <Button
+                      size="sm" variant="outline"
+                      onClick={() => {
+                        if (tutorialStepIdx > 0) {
+                          setTutorialStepIdx(tutorialStepIdx - 1);
+                        } else if (tutorialChapterIdx > 0) {
+                          setTutorialChapterIdx(tutorialChapterIdx - 1);
+                          setTutorialStepIdx(GO_TUTORIAL[tutorialChapterIdx - 1].steps.length - 1);
+                        }
+                      }}
+                      disabled={tutorialChapterIdx === 0 && tutorialStepIdx === 0}
+                      className="h-7 text-xs"
+                    >
+                      <ChevronLeft className="w-3 h-3" /> 上一步
+                    </Button>
+                    <span className="text-[10px] text-gray-400 self-center">
+                      {currentStep ? `${allTutorialSteps.findIndex(s => s.chapterId === currentChapter?.id && s.title === currentStep.title) + 1}/${allTutorialSteps.length}` : ''}
+                    </span>
+                    <Button
+                      size="sm" variant="default"
+                      onClick={() => {
+                        if (tutorialStepIdx < (currentChapter?.steps.length ?? 0) - 1) {
+                          setTutorialStepIdx(tutorialStepIdx + 1);
+                        } else if (tutorialChapterIdx < GO_TUTORIAL.length - 1) {
+                          setTutorialChapterIdx(tutorialChapterIdx + 1);
+                          setTutorialStepIdx(0);
+                        }
+                      }}
+                      disabled={tutorialChapterIdx === GO_TUTORIAL.length - 1 && tutorialStepIdx >= (currentChapter?.steps.length ?? 0) - 1}
+                      className="h-7 text-xs"
+                    >
+                      下一步 <ChevronRight className="w-3 h-3" />
+                    </Button>
+                  </div>
+                  {/* 章节快速跳转 */}
+                  <div className="flex gap-1 mt-2 flex-wrap">
+                    {GO_TUTORIAL.map((ch, idx) => (
+                      <button
+                        key={ch.id}
+                        className={`text-[10px] px-1.5 py-0.5 rounded ${idx === tutorialChapterIdx ? 'bg-amber-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                        onClick={() => { setTutorialChapterIdx(idx); setTutorialStepIdx(0); }}
+                      >
+                        {ch.emoji} {ch.chapter}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  {/* 百科搜索 */}
+                  <div className="flex gap-1.5 mb-2">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400" />
+                      <input
+                        type="text"
+                        value={encSearch}
+                        onChange={e => setEncSearch(e.target.value)}
+                        placeholder="搜索术语..."
+                        className="w-full pl-6 pr-2 py-1 border rounded text-xs focus:outline-none focus:ring-1 focus:ring-amber-400"
+                      />
+                      {encSearch && (
+                        <button onClick={() => setEncSearch('')} className="absolute right-1.5 top-1/2 -translate-y-1/2">
+                          <X className="w-3 h-3 text-gray-400" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {/* 分类筛选 */}
+                  <div className="flex gap-1 mb-2 flex-wrap">
+                    <button
+                      className={`text-[10px] px-1.5 py-0.5 rounded ${encCategory === 'all' ? 'bg-amber-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                      onClick={() => setEncCategory('all')}
+                    >
+                      全部
+                    </button>
+                    {TERM_CATEGORIES.map(cat => (
+                      <button
+                        key={cat.key}
+                        className={`text-[10px] px-1.5 py-0.5 rounded ${encCategory === cat.key ? 'bg-amber-700 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                        onClick={() => setEncCategory(cat.key)}
+                      >
+                        {cat.icon} {cat.label}
+                      </button>
+                    ))}
+                  </div>
+                  {/* 术语列表 */}
+                  {selectedTerm ? (
+                    <div>
+                      <button
+                        className="text-[10px] text-amber-600 hover:text-amber-800 mb-1 flex items-center gap-0.5"
+                        onClick={() => setSelectedTerm(null)}
+                      >
+                        <ChevronLeft className="w-3 h-3" /> 返回列表
+                      </button>
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-bold text-amber-800">{selectedTerm.term}</span>
+                          {selectedTerm.reading && <span className="text-[10px] text-gray-400">({selectedTerm.reading})</span>}
+                          <span className={`text-[9px] px-1 py-0.5 rounded ${selectedTerm.difficulty === 1 ? 'bg-green-100 text-green-700' : selectedTerm.difficulty === 2 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                            {selectedTerm.difficulty === 1 ? '入门' : selectedTerm.difficulty === 2 ? '进阶' : '高级'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-amber-700 font-medium">{selectedTerm.shortDesc}</p>
+                        <p className="text-xs text-gray-600 leading-relaxed">{selectedTerm.fullDesc}</p>
+                        {selectedTerm.analogy && (
+                          <div className="px-2 py-1 bg-blue-50 rounded border border-blue-200">
+                            <p className="text-[10px] text-blue-700">🎯 {selectedTerm.analogy}</p>
+                          </div>
+                        )}
+                        {selectedTerm.tip && (
+                          <div className="px-2 py-1 bg-green-50 rounded border border-green-200">
+                            <p className="text-[10px] text-green-700">💡 {selectedTerm.tip}</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <ScrollArea className="max-h-[300px]">
+                      <div className="space-y-1 pr-1">
+                        {GO_TERMS
+                          .filter(t => encCategory === 'all' || t.category === encCategory)
+                          .filter(t => {
+                            if (!encSearch) return true;
+                            const q = encSearch.toLowerCase();
+                            return t.term.includes(q) || t.shortDesc.includes(q) || (t.reading && t.reading.includes(q));
+                          })
+                          .map(term => (
+                            <button
+                              key={term.id}
+                              className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-amber-50 border border-transparent hover:border-amber-200 transition-colors"
+                              onClick={() => setSelectedTerm(term)}
+                            >
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-medium text-amber-800">{term.term}</span>
+                                {term.reading && <span className="text-[9px] text-gray-400">({term.reading})</span>}
+                                <span className={`text-[9px] px-1 py-0 rounded ${term.difficulty === 1 ? 'bg-green-100 text-green-700' : term.difficulty === 2 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                                  {term.difficulty === 1 ? '入门' : term.difficulty === 2 ? '进阶' : '高级'}
+                                </span>
+                                <span className="text-[9px] text-gray-400 ml-auto">{TERM_CATEGORIES.find(c => c.key === term.category)?.icon}</span>
+                              </div>
+                              <p className="text-[10px] text-gray-500 mt-0.5 line-clamp-1">{term.shortDesc}</p>
+                            </button>
+                          ))}
+                        {GO_TERMS.filter(t => encCategory === 'all' || t.category === encCategory).filter(t => {
+                          if (!encSearch) return true;
+                          const q = encSearch.toLowerCase();
+                          return t.term.includes(q) || t.shortDesc.includes(q) || (t.reading && t.reading.includes(q));
+                        }).length === 0 && (
+                          <p className="text-center text-gray-300 text-xs py-4">没有找到匹配的术语</p>
+                        )}
+                      </div>
+                    </ScrollArea>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
 
