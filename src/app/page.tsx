@@ -146,6 +146,8 @@ export default function GoGamePage() {
 
   // 解说请求ID，用于非阻塞时取消旧请求的流式输出
   const commentaryRequestId = useRef(0);
+  // 当前正在进行的解说Promise，AI落子时需要等它完成后再发起新解说
+  const commentaryPromiseRef = useRef<Promise<void> | null>(null);
 
   // ===== 复盘模式 =====
   const [isReplayMode, setIsReplayMode] = useState(false);
@@ -312,8 +314,9 @@ export default function GoGamePage() {
     setShowHint(null);
     setConsecutivePasses(0);
 
-    // 玩家落子解说 - 阻塞等待（确保玩家看到解说后再进入AI回合）
-    await requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx, historyWithThisMove);
+    // 玩家落子解说 - 非阻塞启动，后台流式显示
+    const playerCommentaryPromise = requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx, historyWithThisMove);
+    commentaryPromiseRef.current = playerCommentaryPromise;
 
     // 检查游戏是否应该结束
     const endCheck = checkGameEnd(newBoard, 0, historyWithThisMove.length);
@@ -394,8 +397,14 @@ export default function GoGamePage() {
         setLastMove({ row: aiMove.row, col: aiMove.col });
         setHistory(historyWithAIMove);
 
-        // AI落子解说 - 非阻塞（后台流式显示）
-        requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx, historyWithAIMove);
+        // AI落子解说 - 等玩家解说完成后再发起，避免流式输出冲突
+        const aiCommentary = async () => {
+          if (commentaryPromiseRef.current) {
+            await commentaryPromiseRef.current;
+          }
+          requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx, historyWithAIMove);
+        };
+        aiCommentary();
 
         // 检查游戏是否应该结束
         const endCheck2 = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
@@ -540,8 +549,14 @@ export default function GoGamePage() {
     setHistory(historyWithAIMove);
     setConsecutivePasses(0);
 
-    // AI落子解说 - 非阻塞（后台流式显示）
-    requestCommentary(finalBoard, aiMove, 'white', aiCaptured, moveIdx, historyWithAIMove);
+    // AI落子解说 - 等玩家解说完成后再发起
+    const aiCommentary = async () => {
+      if (commentaryPromiseRef.current) {
+        await commentaryPromiseRef.current;
+      }
+      requestCommentary(finalBoard, aiMove, 'white', aiCaptured, moveIdx, historyWithAIMove);
+    };
+    aiCommentary();
 
     // 检查游戏结束
     const endCheck = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
