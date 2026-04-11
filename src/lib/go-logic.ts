@@ -509,6 +509,72 @@ function evaluateMove(board: Board, row: number, col: number, color: Stone): num
     score += 6; // 切断对方
   }
 
+  // 10. 影响力评估：周围2格内己方/对方棋子数
+  let influence = 0;
+  for (let dr = -2; dr <= 2; dr++) {
+    for (let dc = -2; dc <= 2; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      const nr = row + dr;
+      const nc = col + dc;
+      if (nr >= 0 && nr < size && nc >= 0 && nc < size) {
+        const dist = Math.abs(dr) + Math.abs(dc);
+        const weight = dist === 1 ? 3 : dist === 2 ? 2 : 1;
+        if (board[nr][nc] === color) influence += weight;
+        else if (board[nr][nc] === enemy) influence -= weight;
+      }
+    }
+  }
+  // 正影响力说明在己方势力范围内，好；负影响力说明在对方势力内，需要更多考虑
+  if (influence > 0) score += 2;
+  else if (influence < -3) score -= 2;
+
+  // 11. 开局特殊走法：前几手优先占角部星位附近
+  let totalStones = 0;
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (board[r][c] !== null) totalStones++;
+    }
+  }
+  if (totalStones < size) {
+    // 开局阶段：鼓励占角（三三点、四四点、三五点等）
+    const isCornerArea = minDist <= 4 && minDist >= 2;
+    if (isCornerArea) score += 6;
+
+    // 四个角的区域
+    const corners = [
+      { rMin: 0, rMax: Math.floor(size/3), cMin: 0, cMax: Math.floor(size/3) },
+      { rMin: 0, rMax: Math.floor(size/3), cMin: size - Math.floor(size/3), cMax: size },
+      { rMin: size - Math.floor(size/3), rMax: size, cMin: 0, cMax: Math.floor(size/3) },
+      { rMin: size - Math.floor(size/3), rMax: size, cMin: size - Math.floor(size/3), cMax: size },
+    ];
+    for (const corner of corners) {
+      if (row >= corner.rMin && row < corner.rMax && col >= corner.cMin && col < corner.cMax) {
+        // 检查这个角是否还没被占据
+        let cornerOccupied = false;
+        for (let r = corner.rMin; r < corner.rMax; r++) {
+          for (let c = corner.cMin; c < corner.cMax; c++) {
+            if (board[r][c] !== null) cornerOccupied = true;
+          }
+        }
+        if (!cornerOccupied) score += 4; // 空角优先
+      }
+    }
+  }
+
+  // 12. 避免眼位被填（自己不要填自己的眼）
+  if (friendlyNeighbors >= 3 && captured === 0) {
+    // 检查是否真的是眼：四面都是己方棋子或边界
+    let isEye = true;
+    for (const [dr, dc] of directions) {
+      const nr = row + dr;
+      const nc = col + dc;
+      if (nr >= 0 && nr < size && nc >= 0 && nc < size) {
+        if (board[nr][nc] !== color) isEye = false;
+      }
+    }
+    if (isEye) score -= 25; // 不要填自己的眼
+  }
+
   return score;
 }
 
@@ -548,19 +614,21 @@ export function easyAIMove(board: Board, color: Stone): Position | null {
   const validMoves = getValidMoves(board, color);
   if (validMoves.length === 0) return null;
 
-  // 过滤掉明显不好的走法
-  const safeMoves = validMoves.filter(m => {
-    const score = evaluateMove(board, m.row, m.col, color);
-    return score > -15; // 不走明显自杀的
-  });
+  // 初级AI：评分过滤 + 大范围随机，不是纯随机
+  const scored = validMoves.map(m => ({
+    position: m,
+    score: evaluateMove(board, m.row, m.col, color),
+  }));
 
-  const pool = safeMoves.length > 0 ? safeMoves : validMoves;
-  // 简单随机，但稍微偏向角部
-  const corners = pool.filter(m => (m.row <= 2 || m.row >= board.length - 3) && (m.col <= 2 || m.col >= board.length - 3));
-  if (corners.length > 0 && Math.random() < 0.3) {
-    return corners[Math.floor(Math.random() * corners.length)];
-  }
-  return pool[Math.floor(Math.random() * pool.length)];
+  // 过滤掉明显不好的走法
+  const safeMoves = scored.filter(m => m.score > -15);
+  const pool = safeMoves.length > 0 ? safeMoves : scored;
+
+  // 从前40%中随机选，保持变化性但不会太傻
+  const topCount = Math.max(1, Math.ceil(pool.length * 0.4));
+  const sorted = pool.sort((a, b) => b.score - a.score);
+  const candidates = sorted.slice(0, topCount);
+  return candidates[Math.floor(Math.random() * candidates.length)].position;
 }
 
 // 智能AI落子 - 中级（评分选择，偶尔随机）
@@ -577,10 +645,9 @@ export function mediumAIMove(board: Board, color: Stone): Position | null {
   // 按分数排序
   scored.sort((a, b) => b.score - a.score);
 
-  // 从前5个中随机选（增加变化性）
-  const topN = Math.min(5, scored.length);
-  // 加权随机：前面的概率更大
-  const weights = scored.slice(0, topN).map((_, i) => topN - i);
+  // 从前3个中加权随机（提高选择最高分的概率）
+  const topN = Math.min(3, scored.length);
+  const weights = scored.slice(0, topN).map((_, i) => (topN - i) * (topN - i + 1) / 2);
   const totalWeight = weights.reduce((a, b) => a + b, 0);
   let rand = Math.random() * totalWeight;
   for (let i = 0; i < topN; i++) {
@@ -590,18 +657,18 @@ export function mediumAIMove(board: Board, color: Stone): Position | null {
   return scored[0].position;
 }
 
-// 智能AI落子 - 高级（深度评估+1步前瞻）
+// 智能AI落子 - 高级（深度评估+2步前瞻）
 export function hardAIMove(board: Board, color: Stone): Position | null {
   const validMoves = getValidMoves(board, color);
   if (validMoves.length === 0) return null;
   const size = board.length;
   const enemy: Stone = color === 'black' ? 'white' : 'black';
 
-  // 评分所有走法（含1步前瞻）
+  // 评分所有走法（含2步前瞻）
   const scored = validMoves.map(m => {
     let score = evaluateMove(board, m.row, m.col, color);
 
-    // 1步前瞻：模拟对方最佳应对
+    // 第1步前瞻：模拟对方最佳应对
     const testBoard = copyBoard(board);
     testBoard[m.row][m.col] = color;
     captureStones(testBoard, m.row, m.col);
@@ -609,16 +676,39 @@ export function hardAIMove(board: Board, color: Stone): Position | null {
     // 检查对方有没有好反击
     const enemyMoves = getValidMoves(testBoard, enemy);
     if (enemyMoves.length > 0) {
+      // 采样部分对方走法
+      const sampleSize = Math.min(enemyMoves.length, size <= 9 ? 30 : 15);
       let bestEnemyScore = -Infinity;
-      // 采样部分对方走法（不全算，避免太慢）
-      const sampleSize = Math.min(enemyMoves.length, size <= 9 ? 20 : 10);
-      const sampled = enemyMoves.slice(0, sampleSize);
-      for (const em of sampled) {
+      let bestEnemyMove: Position | null = null;
+
+      for (let i = 0; i < sampleSize; i++) {
+        const em = enemyMoves[i];
         const enemyScore = evaluateMove(testBoard, em.row, em.col, enemy);
-        bestEnemyScore = Math.max(bestEnemyScore, enemyScore);
+        if (enemyScore > bestEnemyScore) {
+          bestEnemyScore = enemyScore;
+          bestEnemyMove = em;
+        }
       }
       // 对方好反击越多，这步越差
       score -= bestEnemyScore * 0.5;
+
+      // 第2步前瞻：我方再应对对方最佳走法
+      if (bestEnemyMove) {
+        const testBoard2 = copyBoard(testBoard);
+        testBoard2[bestEnemyMove.row][bestEnemyMove.col] = enemy;
+        captureStones(testBoard2, bestEnemyMove.row, bestEnemyMove.col);
+
+        const myMoves2 = getValidMoves(testBoard2, color);
+        if (myMoves2.length > 0) {
+          let bestMyScore2 = -Infinity;
+          const sampleSize2 = Math.min(myMoves2.length, size <= 9 ? 15 : 8);
+          for (let i = 0; i < sampleSize2; i++) {
+            const mm = myMoves2[i];
+            bestMyScore2 = Math.max(bestMyScore2, evaluateMove(testBoard2, mm.row, mm.col, color));
+          }
+          score += bestMyScore2 * 0.3;
+        }
+      }
     }
 
     return { position: m, score };
@@ -628,7 +718,7 @@ export function hardAIMove(board: Board, color: Stone): Position | null {
 
   // 从前3个中加权随机（保持变化性）
   const topN = Math.min(3, scored.length);
-  const weights = scored.slice(0, topN).map((_, i) => topN - i + 1);
+  const weights = scored.slice(0, topN).map((_, i) => (topN - i) * (topN - i + 1) / 2);
   const totalWeight = weights.reduce((a, b) => a + b, 0);
   let rand = Math.random() * totalWeight;
   for (let i = 0; i < topN; i++) {

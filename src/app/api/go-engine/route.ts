@@ -17,6 +17,11 @@ function isKataGoAvailable(): boolean {
   return fs.existsSync(KATAGO_PATH) && fs.existsSync(KATAGO_MODEL);
 }
 
+// 检查GnuGo是否可用
+function isGnuGoAvailable(): boolean {
+  return fs.existsSync(GNUGO_PATH);
+}
+
 // 围棋坐标转GTP坐标
 // row=0,col=0 -> A1 (左上角，视觉顶部)
 // 但围棋坐标是行号从下往上，所以row=0是视觉顶部=最大行号
@@ -294,13 +299,17 @@ export async function POST(request: NextRequest) {
     }
 
     // 回退到GnuGo
-    try {
-      const result = await getGnuGoMove(boardSize, moves, difficulty);
-      return NextResponse.json(result);
-    } catch (gtpError) {
-      console.error("GTP error:", gtpError);
-      return NextResponse.json({ error: "所有引擎通信失败" }, { status: 500 });
+    if (isGnuGoAvailable()) {
+      try {
+        const result = await getGnuGoMove(boardSize, moves, difficulty);
+        return NextResponse.json(result);
+      } catch (gtpError) {
+        console.error("GTP error:", gtpError);
+      }
     }
+
+    // 所有引擎不可用，返回标识让前端用本地AI
+    return NextResponse.json({ move: null, engine: "none", noEngine: true });
   } catch (error) {
     console.error("Go engine API error:", error);
     return NextResponse.json({ error: "引擎错误" }, { status: 500 });
