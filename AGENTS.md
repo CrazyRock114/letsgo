@@ -51,9 +51,9 @@ src/
 - 黑白双方轮流落子，自动提子
 - 最后一手标记（圆点标识）
 - AI白方：KataGo深度学习引擎（GTP协议，优先） + GnuGo回退 + 本地AI兜底
-  - 初级：KataGo maxVisits=30（少量搜索） / GnuGo Level 3 / 本地随机+避傻
-  - 中级：KataGo maxVisits=100（中等搜索） / GnuGo Level 7 / 本地评分选择
-  - 高级：KataGo maxVisits=300（深度搜索） / GnuGo Level 10 / 本地1步前瞻
+  - 初级：KataGo maxVisits=15 / GnuGo Level 3 / 本地随机+避傻
+  - 中级：KataGo maxVisits=50 / GnuGo Level 7 / 本地评分选择
+  - 高级：KataGo maxVisits=150 / GnuGo Level 10 / 本地1步前瞻
 - 停手(Pass)功能：双方连续停手结束棋局
 - 贴目规则：9路2.5目、13路3.5目、19路6.5目（白方补偿）
 - 自动结束：步数上限（9路60步/13路100步/19路200步）
@@ -105,6 +105,7 @@ KataGo/GnuGo AI引擎桥接（GTP协议），优先KataGo，GnuGo回退
 **请求参数：**
 - `boardSize`: 9 | 13 | 19
 - `difficulty`: "easy" | "medium" | "hard"
+- `engine`: "katago" | "gnugo" | "local"（指定引擎，可选）
 - `moves`: 落子历史数组 [{row, col, color}, ...]
 
 **响应：**
@@ -112,7 +113,30 @@ KataGo/GnuGo AI引擎桥接（GTP协议），优先KataGo，GnuGo回退
 - `pass`: boolean（AI停手）
 - `resign`: boolean（AI认输）
 - `engine`: "katago" | "gnugo"（使用的引擎）
+- `noEngine`: boolean（引擎不可用，前端应回退本地AI）
 - `score`: 终局得分（仅final_score）
+
+### GET /api/go-engine
+返回可用引擎列表
+
+**响应：**
+- `engines`: [{id, name, available, desc}, ...]
+
+## 引擎安装与恢复
+
+### KataGo（深度学习引擎）
+- **安装路径**: `/usr/local/katago/`
+- **自动安装**: `scripts/install-katago.sh`
+  - 从源码编译 KataGo v1.15.3 Eigen/AVX2 CPU 后端（无需GPU）
+  - 自动下载神经网络模型（优先小模型，回退通用模型）
+  - `scripts/prepare.sh` 会在每次 `pnpm install` 时自动检测并安装
+- **模型自动发现**: `go-engine/route.ts` 中的 `findKataGoModel()` 自动扫描 `/usr/local/katago/` 下的模型文件
+  - 优先级：g170-b6c96(小,快) > rect15(通用) > lionffen(仅19x19) > 其他
+- **沙箱重置**: KataGo 编译产物在系统目录，沙箱重置后会丢失，`prepare.sh` 会自动恢复
+
+### GnuGo（经典引擎）
+- **项目捆绑**: `bin/gnugo`（8MB x86_64 二进制，随 git 持久化）
+- **备选路径**: `/usr/games/gnugo`（系统安装）
 
 ## 围棋逻辑说明
 

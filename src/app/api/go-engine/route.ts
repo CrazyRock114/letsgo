@@ -8,7 +8,7 @@ import fs from "fs";
 
 // 引擎路径
 const KATAGO_PATH = "/usr/local/katago/katago";
-const KATAGO_MODEL = "/usr/local/katago/g170-b6c96-s175395328-d26788732.bin.gz";
+const KATAGO_DIR = "/usr/local/katago";
 const KATAGO_CONFIG = "/usr/local/katago/gtp.cfg";
 // GnuGo：优先项目捆绑版本（生产环境），备选系统安装路径（开发环境）
 const GNUGO_PATHS = [
@@ -16,9 +16,40 @@ const GNUGO_PATHS = [
   "/usr/games/gnugo",             // 系统安装，开发环境
 ];
 
-// 检查KataGo是否可用
+// 自动查找KataGo可用的神经网络模型
+// 支持多种模型格式(.bin.gz, .txt.gz)，按优先级返回
+function findKataGoModel(): string | null {
+  // 优先级顺序：g170-b6c96(小,快) > rect15(通用) > lionffen(仅19x19) > 其他
+  const priorityPatterns = [
+    /g170-b6c96/,          // 小模型(3.7MB)，支持所有棋盘
+    /b6c96/,               // 通用小模型
+    /rect15/,              // rect15通用模型(87MB)，支持所有棋盘
+    /b18c384nbt-human/,    // Human SL模型
+    /b20c256/,             // b20系列
+  ];
+
+  try {
+    const files = fs.readdirSync(KATAGO_DIR);
+    const modelFiles = files.filter(f => f.endsWith(".bin.gz") || f.endsWith(".txt.gz"));
+
+    if (modelFiles.length === 0) return null;
+
+    // 按优先级匹配
+    for (const pattern of priorityPatterns) {
+      const match = modelFiles.find(f => pattern.test(f));
+      if (match) return `${KATAGO_DIR}/${match}`;
+    }
+
+    // 没有优先匹配，返回第一个可用模型
+    return `${KATAGO_DIR}/${modelFiles[0]}`;
+  } catch {
+    return null;
+  }
+}
+
+// 检查KataGo是否可用（二进制+模型+配置都存在）
 function isKataGoAvailable(): boolean {
-  return fs.existsSync(KATAGO_PATH) && fs.existsSync(KATAGO_MODEL);
+  return fs.existsSync(KATAGO_PATH) && findKataGoModel() !== null && fs.existsSync(KATAGO_CONFIG);
 }
 
 // 查找可用的GnuGo路径
@@ -148,11 +179,16 @@ async function getKataGoMove(
 ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string }> {
   const komi = getKomi(boardSize);
   const maxVisits = getKataGoVisits(difficulty);
+  const katagoModel = findKataGoModel();
+
+  if (!katagoModel) {
+    throw new Error("KataGo model not found");
+  }
 
   // 启动KataGo进程
   const proc = spawn(KATAGO_PATH, [
     "gtp",
-    "-model", KATAGO_MODEL,
+    "-model", katagoModel,
     "-config", KATAGO_CONFIG,
     "-override-config", `maxVisits=${maxVisits},komi=${komi}`,
   ]);
