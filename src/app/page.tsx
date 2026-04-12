@@ -804,7 +804,31 @@ export default function GoGamePage() {
         height={boardPx}
         viewBox={`0 0 ${boardPx} ${boardPx}`}
         className="max-w-full h-auto"
-        style={{ filter: 'drop-shadow(0 8px 24px rgba(0,0,0,0.18))' }}
+        style={{ filter: 'drop-shadow(0 8px 24px rgba(0,0,0,0.18))', touchAction: 'manipulation' }}
+        onTouchEnd={(e) => {
+          // iPad Safari 兼容：SVG 内部的透明 circle 在 iOS 上不响应 onClick
+          // 在 SVG 根元素上拦截 touch 事件，手动计算点击的交叉点
+          e.preventDefault();
+          const touch = e.changedTouches[0];
+          if (!touch) return;
+          const svg = e.currentTarget;
+          const rect = svg.getBoundingClientRect();
+          const scaleX = boardPx / rect.width;
+          const scaleY = boardPx / rect.height;
+          const svgX = (touch.clientX - rect.left) * scaleX;
+          const svgY = (touch.clientY - rect.top) * scaleY;
+          // 找到最近的交叉点
+          const col = Math.round((svgX - padding) / cellSize);
+          const row = Math.round((svgY - padding) / cellSize);
+          if (row >= 0 && row < size && col >= 0 && col < size) {
+            // 判断点击是否足够接近交叉点（容差为 cellSize 的一半）
+            const dx = svgX - (padding + col * cellSize);
+            const dy = svgY - (padding + row * cellSize);
+            if (Math.sqrt(dx * dx + dy * dy) < cellSize * 0.5) {
+              handleMove(row, col);
+            }
+          }
+        }}
       >
         <defs>
           <radialGradient id="bgGrad" cx="50%" cy="50%">
