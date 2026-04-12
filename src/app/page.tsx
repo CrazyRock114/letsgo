@@ -798,36 +798,51 @@ export default function GoGamePage() {
     const boardPx = cellSize * (size - 1) + padding * 2;
     const starPts = getStarPoints(size);
 
+    // 统一的点击/触摸处理函数 - 从屏幕坐标计算棋盘交叉点
+    // 防止 touch + click 双重触发：touch 后短时间内忽略 click
+    let lastTouchTime = 0;
+    const handleBoardInteraction = (clientX: number, clientY: number, isTouchEvent = false) => {
+      if (isTouchEvent) {
+        lastTouchTime = Date.now();
+      } else {
+        // 如果刚刚处理过 touch 事件，跳过这次 click（防止双重触发）
+        if (Date.now() - lastTouchTime < 500) return;
+      }
+      const svgEl = document.getElementById('go-board-svg');
+      if (!svgEl) return;
+      const rect = svgEl.getBoundingClientRect();
+      const scaleX = boardPx / rect.width;
+      const scaleY = boardPx / rect.height;
+      const svgX = (clientX - rect.left) * scaleX;
+      const svgY = (clientY - rect.top) * scaleY;
+      const col = Math.round((svgX - padding) / cellSize);
+      const row = Math.round((svgY - padding) / cellSize);
+      if (row >= 0 && row < size && col >= 0 && col < size) {
+        const dx = svgX - (padding + col * cellSize);
+        const dy = svgY - (padding + row * cellSize);
+        if (Math.sqrt(dx * dx + dy * dy) < cellSize * 0.55) {
+          handleMove(row, col);
+        }
+      }
+    };
+
     return (
       <svg
+        id="go-board-svg"
         width={boardPx}
         height={boardPx}
         viewBox={`0 0 ${boardPx} ${boardPx}`}
         className="max-w-full h-auto"
-        style={{ filter: 'drop-shadow(0 8px 24px rgba(0,0,0,0.18))', touchAction: 'manipulation' }}
+        style={{ filter: 'drop-shadow(0 8px 24px rgba(0,0,0,0.18))', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
+        onClick={(e) => {
+          // 桌面端和安卓：click 事件处理
+          handleBoardInteraction(e.clientX, e.clientY, false);
+        }}
         onTouchEnd={(e) => {
-          // iPad Safari 兼容：SVG 内部的透明 circle 在 iOS 上不响应 onClick
-          // 在 SVG 根元素上拦截 touch 事件，手动计算点击的交叉点
-          e.preventDefault();
+          // iPad Safari：touch 事件处理（iOS 对 SVG 内透明元素不响应 click）
           const touch = e.changedTouches[0];
           if (!touch) return;
-          const svg = e.currentTarget;
-          const rect = svg.getBoundingClientRect();
-          const scaleX = boardPx / rect.width;
-          const scaleY = boardPx / rect.height;
-          const svgX = (touch.clientX - rect.left) * scaleX;
-          const svgY = (touch.clientY - rect.top) * scaleY;
-          // 找到最近的交叉点
-          const col = Math.round((svgX - padding) / cellSize);
-          const row = Math.round((svgY - padding) / cellSize);
-          if (row >= 0 && row < size && col >= 0 && col < size) {
-            // 判断点击是否足够接近交叉点（容差为 cellSize 的一半）
-            const dx = svgX - (padding + col * cellSize);
-            const dy = svgY - (padding + row * cellSize);
-            if (Math.sqrt(dx * dx + dy * dy) < cellSize * 0.5) {
-              handleMove(row, col);
-            }
-          }
+          handleBoardInteraction(touch.clientX, touch.clientY, true);
         }}
       >
         <defs>
@@ -895,7 +910,7 @@ export default function GoGamePage() {
           row.map((stone, c) => {
             if (stone) return null;
             return (
-              <circle key={`c-${r}-${c}`} cx={padding + c * cellSize} cy={padding + r * cellSize} r={stoneRadius} fill="transparent" cursor="pointer" onClick={() => handleMove(r, c)} />
+              <circle key={`c-${r}-${c}`} cx={padding + c * cellSize} cy={padding + r * cellSize} r={stoneRadius} fill="transparent" cursor="pointer" />
             );
           })
         )}
@@ -1141,7 +1156,7 @@ export default function GoGamePage() {
 
         {/* 中间：棋盘 + 聊天 */}
         <div className="lg:col-span-5 space-y-3 lg:overflow-y-auto">
-          <div className="flex justify-center overflow-x-auto">
+          <div className="flex justify-center" style={{ touchAction: 'manipulation' }}>
             {renderSVGBoard()}
           </div>
 
