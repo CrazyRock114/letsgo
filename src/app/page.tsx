@@ -97,6 +97,7 @@ interface MoveEntry {
 // 保存的棋局
 interface SavedGame {
   id?: number;
+  player_id?: number;
   board_size: number;
   difficulty: string;
   moves: MoveEntry[];
@@ -187,6 +188,8 @@ export default function GoGamePage() {
   const [showLoadDialog, setShowLoadDialog] = useState(false);
   const [saveTitle, setSaveTitle] = useState('');
   const [savedGames, setSavedGames] = useState<SavedGame[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState('');
 
   // ===== 学习面板 =====
   const [learnTab, setLearnTab] = useState<'tutorial' | 'encyclopedia'>('tutorial');
@@ -365,8 +368,14 @@ export default function GoGamePage() {
     // AI回合
     if (currentPlayer === 'black') {
       setIsAIThinking(true);
-      // AI思考延迟，让体验更自然
-      await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
+
+      // 等待玩家落子解说完成，避免解说流式输出被打断
+      if (commentaryPromiseRef.current) {
+        await commentaryPromiseRef.current;
+      }
+
+      // AI思考延迟，让体验更自然（模拟思考时间）
+      await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
 
       const validMoves = getValidMoves(newBoard, 'white');
       if (validMoves.length > 0) {
@@ -433,14 +442,8 @@ export default function GoGamePage() {
         setLastMove({ row: aiMove.row, col: aiMove.col });
         setHistory(historyWithAIMove);
 
-        // AI落子解说 - 等玩家解说完成后再发起，避免流式输出冲突
-        const aiCommentary = async () => {
-          if (commentaryPromiseRef.current) {
-            await commentaryPromiseRef.current;
-          }
-          requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx, historyWithAIMove);
-        };
-        aiCommentary();
+        // AI落子解说 - 同步发起，因为玩家解说已经完成
+        requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx, historyWithAIMove);
 
         // 检查游戏是否应该结束
         const endCheck2 = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
@@ -517,8 +520,14 @@ export default function GoGamePage() {
 
     // AI回合
     setIsAIThinking(true);
-    // AI思考延迟，让体验更自然
-    await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
+
+    // 等待解说完成，避免流式输出被打断
+    if (commentaryPromiseRef.current) {
+      await commentaryPromiseRef.current;
+    }
+
+    // AI思考延迟
+    await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
 
     // AI也考虑停手（如果没好位置）
     const validMoves = getValidMoves(board, 'white');
@@ -589,14 +598,8 @@ export default function GoGamePage() {
     setHistory(historyWithAIMove);
     setConsecutivePasses(0);
 
-    // AI落子解说 - 等玩家解说完成后再发起
-    const aiCommentary = async () => {
-      if (commentaryPromiseRef.current) {
-        await commentaryPromiseRef.current;
-      }
-      requestCommentary(finalBoard, aiMove, 'white', aiCaptured, moveIdx, historyWithAIMove);
-    };
-    aiCommentary();
+    // AI落子解说 - 同步发起
+    requestCommentary(finalBoard, aiMove, 'white', aiCaptured, moveIdx, historyWithAIMove);
 
     // 检查游戏结束
     const endCheck = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
@@ -685,8 +688,15 @@ export default function GoGamePage() {
 
   // ===== 保存棋局 =====
   const saveGame = useCallback(async () => {
+    if (isSaving) return;
+    setIsSaving(true);
+    setSaveMessage('');
     const pid = await ensurePlayer();
-    if (!pid && pid !== 0) return;
+    if (!pid && pid !== 0) {
+      setSaveMessage('保存失败：无法创建玩家');
+      setIsSaving(false);
+      return;
+    }
     try {
       const res = await fetch('/api/games', {
         method: 'POST',
@@ -706,13 +716,23 @@ export default function GoGamePage() {
         }),
       });
       const data = await res.json();
-      if (data.game) setSavedGameId(data.game.id);
-      setShowSaveDialog(false);
-      setSaveTitle('');
-    } catch {
-      // 静默失败
+      if (data.game) {
+        setSavedGameId(data.game.id);
+        setSaveMessage('保存成功！');
+        setTimeout(() => {
+          setShowSaveDialog(false);
+          setSaveTitle('');
+          setSaveMessage('');
+        }, 800);
+      } else if (data.error) {
+        setSaveMessage(`保存失败：${data.error}`);
+      }
+    } catch (err) {
+      console.error('保存棋局失败:', err);
+      setSaveMessage('保存失败，请重试');
     }
-  }, [ensurePlayer, savedGameId, boardSize, difficulty, history, commentaries, board, score, saveTitle]);
+    setIsSaving(false);
+  }, [ensurePlayer, savedGameId, boardSize, difficulty, history, commentaries, board, score, saveTitle, isSaving]);
 
   // ===== 载入棋局列表 =====
   const loadGames = useCallback(async () => {
@@ -720,8 +740,9 @@ export default function GoGamePage() {
       const res = await fetch(`/api/games${playerId ? `?player_id=${playerId}` : ''}`);
       const data = await res.json();
       if (data.games) setSavedGames(data.games as SavedGame[]);
-    } catch {
-      // 静默
+      else if (data.error) console.error('载入棋局失败:', data.error);
+    } catch (err) {
+      console.error('载入棋局失败:', err);
     }
   }, [playerId]);
 
@@ -732,6 +753,11 @@ export default function GoGamePage() {
       const data = await res.json();
       const game = data.game as SavedGame;
       if (!game) return;
+
+      // 从棋局数据恢复玩家ID，以便后续保存
+      if (game.player_id && !playerId) {
+        setPlayerId(game.player_id);
+      }
 
       setBoardSize(game.board_size);
       setDifficulty(game.difficulty);
@@ -750,18 +776,18 @@ export default function GoGamePage() {
       setReplayMoves(game.moves || []);
 
       setShowLoadDialog(false);
-    } catch {
-      // 静默
+    } catch (err) {
+      console.error('载入棋局失败:', err);
     }
-  }, []);
+  }, [playerId]);
 
   // ===== 删除棋局 =====
   const deleteGame = useCallback(async (gameId: number) => {
     try {
       await fetch(`/api/games?id=${gameId}`, { method: 'DELETE' });
       setSavedGames(prev => prev.filter(g => g.id !== gameId));
-    } catch {
-      // 静默
+    } catch (err) {
+      console.error('删除棋局失败:', err);
     }
   }, []);
 
@@ -1052,7 +1078,12 @@ export default function GoGamePage() {
                   <div className="space-y-3">
                     <Input value={nickname} onChange={e => setNickname(e.target.value)} placeholder="你的昵称" maxLength={20} />
                     <Input value={saveTitle} onChange={e => setSaveTitle(e.target.value)} placeholder="棋局名称（可选）" />
-                    <Button onClick={saveGame} className="w-full bg-amber-700 hover:bg-amber-800">确认保存</Button>
+                    {saveMessage && (
+                      <p className={`text-sm ${saveMessage.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>{saveMessage}</p>
+                    )}
+                    <Button onClick={saveGame} disabled={isSaving} className="w-full bg-amber-700 hover:bg-amber-800">
+                      {isSaving ? '保存中...' : '确认保存'}
+                    </Button>
                   </div>
                 </DialogContent>
               </Dialog>
