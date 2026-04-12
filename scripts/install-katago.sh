@@ -58,60 +58,51 @@ chmod +x "${KATAGO_BIN}"
 ok "KataGo compiled and installed: $(${KATAGO_BIN} version 2>/dev/null | head -1)"
 
 # ========== 4. 下载神经网络模型 ==========
-# 模型下载优先级：
-#   1. lionffen b6c64 (2MB, 仅19x19, 快速下载) 
-#   2. rect15 b20c256 (87MB, 支持所有棋盘大小, 较慢)
+# 模型下载策略：始终下载所有可用模型（不同模型支持不同场景）
+#   - lionffen b6c64 (2MB, 快速下载, 实测支持所有棋盘大小) 
+#   - rect15 b20c256 (87MB, 支持所有棋盘大小, 棋力更强)
 # 注: katagotraining.org 主模型库从此沙箱无法访问(403)
 #     GitHub releases 下载速度极慢(~25KB/s)
 
-MODEL_DOWNLOADED=false
-
-# 尝试下载 lionffen b6c64 小模型 (2MB, 快速)
-if [ "$MODEL_DOWNLOADED" = false ]; then
-  info "Trying to download lionffen b6c64 model (2MB, 19x19 only)..."
-  if curl -sL --max-time 60 -H "Referer: https://katagotraining.org/extra_networks/" \
-      -o "${KATAGO_DIR}/lionffen_b6c64.txt.gz" \
-      "https://media.katagotraining.org/uploaded/networks/models_extra/lionffen_b6c64_3x3_v10.txt.gz" \
-      && [ "$(stat -c%s "${KATAGO_DIR}/lionffen_b6c64.txt.gz" 2>/dev/null || echo 0)" -gt 100000 ]; then
-    ok "Downloaded lionffen b6c64 model (19x19 only)"
-    MODEL_DOWNLOADED=true
-  else
-    warn "lionffen model download failed, trying next..."
-    rm -f "${KATAGO_DIR}/lionffen_b6c64.txt.gz"
-  fi
+# 尝试下载 lionffen b6c64 小模型 (2MB, 快速，优先使用)
+info "Trying to download lionffen b6c64 model (2MB, fast)..."
+if curl -sL --max-time 60 -H "Referer: https://katagotraining.org/extra_networks/" \
+    -o "${KATAGO_DIR}/lionffen_b6c64.txt.gz" \
+    "https://media.katagotraining.org/uploaded/networks/models_extra/lionffen_b6c64_3x3_v10.txt.gz" \
+    && [ "$(stat -c%s "${KATAGO_DIR}/lionffen_b6c64.txt.gz" 2>/dev/null || echo 0)" -gt 100000 ]; then
+  ok "Downloaded lionffen b6c64 model (fast, all board sizes)"
+else
+  warn "lionffen model download failed"
+  rm -f "${KATAGO_DIR}/lionffen_b6c64.txt.gz"
 fi
 
-# 尝试下载 rect15 通用模型 (87MB, 所有棋盘大小)
-if [ "$MODEL_DOWNLOADED" = false ]; then
-  info "Trying to download rect15 b20c256 model (87MB, all board sizes - may take a minute)..."
-  if curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networks/" \
-      -o "${KATAGO_DIR}/rect15-b20c256-s343365760-d96847752.bin.gz" \
-      "https://media.katagotraining.org/uploaded/networks/models_extra/rect15-b20c256-s343365760-d96847752.bin.gz" \
-      && [ "$(stat -c%s "${KATAGO_DIR}/rect15-b20c256-s343365760-d96847752.bin.gz" 2>/dev/null || echo 0)" -gt 10000000 ]; then
-    ok "Downloaded rect15 b20c256 model (all board sizes)"
-    MODEL_DOWNLOADED=true
-  else
-    warn "rect15 model download failed"
-    rm -f "${KATAGO_DIR}/rect15-b20c256-s343365760-d96847752.bin.gz"
-  fi
+# 尝试下载 rect15 通用模型 (87MB, 棋力更强)
+info "Trying to download rect15 b20c256 model (87MB, stronger - may take a minute)..."
+if curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networks/" \
+    -o "${KATAGO_DIR}/rect15-b20c256-s343365760-d96847752.bin.gz" \
+    "https://media.katagotraining.org/uploaded/networks/models_extra/rect15-b20c256-s343365760-d96847752.bin.gz" \
+    && [ "$(stat -c%s "${KATAGO_DIR}/rect15-b20c256-s343365760-d96847752.bin.gz" 2>/dev/null || echo 0)" -gt 10000000 ]; then
+  ok "Downloaded rect15 b20c256 model (stronger, all board sizes)"
+else
+  warn "rect15 model download failed"
+  rm -f "${KATAGO_DIR}/rect15-b20c256-s343365760-d96847752.bin.gz"
 fi
 
 # 最后尝试从 GitHub releases 下载 human SL 模型 (较慢但可靠)
-if [ "$MODEL_DOWNLOADED" = false ]; then
-  info "Trying to download human SL model from GitHub (slow, ~100MB)..."
+if ! ls "${KATAGO_DIR}"/*.bin.gz 1>/dev/null 2>&1 && ! ls "${KATAGO_DIR}"/*.txt.gz 1>/dev/null 2>&1; then
+  info "No models downloaded yet, trying human SL model from GitHub (slow, ~100MB)..."
   if curl -sL --max-time 600 --retry 1 \
       -o "${KATAGO_DIR}/b18c384nbt-humanv0.bin.gz" \
       "https://github.com/lightvector/KataGo/releases/download/v1.15.0/b18c384nbt-humanv0.bin.gz" \
       && [ "$(stat -c%s "${KATAGO_DIR}/b18c384nbt-humanv0.bin.gz" 2>/dev/null || echo 0)" -gt 10000000 ]; then
     ok "Downloaded human SL model from GitHub"
-    MODEL_DOWNLOADED=true
   else
     warn "All model downloads failed"
     rm -f "${KATAGO_DIR}/b18c384nbt-humanv0.bin.gz"
   fi
 fi
 
-if [ "$MODEL_DOWNLOADED" = false ]; then
+if ! ls "${KATAGO_DIR}"/*.bin.gz 1>/dev/null 2>&1 && ! ls "${KATAGO_DIR}"/*.txt.gz 1>/dev/null 2>&1; then
   fail "No model downloaded - KataGo will not be usable"
   fail "You can manually download a model to ${KATAGO_DIR}/ and restart"
 fi
@@ -122,9 +113,15 @@ info "Creating GTP configuration..."
 # 复制官方完整配置（避免缺少必要字段）
 if [ -f "${BUILD_DIR}/cpp/configs/gtp_example.cfg" ]; then
   cp "${BUILD_DIR}/cpp/configs/gtp_example.cfg" "${KATAGO_CFG}"
+  
+  # 注释掉原始配置中的重复键（避免KataGo因重复键报错崩溃）
+  # 这些键会在下面的CPU专用配置段中覆盖
+  for key in numSearchThreads nnMaxBatchSize logAllGTPCommunication logSearchInfo; do
+    sed -i "s/^[[:space:]]*\(${key}[[:space:]]*=\)/#\\1/; t; s/^\(${key}[[:space:]]*=\)/#\\1/" "${KATAGO_CFG}"
+  done
 fi
 
-# 追加 CPU 专用配置
+# 追加 CPU 专用覆盖配置
 cat >> "${KATAGO_CFG}" << 'CPUCFG'
 
 # ===== 小围棋乐园 CPU 专用覆盖配置 =====

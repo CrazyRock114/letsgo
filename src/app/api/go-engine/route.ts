@@ -1,9 +1,9 @@
 // GTP桥接API - 与KataGo/GnuGo围棋AI引擎通信
-// 优先使用KataGo（深度学习+MCTS，远强于GnuGo），GnuGo作为回退
-// 引擎通过GTP(Go Text Protocol)协议交互，spawn子进程通信
+// KataGo使用持久化进程（避免每步重新加载模型），GnuGo每次spawn
+// 引擎通过GTP(Go Text Protocol)协议交互
 
 import { NextRequest, NextResponse } from "next/server";
-import { spawn } from "child_process";
+import { spawn, ChildProcess } from "child_process";
 import fs from "fs";
 
 // 引擎路径
@@ -19,13 +19,14 @@ const GNUGO_PATHS = [
 // 自动查找KataGo可用的神经网络模型
 // 支持多种模型格式(.bin.gz, .txt.gz)，按优先级返回
 function findKataGoModel(): string | null {
-  // 优先级顺序：g170-b6c96(小,快) > rect15(通用) > lionffen(仅19x19) > 其他
+  // 优先级顺序：lionffen(小,快,支持所有棋盘) > g170-b6c96 > rect15(通用,大) > 其他
   const priorityPatterns = [
-    /g170-b6c96/,          // 小模型(3.7MB)，支持所有棋盘
-    /b6c96/,               // 通用小模型
-    /rect15/,              // rect15通用模型(87MB)，支持所有棋盘
-    /b18c384nbt-human/,    // Human SL模型
-    /b20c256/,             // b20系列
+    /lionffen/,           // lionffen小模型(2MB)，实测支持所有棋盘
+    /g170-b6c96/,         // 小模型(3.7MB)，支持所有棋盘
+    /b6c96/,              // 通用小模型
+    /rect15/,             // rect15通用模型(87MB)，支持所有棋盘
+    /b18c384nbt-human/,   // Human SL模型
+    /b20c256/,            // b20系列
   ];
 
   try {
@@ -66,12 +67,8 @@ function isGnuGoAvailable(): boolean {
 }
 
 // 围棋坐标转GTP坐标
-// row=0,col=0 -> A1 (左上角，视觉顶部)
-// 但围棋坐标是行号从下往上，所以row=0是视觉顶部=最大行号
 function boardToGTPCoord(row: number, col: number, boardSize: number): string {
-  // 跳过I列
   const colChar = col >= 8 ? String.fromCharCode(65 + col + 1) : String.fromCharCode(65 + col);
-  // 行号从下往上：row=0是视觉顶部=boardSize
   const rowNum = boardSize - row;
   return `${colChar}${rowNum}`;
 }
@@ -84,71 +81,13 @@ function gtpToBoardCoord(gtpCoord: string, boardSize: number): { row: number; co
   const colChar = match[1];
   const rowNum = parseInt(match[2]);
 
-  // 列：A=0,B=1,...,H=7,J=8,K=9,...
   let col = colChar.charCodeAt(0) - 65;
   if (col >= 8) col -= 1; // 跳过I
 
-  // 行号从下往上：行1=数组最后一行，行N=数组第0行
   const row = boardSize - rowNum;
 
   if (row < 0 || row >= boardSize || col < 0 || col >= boardSize) return null;
   return { row, col };
-}
-
-// 发送GTP命令并获取响应
-function sendGTPCommand(proc: ReturnType<typeof spawn>, command: string, timeoutMs: number = 30000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let output = "";
-    let settled = false;
-
-    const cleanup = () => {
-      proc.stdout?.removeListener("data", onData);
-      proc.stderr?.removeListener("data", onError);
-      clearTimeout(timeout);
-    };
-
-    const onData = (data: Buffer) => {
-      output += data.toString();
-      // GTP响应以双换行结束
-      if (output.includes("\n\n") && !settled) {
-        settled = true;
-        cleanup();
-        resolve(output.trim());
-      }
-    };
-
-    const onError = () => {
-      // Ignore stderr
-    };
-
-    proc.stdout?.on("data", onData);
-    proc.stderr?.on("data", onError);
-
-    // 设置超时
-    const timeout = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        cleanup();
-        reject(new Error(`GTP command timeout: ${command}`));
-      }
-    }, timeoutMs);
-
-    proc.stdin?.write(command + "\n");
-  });
-}
-
-// 批量发送GTP命令
-async function sendMultipleGTP(
-  proc: ReturnType<typeof spawn>,
-  commands: string[],
-  timeoutMs: number = 30000
-): Promise<string[]> {
-  const results: string[] = [];
-  for (const cmd of commands) {
-    const resp = await sendGTPCommand(proc, cmd, timeoutMs);
-    results.push(resp);
-  }
-  return results;
 }
 
 // 获取贴目值
@@ -157,11 +96,10 @@ function getKomi(boardSize: number): number {
 }
 
 // KataGo难度映射 - 通过maxVisits控制
-// visits越少越弱，越多越强（CPU模式下需要平衡速度）
 function getKataGoVisits(difficulty: string): number {
-  if (difficulty === "easy") return 15;     // 极少搜索，速度最快
-  if (difficulty === "medium") return 50;    // 中等搜索，速度和强度平衡
-  return 150;                               // 较多搜索，有深度计算
+  if (difficulty === "easy") return 15;
+  if (difficulty === "medium") return 50;
+  return 150;
 }
 
 // GnuGo难度映射
@@ -171,7 +109,184 @@ function getGnuGoLevel(difficulty: string): number {
   return 10;
 }
 
-// 使用KataGo引擎获取AI落子
+// ============================================================
+// 持久化KataGo进程管理器
+// 核心思路：进程启动后保持运行，每次落子只发送GTP命令，不再重新加载模型
+// ============================================================
+class PersistentKataGo {
+  private proc: ChildProcess | null = null;
+  private buffer = "";
+  private starting: Promise<void> | null = null;
+  private commandQueue: Array<{
+    resolve: (value: string) => void;
+    reject: (reason: unknown) => void;
+    timeout: ReturnType<typeof setTimeout>;
+  }> = [];
+  private crashed = false;
+  private lastError = "";
+
+  // 确保进程已启动并就绪
+  async ensureReady(): Promise<void> {
+    // 进程存活则直接返回
+    if (this.proc && !this.proc.killed && this.proc.exitCode === null) return;
+
+    // 正在启动则等待
+    if (this.starting) return this.starting;
+
+    // 开始启动
+    this.starting = this.startProcess();
+    try {
+      await this.starting;
+    } finally {
+      this.starting = null;
+    }
+  }
+
+  private async startProcess(): Promise<void> {
+    const model = findKataGoModel();
+    if (!model) throw new Error("KataGo model not found");
+    if (!fs.existsSync(KATAGO_PATH)) throw new Error("KataGo binary not found");
+    if (!fs.existsSync(KATAGO_CONFIG)) throw new Error("KataGo config not found");
+
+    console.log(`[KataGo] Starting persistent process with model: ${model}`);
+
+    // Kill any old process
+    this.killProcess();
+
+    this.proc = spawn(KATAGO_PATH, [
+      "gtp",
+      "-model", model,
+      "-config", KATAGO_CONFIG,
+      "-override-config", "maxVisits=50",  // 默认中等难度，后续动态调整
+    ], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    this.buffer = "";
+    this.crashed = false;
+    this.lastError = "";
+
+    // 持续收集stdout数据，按\n\n分割响应并分发到等待的Promise
+    this.proc.stdout?.on("data", (data: Buffer) => {
+      this.buffer += data.toString();
+      this.dispatchResponses();
+    });
+
+    // 收集stderr用于错误诊断
+    this.proc.stderr?.on("data", (data: Buffer) => {
+      const text = data.toString().trim();
+      if (text) this.lastError = text;
+    });
+
+    // 进程退出处理
+    this.proc.on("exit", (code) => {
+      console.log(`[KataGo] Process exited with code ${code}`);
+      this.proc = null;
+      this.buffer = "";
+      // 拒绝所有等待中的命令
+      for (const item of this.commandQueue) {
+        clearTimeout(item.timeout);
+        item.reject(new Error(`KataGo process exited (code=${code}): ${this.lastError}`));
+      }
+      this.commandQueue = [];
+      if (code !== 0) this.crashed = true;
+    });
+
+    // 等待进程就绪：发送name命令，成功则表示GTP握手完成
+    // 首次启动需要加载模型，可能较慢（大模型需要30秒+）
+    try {
+      const nameResp = await this.sendCommand("name", 120000);
+      console.log(`[KataGo] Process ready: ${nameResp}`);
+    } catch (err) {
+      this.killProcess();
+      throw new Error(`KataGo startup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // 从buffer中提取完整的GTP响应并分发到等待的Promise
+  private dispatchResponses(): void {
+    while (this.commandQueue.length > 0) {
+      const endIdx = this.buffer.indexOf("\n\n");
+      if (endIdx === -1) break;
+
+      const response = this.buffer.substring(0, endIdx).trim();
+      this.buffer = this.buffer.substring(endIdx + 2);
+
+      const item = this.commandQueue.shift()!;
+      clearTimeout(item.timeout);
+      item.resolve(response);
+    }
+  }
+
+  // 发送单条GTP命令并等待响应
+  async sendCommand(command: string, timeoutMs: number = 30000): Promise<string> {
+    await this.ensureReady();
+
+    return new Promise((resolve, reject) => {
+      if (!this.proc || this.proc.killed) {
+        reject(new Error("KataGo process not available"));
+        return;
+      }
+
+      const timeout = setTimeout(() => {
+        const idx = this.commandQueue.findIndex(i => i.resolve === resolve);
+        if (idx !== -1) this.commandQueue.splice(idx, 1);
+        reject(new Error(`GTP command timeout: ${command}`));
+      }, timeoutMs);
+
+      this.commandQueue.push({ resolve, reject, timeout });
+      this.proc.stdin?.write(command + "\n");
+    });
+  }
+
+  // 批量发送GTP命令
+  async sendCommands(commands: string[], timeoutMs: number = 30000): Promise<string[]> {
+    const results: string[] = [];
+    for (const cmd of commands) {
+      results.push(await this.sendCommand(cmd, timeoutMs));
+    }
+    return results;
+  }
+
+  // 进程是否曾经崩溃
+  hasCrashed(): boolean {
+    return this.crashed;
+  }
+
+  // 重置崩溃状态（允许重试）
+  resetCrashState(): void {
+    this.crashed = false;
+  }
+
+  // 杀掉进程
+  private killProcess(): void {
+    if (this.proc && !this.proc.killed) {
+      try {
+        this.proc.stdin?.write("quit\n");
+      } catch {
+        // ignore
+      }
+      setTimeout(() => {
+        try { this.proc?.kill(); } catch { /* ignore */ }
+      }, 500);
+    }
+    this.proc = null;
+    this.buffer = "";
+    this.commandQueue = [];
+  }
+
+  // 完全关闭（进程退出时调用）
+  shutdown(): void {
+    this.killProcess();
+  }
+}
+
+// 模块级单例 - Node.js进程内共享
+const persistentKataGo = new PersistentKataGo();
+
+// ============================================================
+// KataGo落子（使用持久化进程）
+// ============================================================
 async function getKataGoMove(
   boardSize: number,
   moves: Array<{ row: number; col: number; color: string }>,
@@ -179,26 +294,13 @@ async function getKataGoMove(
 ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string }> {
   const komi = getKomi(boardSize);
   const maxVisits = getKataGoVisits(difficulty);
-  const katagoModel = findKataGoModel();
 
-  if (!katagoModel) {
-    throw new Error("KataGo model not found");
-  }
-
-  // 启动KataGo进程
-  const proc = spawn(KATAGO_PATH, [
-    "gtp",
-    "-model", katagoModel,
-    "-config", KATAGO_CONFIG,
-    "-override-config", `maxVisits=${maxVisits},komi=${komi}`,
-  ]);
-
-  // KataGo启动很快（实测<300ms），短暂等待即可
-  await new Promise(r => setTimeout(r, 100));
-
+  // 构建GTP命令序列：重置棋盘 → 重放落子 → 生成AI落子
   const gtpCommands: string[] = [
     `boardsize ${boardSize}`,
     "clear_board",
+    `komi ${komi}`,
+    `kata-set-param maxVisits ${maxVisits}`,  // 动态调整难度
   ];
 
   // 重放所有落子历史
@@ -213,50 +315,40 @@ async function getKataGoMove(
   // 请求AI落子
   gtpCommands.push("genmove W");
 
-  try {
-    // KataGo CPU模式下可能较慢，给予更长超时
-    const responses = await sendMultipleGTP(proc, gtpCommands, 60000);
+  // 发送命令，单条超时30秒（总超时由Next.js request timeout控制）
+  const responses = await persistentKataGo.sendCommands(gtpCommands, 30000);
 
-    // 解析genmove响应
-    const lastResponse = responses[responses.length - 1];
-    const moveMatch = lastResponse.match(/=\s*([A-HJ-T]\d+|PASS|resign)/i);
+  // 解析genmove响应
+  const lastResponse = responses[responses.length - 1];
+  const moveMatch = lastResponse.match(/=\s*([A-HJ-T]\d+|PASS|resign)/i);
 
-    if (!moveMatch) {
-      proc.stdin?.write("quit\n");
-      proc.kill();
-      return { move: null, pass: true, engine: "katago" };
-    }
-
-    const moveStr = moveMatch[1].toUpperCase();
-
-    if (moveStr === "PASS") {
-      proc.stdin?.write("quit\n");
-      proc.kill();
-      return { move: null, pass: true, engine: "katago" };
-    }
-
-    if (moveStr === "RESIGN") {
-      proc.stdin?.write("quit\n");
-      proc.kill();
-      return { move: null, resign: true, engine: "katago" };
-    }
-
-    const position = gtpToBoardCoord(moveStr, boardSize);
-    proc.stdin?.write("quit\n");
-    proc.kill();
-
-    if (!position) {
-      throw new Error("无法解析KataGo落子坐标");
-    }
-
-    return { move: position, engine: "katago" };
-  } catch (gtpError) {
-    proc.kill();
-    throw gtpError;
+  if (!moveMatch) {
+    console.warn(`[KataGo] Unexpected genmove response: "${lastResponse}"`);
+    return { move: null, pass: true, engine: "katago" };
   }
+
+  const moveStr = moveMatch[1].toUpperCase();
+
+  if (moveStr === "PASS") {
+    return { move: null, pass: true, engine: "katago" };
+  }
+
+  if (moveStr === "RESIGN") {
+    return { move: null, resign: true, engine: "katago" };
+  }
+
+  const position = gtpToBoardCoord(moveStr, boardSize);
+
+  if (!position) {
+    throw new Error("无法解析KataGo落子坐标");
+  }
+
+  return { move: position, engine: "katago" };
 }
 
-// 使用GnuGo引擎获取AI落子（回退方案）
+// ============================================================
+// GnuGo落子（每次spawn新进程，GnuGo启动快）
+// ============================================================
 async function getGnuGoMove(
   boardSize: number,
   moves: Array<{ row: number; col: number; color: string }>,
@@ -293,10 +385,15 @@ async function getGnuGoMove(
 
   gtpCommands.push("genmove W");
 
+  // GnuGo用一次性命令发送方式
   try {
-    const responses = await sendMultipleGTP(proc, gtpCommands);
+    const results: string[] = [];
+    for (const cmd of gtpCommands) {
+      const resp = await sendOneShotGTP(proc, cmd, 30000);
+      results.push(resp);
+    }
 
-    const lastResponse = responses[responses.length - 1];
+    const lastResponse = results[results.length - 1];
     const moveMatch = lastResponse.match(/=\s*([A-HJ-T]\d+|PASS|resign)/i);
 
     if (!moveMatch) {
@@ -334,21 +431,61 @@ async function getGnuGoMove(
   }
 }
 
+// 一次性GTP命令（用于GnuGo等临时进程）
+function sendOneShotGTP(proc: ChildProcess, command: string, timeoutMs: number = 30000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let output = "";
+    let settled = false;
+
+    const cleanup = () => {
+      proc.stdout?.removeListener("data", onData);
+      clearTimeout(timeout);
+    };
+
+    const onData = (data: Buffer) => {
+      output += data.toString();
+      if (output.includes("\n\n") && !settled) {
+        settled = true;
+        cleanup();
+        resolve(output.trim());
+      }
+    };
+
+    proc.stdout?.on("data", onData);
+
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reject(new Error(`GTP command timeout: ${command}`));
+      }
+    }, timeoutMs);
+
+    proc.stdin?.write(command + "\n");
+  });
+}
+
+// ============================================================
+// API路由
+// ============================================================
 export async function POST(request: NextRequest) {
   try {
     const { boardSize, moves, difficulty, engine: requestedEngine } = await request.json();
 
-    // 根据请求的引擎选择
+    // KataGo：使用持久化进程
     if (requestedEngine === "katago" && isKataGoAvailable()) {
       try {
         const result = await getKataGoMove(boardSize, moves, difficulty);
         return NextResponse.json(result);
       } catch (katagoError) {
         console.error("KataGo failed:", katagoError);
+        // 如果持久化进程崩溃，重置状态以便下次重试
+        persistentKataGo.resetCrashState();
         return NextResponse.json({ move: null, engine: "katago", engineError: true });
       }
     }
 
+    // GnuGo：每次spawn新进程
     if (requestedEngine === "gnugo" && isGnuGoAvailable()) {
       try {
         const result = await getGnuGoMove(boardSize, moves, difficulty);
@@ -359,7 +496,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // requestedEngine === "local" 或引擎不可用：返回标识让前端用本地AI
+    // requestedEngine === "local" 或引擎不可用
     return NextResponse.json({ move: null, engine: requestedEngine || "local", noEngine: true });
   } catch (error) {
     console.error("Go engine API error:", error);

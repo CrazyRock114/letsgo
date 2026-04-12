@@ -126,12 +126,18 @@ KataGo/GnuGo AI引擎桥接（GTP协议），优先KataGo，GnuGo回退
 
 ### KataGo（深度学习引擎）
 - **安装路径**: `/usr/local/katago/`
+- **持久化进程**: `go-engine/route.ts` 中的 `PersistentKataGo` 类管理长期运行的KataGo进程
+  - 进程只启动一次，模型只加载一次（避免每步重新加载模型导致超时）
+  - 通过 `kata-set-param maxVisits` 动态调整难度
+  - 每次落子：发送 `boardsize` + `clear_board` + 重放落子历史 + `genmove`
+  - 进程崩溃自动重启，下次请求时恢复
 - **自动安装**: `scripts/install-katago.sh`
   - 从源码编译 KataGo v1.15.3 Eigen/AVX2 CPU 后端（无需GPU）
-  - 自动下载神经网络模型（优先小模型，回退通用模型）
+  - 自动下载所有可用模型（lionffen小模型 + rect15通用模型）
+  - 配置生成时自动注释重复键（避免KataGo因重复键崩溃）
   - `scripts/prepare.sh` 会在每次 `pnpm install` 时自动检测并安装
 - **模型自动发现**: `go-engine/route.ts` 中的 `findKataGoModel()` 自动扫描 `/usr/local/katago/` 下的模型文件
-  - 优先级：g170-b6c96(小,快) > rect15(通用) > lionffen(仅19x19) > 其他
+  - 优先级：lionffen(2MB,快,支持所有棋盘) > g170-b6c96(小,快) > rect15(87MB,通用) > 其他
 - **沙箱重置**: KataGo 编译产物在系统目录，沙箱重置后会丢失，`prepare.sh` 会自动恢复
 
 ### GnuGo（经典引擎）
