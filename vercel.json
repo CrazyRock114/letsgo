@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "functions": {
+    "src/app/api/go-ai/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/go-engine/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}

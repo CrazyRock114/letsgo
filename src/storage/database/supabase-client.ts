@@ -1,5 +1,4 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { execSync } from 'child_process';
 
 let envLoaded = false;
 
@@ -25,7 +24,12 @@ function loadEnv(): void {
       // dotenv not available
     }
 
-    const pythonCode = `
+    // 尝试从coze_workload_identity获取环境变量（仅Coze平台可用）
+    // Vercel等平台应通过环境变量面板直接配置
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { execSync } = require('child_process') as typeof import('child_process');
+      const pythonCode = `
 import os
 import sys
 try:
@@ -39,27 +43,30 @@ except Exception as e:
     print(f"# Error: {e}", file=sys.stderr)
 `;
 
-    const output = execSync(`python3 -c '${pythonCode.replace(/'/g, "'\"'\"'")}'`, {
-      encoding: 'utf-8',
-      timeout: 10000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+      const output = execSync(`python3 -c '${pythonCode.replace(/'/g, "'\"'\"'")}'`, {
+        encoding: 'utf-8',
+        timeout: 10000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
 
-    const lines = output.trim().split('\n');
-    for (const line of lines) {
-      if (line.startsWith('#')) continue;
-      const eqIndex = line.indexOf('=');
-      if (eqIndex > 0) {
-        const key = line.substring(0, eqIndex);
-        let value = line.substring(eqIndex + 1);
-        if ((value.startsWith("'") && value.endsWith("'")) ||
-            (value.startsWith('"') && value.endsWith('"'))) {
-          value = value.slice(1, -1);
-        }
-        if (!process.env[key]) {
-          process.env[key] = value;
+      const lines = output.trim().split('\n');
+      for (const line of lines) {
+        if (line.startsWith('#')) continue;
+        const eqIndex = line.indexOf('=');
+        if (eqIndex > 0) {
+          const key = line.substring(0, eqIndex);
+          let value = line.substring(eqIndex + 1);
+          if ((value.startsWith("'") && value.endsWith("'")) ||
+              (value.startsWith('"') && value.endsWith('"'))) {
+            value = value.slice(1, -1);
+          }
+          if (!process.env[key]) {
+            process.env[key] = value;
+          }
         }
       }
+    } catch {
+      // coze_workload_identity not available (e.g. Vercel), rely on env vars
     }
 
     envLoaded = true;
