@@ -537,18 +537,19 @@ export async function GET() {
   // 运行时诊断：检查 KataGo 动态链接库和启动测试
   let lddOutput = '';
   let katagoTestOutput = '';
+  const { execSync } = await import('child_process');
   if (katagoBinExists) {
     try {
-      const { execSync } = await import('child_process');
-      lddOutput = execSync(`ldd ${KATAGO_PATH} 2>&1`, { timeout: 5000 }).toString().trim();
-    } catch (e) {
-      lddOutput = `ldd failed: ${e instanceof Error ? e.message : String(e)}`;
+      lddOutput = execSync(`ldd ${KATAGO_PATH}`, { timeout: 5000, encoding: 'utf-8' }).trim();
+    } catch (e: unknown) {
+      const err = e as { stdout?: string; stderr?: string; message?: string };
+      lddOutput = `ldd failed: ${err.stderr || err.stdout || err.message || String(e)}`;
     }
     try {
-      const { execSync } = await import('child_process');
-      katagoTestOutput = execSync(`${KATAGO_PATH} version 2>&1`, { timeout: 10000 }).toString().trim();
-    } catch (e) {
-      katagoTestOutput = `version test failed: ${e instanceof Error ? e.message : String(e)}`;
+      katagoTestOutput = execSync(`${KATAGO_PATH} version`, { timeout: 10000, encoding: 'utf-8' }).trim();
+    } catch (e: unknown) {
+      const err = e as { stdout?: string; stderr?: string; message?: string };
+      katagoTestOutput = `version test failed: ${err.stderr || err.stdout || err.message || String(e)}`;
     }
   }
 
