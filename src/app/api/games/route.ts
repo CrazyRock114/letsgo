@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
     if (id) {
       // 更新已有棋局
       const { data, error } = await client
-        .from('games')
+        .from('letsgo_games')
         .update({
           moves,
           commentaries,
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
     } else {
       // 创建新棋局
       const { data, error } = await client
-        .from('games')
+        .from('letsgo_games')
         .insert({
           player_id,
           board_size,
@@ -71,7 +71,7 @@ export async function GET(request: NextRequest) {
     const client = getSupabaseClient();
 
     let query = client
-      .from('games')
+      .from('letsgo_games')
       .select('id, player_id, board_size, difficulty, status, title, black_score, white_score, created_at, updated_at')
       .order('created_at', { ascending: false })
       .limit(50);
@@ -102,7 +102,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     const client = getSupabaseClient();
-    const { error } = await client.from('games').delete().eq('id', parseInt(id));
+    const { error } = await client.from('letsgo_games').delete().eq('id', parseInt(id));
 
     if (error) throw new Error(`删除棋局失败: ${error.message}`);
 

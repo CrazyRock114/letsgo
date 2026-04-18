@@ -13,7 +13,7 @@ export async function POST(request: NextRequest) {
 
     // 先查找是否已有该昵称
     const { data: existing, error: findError } = await client
-      .from('players')
+      .from('letsgo_players')
       .select('id, nickname')
       .eq('nickname', nickname.trim())
       .maybeSingle();
@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
 
     // 创建新用户
     const { data, error } = await client
-      .from('players')
+      .from('letsgo_players')
       .insert({ nickname: nickname.trim() })
       .select('id, nickname')
       .single();
@@ -44,7 +44,7 @@ export async function GET() {
   try {
     const client = getSupabaseClient();
     const { data, error } = await client
-      .from('players')
+      .from('letsgo_players')
       .select('id, nickname')
       .order('id', { ascending: true })
       .limit(50);

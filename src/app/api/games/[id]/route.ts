@@ -11,7 +11,7 @@ export async function GET(
     const client = getSupabaseClient();
 
     const { data, error } = await client
-      .from('games')
+      .from('letsgo_games')
       .select('*')
       .eq('id', parseInt(id))
       .single();
