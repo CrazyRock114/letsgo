@@ -2,8 +2,6 @@
 # 小围棋乐园 - Docker 镜像
 # Next.js + KataGo (预编译二进制) + GnuGo (apt安装)
 # ================================================================
-# 构建约 2-3 分钟（下载KataGo二进制30秒 + 模型下载30秒 + npm构建2分钟）
-# 运行时内存 ~200-400MB（KataGo模型加载后）
 
 # ---- Stage 1: 准备 KataGo（预编译二进制 + 模型）----
 FROM node:24-slim AS katago-builder
@@ -25,7 +23,7 @@ RUN mkdir -p /usr/local/katago && \
     chmod +x /usr/local/katago/katago && \
     rm -rf katago.zip katago-extracted
 
-# 直接生成最小化 CPU 配置（不依赖官方配置模板，避免目录结构差异）
+# 直接生成最小化 CPU 配置（不依赖官方配置模板）
 RUN cat > /usr/local/katago/gtp.cfg << 'CPUCFG'
 # KataGo CPU 专用最小配置 - 小围棋乐园
 koRule = SIMPLE
@@ -101,14 +99,12 @@ RUN apt-get update -qq && \
 COPY --from=katago-builder /usr/local/katago /usr/local/katago
 
 # 从 app-builder 复制构建产物
-# Next.js standalone 模式保留完整构建路径: .next/standalone/<workdir-path>/
-# 关键：不能展平目录结构，server.js 的 require('../constant') 等相对路径依赖原始目录层级
-# 做法：复制整个 standalone 目录到 /，然后 WORKDIR 设为 server.js 所在目录
+# Next.js standalone 保留完整构建路径，不能展平（server.js 有相对路径 require）
 COPY --from=app-builder /app/.next/standalone /next-standalone
 COPY --from=app-builder /app/.next/static /next-standalone-static
 COPY --from=app-builder /app/public /next-standalone-public
 
-# 定位 server.js 并设置运行目录，复制 static 和 public 到正确位置
+# 定位 server.js 并将 static/public 复制到正确位置
 RUN SERVER_JS=$(find /next-standalone -name "server.js" -type f | head -1) && \
     if [ -z "$SERVER_JS" ]; then \
       echo "ERROR: server.js not found in standalone output" && \
@@ -120,15 +116,11 @@ RUN SERVER_JS=$(find /next-standalone -name "server.js" -type f | head -1) && \
     mkdir -p "$SERVER_DIR/.next/static" && \
     cp -r /next-standalone-static/. "$SERVER_DIR/.next/static/" && \
     cp -r /next-standalone-public "$SERVER_DIR/public" && \
-    echo "SERVER_DIR=$SERVER_DIR" > /app-location && \
     rm -rf /next-standalone-static /next-standalone-public
 
-# 读取 server.js 的目录作为 WORKDIR
-RUN SERVER_DIR=$(cat /app-location | grep SERVER_DIR | cut -d= -f2) && \
-    echo "Setting WORKDIR to: $SERVER_DIR" && \
-    ln -s "$SERVER_DIR" /app
-
-WORKDIR /app
+# 复制启动脚本
+COPY docker-start.sh /docker-start.sh
+RUN chmod +x /docker-start.sh
 
 # 环境变量
 ENV NODE_ENV=production
@@ -137,5 +129,5 @@ ENV HOSTNAME="0.0.0.0"
 
 EXPOSE 5000
 
-# 使用 standalone 模式的 server.js 启动
-CMD ["node", "server.js"]
+# 使用启动脚本动态定位 server.js 并运行
+CMD ["/docker-start.sh"]
