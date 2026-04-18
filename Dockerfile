@@ -102,7 +102,7 @@ FROM node:24-slim AS runner
 
 # 安装 GnuGo + KataGo 运行时依赖（fuse/libgomp1）
 RUN apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends gnugo libgomp1 && \
+    apt-get install -y -qq --no-install-recommends gnugo libgomp1 libzip4 && \
     rm -rf /var/lib/apt/lists/*
 
 # 从 katago-builder 复制 KataGo
