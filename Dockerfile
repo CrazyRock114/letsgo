@@ -16,24 +16,22 @@ RUN apt-get update -qq && \
 ARG KATAGO_VERSION=v1.16.4
 RUN mkdir -p /usr/local/katago && \
     cd /tmp && \
-    # 下载 KataGo 预编译二进制（eigenavx2 = CPU + AVX2，无需GPU）
     curl -sL --max-time 120 -o katago.zip \
       "https://github.com/lightvector/KataGo/releases/download/${KATAGO_VERSION}/katago-${KATAGO_VERSION#v}-eigenavx2-linux-x64.zip" && \
     unzip -o katago.zip -d katago-extracted && \
-    # 二进制在 zip 根目录
-    cp katago-extracted/katago /usr/local/katago/katago && \
+    # 二进制可能在 zip 根目录或子目录中，用 find 定位
+    find katago-extracted -name katago -type f -exec cp {} /usr/local/katago/katago \; && \
     chmod +x /usr/local/katago/katago && \
-    # 复制官方配置模板
-    cp katago-extracted/default_gtp.cfg /usr/local/katago/gtp.cfg 2>/dev/null || true && \
     rm -rf katago.zip katago-extracted
 
-# 注释掉官方配置中的重复键（后面会追加覆盖值）
-RUN for key in numSearchThreads nnMaxBatchSize logAllGTPCommunication logSearchInfo; do \
-      sed -i "s/^[[:space:]]*\(${key}[[:space:]]*=\)/#\\1/; t; s/^\(${key}[[:space:]]*=\)/#\\1/" /usr/local/katago/gtp.cfg; \
-    done && \
-    cat >> /usr/local/katago/gtp.cfg << 'CPUCFG'
-
-# ===== 小围棋乐园 CPU 专用覆盖配置 =====
+# 直接生成最小化 CPU 配置（不依赖官方配置模板，避免目录结构差异）
+RUN cat > /usr/local/katago/gtp.cfg << 'CPUCFG'
+# KataGo CPU 专用最小配置 - 小围棋乐园
+koRule = SIMPLE
+scoringRule = AREA
+taxRule = NONE
+multiStoneSuicideLegal = false
+hasResignedRule = true
 numSearchThreads = 2
 nnMaxBatchSize = 8
 logAllGTPCommunication = false
