@@ -16,10 +16,11 @@ RUN apt-get update -qq && \
 ARG KATAGO_VERSION=v1.16.4
 RUN mkdir -p /usr/local/katago && \
     cd /tmp && \
-    curl -sL --max-time 120 -o katago.zip \
-      "https://github.com/lightvector/KataGo/releases/download/${KATAGO_VERSION}/katago-${KATAGO_VERSION#v}-eigenavx2-linux-x64.zip" && \
+    KATAGO_URL="https://github.com/lightvector/KataGo/releases/download/${KATAGO_VERSION}/katago-${KATAGO_VERSION}-eigenavx2-linux-x64.zip" && \
+    echo "Downloading KataGo from: $KATAGO_URL" && \
+    curl -fSL --retry 3 --max-time 300 -o katago.zip "$KATAGO_URL" && \
+    ls -lh katago.zip && \
     unzip -o katago.zip -d katago-extracted && \
-    # 二进制可能在 zip 根目录或子目录中，用 find 定位
     find katago-extracted -name katago -type f -exec cp {} /usr/local/katago/katago \; && \
     chmod +x /usr/local/katago/katago && \
     rm -rf katago.zip katago-extracted
@@ -39,7 +40,7 @@ logSearchInfo = false
 CPUCFG
 
 # 下载神经网络模型（lionffen 2MB 小模型，支持所有棋盘大小）
-RUN curl -sL --max-time 120 -H "Referer: https://katagotraining.org/extra_networks/" \
+RUN curl -fSL --retry 3 --max-time 180 -H "Referer: https://katagotraining.org/extra_networks/" \
       -o /usr/local/katago/lionffen_b6c64.txt.gz \
       "https://media.katagotraining.org/uploaded/networks/models_extra/lionffen_b6c64_3x3_v10.txt.gz" ; \
     if [ "$(stat -c%s /usr/local/katago/lionffen_b6c64.txt.gz 2>/dev/null || echo 0)" -gt 100000 ]; then \
