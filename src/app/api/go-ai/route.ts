@@ -1,10 +1,27 @@
 // AI围棋对弈服务 - 使用LLM进行智能教学，真正的流式输出
+// 支持两种 LLM 后端：
+//   1. Coze SDK（沙箱环境自动注入 COZE_WORKLOAD_IDENTITY_API_KEY）
+//   2. DeepSeek API（设置 DEEPSEEK_API_KEY 环境变量）
 
 import { NextRequest, NextResponse } from "next/server";
 import { LLMClient, Config, HeaderUtils } from "coze-coding-dev-sdk";
 import { boardToString, positionToCoordinate, getMoveContext, type Stone, type Board } from "@/lib/go-logic";
 
-const config = new Config();
+// LLM 提供者检测
+const LLM_PROVIDER = (() => {
+  if (process.env.COZE_WORKLOAD_IDENTITY_API_KEY) return 'coze' as const;
+  if (process.env.DEEPSEEK_API_KEY) return 'deepseek' as const;
+  return 'none' as const;
+})();
+
+// Coze 配置（仅 Coze 环境下使用）
+const cozeConfig = new Config();
+
+// DeepSeek 配置
+const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_BASE_URL || 'https://api.deepseek.com';
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+
+console.log(`[go-ai] LLM provider: ${LLM_PROVIDER}${LLM_PROVIDER === 'deepseek' ? ` model=${DEEPSEEK_MODEL}` : ''}`);
 
 // 第三方观赛者视角的解说系统提示
 const COMMENTARY_SYSTEM = `你是围棋解说员，为小朋友解说对局。第三方视角，不是棋手。
@@ -204,13 +221,15 @@ function getGroupLibertiesExport(board: Board, row: number, col: number): number
 // 流式API端点
 export async function POST(request: NextRequest) {
   try {
+    if (LLM_PROVIDER === 'none') {
+      return NextResponse.json({ error: '未配置 LLM API。请设置 COZE_WORKLOAD_IDENTITY_API_KEY 或 DEEPSEEK_API_KEY 环境变量。' }, { status: 503 });
+    }
+
     const { type, board: rawBoard, currentPlayer, lastMove, moveColor, captured, question, difficulty, moveHistory, hintPosition } = await request.json();
     // 标准化棋盘：前端用"empty"字符串表示空位，但围棋逻辑用null
     const board: Board = (rawBoard as string[][]).map((row: string[]) =>
       row.map((cell: string) => cell === 'empty' ? null : cell)
     ) as Board;
-    const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
-    const client = new LLMClient(config, customHeaders);
 
     let messages: Array<{ role: 'system' | 'user'; content: string }> = [];
     const boardDesc = buildBoardDescription(board, currentPlayer, lastMove, moveColor, captured, moveHistory);
@@ -242,38 +261,137 @@ export async function POST(request: NextRequest) {
       ];
     }
 
-    const llmStream = client.stream(messages, {
-      temperature: type === 'ai-move' ? 0.4 : 0.8,
-      model: type === 'ai-move' ? 'doubao-seed-1-6-251015' : 'doubao-seed-1-6-251015',
-    });
+    const temperature = type === 'ai-move' ? 0.4 : 0.8;
 
-    const encoder = new TextEncoder();
-    const readableStream = new ReadableStream({
-      async start(controller) {
-        try {
-          for await (const chunk of llmStream) {
-            if (chunk.content) {
-              controller.enqueue(encoder.encode(chunk.content.toString()));
-            }
-          }
-        } catch (error) {
-          console.error('LLM stream error:', error);
-        } finally {
-          controller.close();
-        }
-      }
-    });
-
-    return new Response(readableStream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Transfer-Encoding': 'chunked',
-      },
-    });
+    // 根据提供者选择流式输出方式
+    if (LLM_PROVIDER === 'coze') {
+      return streamCoze(request, messages, temperature);
+    } else {
+      return streamDeepSeek(messages, temperature);
+    }
   } catch (error) {
     console.error('API error:', error);
     return NextResponse.json({ error: '处理失败' }, { status: 500 });
   }
+}
+
+// ========== Coze SDK 流式输出 ==========
+async function streamCoze(request: NextRequest, messages: Array<{ role: 'system' | 'user'; content: string }>, temperature: number) {
+  const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
+  const client = new LLMClient(cozeConfig, customHeaders);
+
+  const llmStream = client.stream(messages, {
+    temperature,
+    model: 'doubao-seed-1-6-251015',
+  });
+
+  const encoder = new TextEncoder();
+  const readableStream = new ReadableStream({
+    async start(controller) {
+      try {
+        for await (const chunk of llmStream) {
+          if (chunk.content) {
+            controller.enqueue(encoder.encode(chunk.content.toString()));
+          }
+        }
+      } catch (error) {
+        console.error('Coze LLM stream error:', error);
+      } finally {
+        controller.close();
+      }
+    }
+  });
+
+  return new Response(readableStream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Transfer-Encoding': 'chunked',
+    },
+  });
+}
+
+// ========== DeepSeek API 流式输出（OpenAI 兼容格式） ==========
+async function streamDeepSeek(messages: Array<{ role: 'system' | 'user'; content: string }>, temperature: number) {
+  const apiKey = process.env.DEEPSEEK_API_KEY!;
+
+  const response = await fetch(`${DEEPSEEK_API_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: DEEPSEEK_MODEL,
+      messages,
+      temperature,
+      stream: true,
+      max_tokens: 512,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`DeepSeek API error: ${response.status} ${errorText}`);
+    return NextResponse.json({ error: `DeepSeek API 调用失败: ${response.status}` }, { status: 502 });
+  }
+
+  // 将 DeepSeek 的 SSE 格式转换为纯文本流
+  const encoder = new TextEncoder();
+  const readableStream = new ReadableStream({
+    async start(controller) {
+      const reader = response.body?.getReader();
+      if (!reader) {
+        controller.close();
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          // SSE 格式：每条消息以 \n\n 分隔，每行格式为 "data: {...}"
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // 最后一行可能不完整，保留
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) continue;
+
+            const data = trimmed.slice(6); // 去掉 "data: "
+            if (data === '[DONE]') continue;
+
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content;
+              if (content) {
+                controller.enqueue(encoder.encode(content));
+              }
+            } catch {
+              // 忽略解析失败的行
+            }
+          }
+        }
+      } catch (error) {
+        console.error('DeepSeek stream read error:', error);
+      } finally {
+        controller.close();
+      }
+    }
+  });
+
+  return new Response(readableStream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Transfer-Encoding': 'chunked',
+    },
+  });
 }

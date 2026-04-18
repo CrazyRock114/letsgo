@@ -504,12 +504,26 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// GET: 返回可用引擎列表
+// GET: 返回可用引擎列表（含诊断信息）
 export async function GET() {
+  // 详细诊断：帮助定位 Railway 上引擎不生效的原因
+  const katagoBinExists = fs.existsSync(KATAGO_PATH);
+  const katagoModel = findKataGoModel();
+  const katagoCfgExists = fs.existsSync(KATAGO_CONFIG);
+  const gnugoPath = findGnuGoPath();
+
+  console.log(`[go-engine] Diagnosis: katago_bin=${katagoBinExists}, model=${katagoModel}, cfg=${katagoCfgExists}, gnugo=${gnugoPath}, cwd=${process.cwd()}`);
+
   return NextResponse.json({
     engines: [
-      { id: "katago", name: "KataGo", available: isKataGoAvailable(), desc: "深度学习引擎，棋力最强" },
-      { id: "gnugo", name: "GnuGo", available: isGnuGoAvailable(), desc: "经典围棋引擎，棋力扎实" },
+      {
+        id: "katago", name: "KataGo", available: isKataGoAvailable(), desc: "深度学习引擎，棋力最强",
+        debug: { binExists: katagoBinExists, model: katagoModel, cfgExists: katagoCfgExists, binPath: KATAGO_PATH, cfgPath: KATAGO_CONFIG },
+      },
+      {
+        id: "gnugo", name: "GnuGo", available: isGnuGoAvailable(), desc: "经典围棋引擎，棋力扎实",
+        debug: { path: gnugoPath, searchedPaths: GNUGO_PATHS },
+      },
       { id: "local", name: "本地AI", available: true, desc: "内置启发式AI，随时可用" },
     ],
   });
