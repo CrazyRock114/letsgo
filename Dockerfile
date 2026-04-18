@@ -107,9 +107,9 @@ RUN apt-get update -qq && \
 COPY --from=katago-builder /usr/local/katago /usr/local/katago
 
 # === Next.js standalone 部署 ===
-# app-builder 的 WORKDIR 是 /app，所以 standalone 输出在 .next/standalone/app/ 下
-# 直接复制到 /app 保持路径一致
-COPY --from=app-builder /app/.next/standalone/app /app
+# standalone 输出直接在 .next/standalone/ 下（非 monorepo 没有 app/ 子目录）
+# 复制整个 standalone 到 /app，server.js 就在 /app/server.js
+COPY --from=app-builder /app/.next/standalone /app
 # static 和 public 需要单独复制（standalone 不包含这些）
 COPY --from=app-builder /app/.next/static /app/.next/static
 COPY --from=app-builder /app/public /app/public
