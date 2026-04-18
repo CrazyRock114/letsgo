@@ -147,6 +147,7 @@ export default function GoGamePage() {
   const [consecutivePasses, setConsecutivePasses] = useState(0);
   const [gameEnded, setGameEnded] = useState(false);
   const [gameResult, setGameResult] = useState<{ winner: string; detail: string } | null>(null);
+  const [showGameEndDialog, setShowGameEndDialog] = useState(false);
 
   // ===== 解说历史 =====
   const [commentaries, setCommentaries] = useState<CommentaryEntry[]>([]);
@@ -375,6 +376,7 @@ export default function GoGamePage() {
     if (endCheck.ended) {
       const result = calculateFinalScore(newBoard);
       setGameEnded(true);
+    setShowGameEndDialog(true);
       setGameResult(result);
       setCurrentPlayer('black');
       return;
@@ -427,6 +429,7 @@ export default function GoGamePage() {
                 if (newPasses >= 2) {
                   const result = calculateFinalScore(newBoard);
                   setGameEnded(true);
+    setShowGameEndDialog(true);
                   setGameResult(result);
                 }
                 setCurrentPlayer('black');
@@ -472,6 +475,7 @@ export default function GoGamePage() {
         if (endCheck2.ended) {
           const result = calculateFinalScore(finalBoard);
           setGameEnded(true);
+    setShowGameEndDialog(true);
           setGameResult(result);
         }
       } else {
@@ -481,6 +485,7 @@ export default function GoGamePage() {
         if (newPasses >= 2) {
           const result = calculateFinalScore(newBoard);
           setGameEnded(true);
+    setShowGameEndDialog(true);
           setGameResult(result);
         }
       }
@@ -523,6 +528,7 @@ export default function GoGamePage() {
     setConsecutivePasses(0);
     setGameEnded(false);
     setGameResult(null);
+    setShowGameEndDialog(false);
   }, [boardSize]);
 
   // ===== 停手 =====
@@ -536,6 +542,7 @@ export default function GoGamePage() {
       // 双方连续停手，游戏结束
       const result = calculateFinalScore(board);
       setGameEnded(true);
+    setShowGameEndDialog(true);
       setGameResult(result);
       return;
     }
@@ -557,6 +564,7 @@ export default function GoGamePage() {
       // AI也无子可下
       const result = calculateFinalScore(board);
       setGameEnded(true);
+    setShowGameEndDialog(true);
       setGameResult(result);
       setIsAIThinking(false);
       return;
@@ -592,6 +600,7 @@ export default function GoGamePage() {
           } else if (data.pass) {
             const result = calculateFinalScore(board);
             setGameEnded(true);
+    setShowGameEndDialog(true);
             setGameResult(result);
             setIsAIThinking(false);
             return;
@@ -633,6 +642,7 @@ export default function GoGamePage() {
     if (endCheck.ended) {
       const result = calculateFinalScore(finalBoard);
       setGameEnded(true);
+    setShowGameEndDialog(true);
       setGameResult(result);
     }
 
@@ -746,7 +756,7 @@ export default function GoGamePage() {
           final_board: board,
           black_score: score.black,
           white_score: score.white,
-          status: 'playing',
+          status: gameEnded ? 'finished' : 'playing',
           title: saveTitle || `${boardSize}路${difficulty === 'easy' ? '初级' : difficulty === 'medium' ? '中级' : '高级'}对局`,
         }),
       });
@@ -1539,8 +1549,8 @@ export default function GoGamePage() {
       </div>
 
       {/* 游戏结束弹窗 - 居中显示 */}
-      <Dialog open={gameEnded && !!gameResult} onOpenChange={() => {}}>
-        <DialogContent className="sm:max-w-md" onPointerDownOutside={(e) => e.preventDefault()} onInteractOutside={(e) => e.preventDefault()}>
+      <Dialog open={showGameEndDialog} onOpenChange={(open) => { if (!open) setShowGameEndDialog(false); }}>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader className="items-center">
             <DialogTitle className="flex flex-col items-center gap-2">
               <Trophy className="w-12 h-12 text-yellow-500" />
@@ -1549,9 +1559,14 @@ export default function GoGamePage() {
           </DialogHeader>
           <div className="text-center space-y-3 py-2">
             <p className="text-sm text-gray-600">{gameResult?.detail}</p>
-            <Button onClick={restartGame} size="lg" className="bg-amber-700 hover:bg-amber-800 text-white px-8">
-              再来一局
-            </Button>
+            <div className="flex gap-3 justify-center">
+              <Button onClick={saveGame} disabled={isSaving} variant="outline" size="lg" className="px-6">
+                {isSaving ? '保存中...' : '保存棋局'}
+              </Button>
+              <Button onClick={restartGame} size="lg" className="bg-amber-700 hover:bg-amber-800 text-white px-6">
+                再来一局
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
