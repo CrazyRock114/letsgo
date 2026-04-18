@@ -8,7 +8,7 @@ FROM node:24-slim AS katago-builder
 
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-      ca-certificates curl unzip && \
+      ca-certificates curl unzip p7zip-full && \
     rm -rf /var/lib/apt/lists/*
 
 ARG KATAGO_VERSION=v1.16.4
@@ -21,7 +21,40 @@ RUN mkdir -p /usr/local/katago && \
     unzip -o katago.zip -d katago-extracted && \
     find katago-extracted -name katago -type f -exec cp {} /usr/local/katago/katago \; && \
     chmod +x /usr/local/katago/katago && \
-    rm -rf katago.zip katago-extracted
+    echo "Checking if katago is an AppImage..." && \
+    file /usr/local/katago/katago && \
+    cd /usr/local/katago && \
+    if head -c 100 katago | grep -qi "appimage\|elf"; then \
+      if head -c 4 katago | od -A x -t x1z | head -1 | grep -q "7f 45 4c 46"; then \
+        echo "Regular ELF binary detected, no extraction needed"; \
+      else \
+        echo "AppImage detected, extracting with 7z (no FUSE needed)..." && \
+        7z x katago -okatago_extracted -y 2>/dev/null && \
+        find katago_extracted -type f -executable -name "katago" | head -3 && \
+        KATA_BIN=$(find katago_extracted -type f -executable -name "katago" | head -1) && \
+        if [ -n "$KATA_BIN" ]; then \
+          echo "Found real katago binary: $KATA_BIN" && \
+          cp "$KATA_BIN" /usr/local/katago/katago-real && \
+          mv /usr/local/katago/katago-real /usr/local/katago/katago && \
+          chmod +x /usr/local/katago/katago; \
+        else \
+          echo "Trying squashfs-root approach..." && \
+          ls katago_extracted/ 2>/dev/null | head -10; \
+        fi && \
+        rm -rf katago_extracted; \
+      fi; \
+    else \
+      echo "Binary type unclear, trying 7z extraction anyway..." && \
+      7z x katago -okatago_extracted -y 2>/dev/null && \
+      KATA_BIN=$(find katago_extracted -type f -executable -name "katago" | head -1) && \
+      if [ -n "$KATA_BIN" ]; then \
+        echo "Extracted real katago: $KATA_BIN" && \
+        cp "$KATA_BIN" /usr/local/katago/katago && \
+        chmod +x /usr/local/katago/katago; \
+      fi && \
+      rm -rf katago_extracted; \
+    fi && \
+    rm -rf /tmp/katago.zip /tmp/katago-extracted
 
 # 直接生成最小化 CPU 配置（不依赖官方配置模板）
 RUN cat > /usr/local/katago/gtp.cfg << 'CPUCFG'
@@ -66,7 +99,7 @@ RUN curl -fSL --retry 3 --max-time 180 -H "Referer: https://katagotraining.org/e
       fi; \
     fi
 
-# 验证安装
+# 验证安装（katago version 必须成功，否则构建失败）
 RUN /usr/local/katago/katago version && \
     ls -lh /usr/local/katago/*.gz 2>/dev/null || true
 
