@@ -534,13 +534,33 @@ export async function GET() {
   const katagoCfgExists = fs.existsSync(KATAGO_CONFIG);
   const gnugoPath = findGnuGoPath();
 
+  // 运行时诊断：检查 KataGo 动态链接库和启动测试
+  let lddOutput = '';
+  let katagoTestOutput = '';
+  if (katagoBinExists) {
+    try {
+      const { execSync } = await import('child_process');
+      lddOutput = execSync(`ldd ${KATAGO_PATH} 2>&1`, { timeout: 5000 }).toString().trim();
+    } catch (e) {
+      lddOutput = `ldd failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
+    try {
+      const { execSync } = await import('child_process');
+      katagoTestOutput = execSync(`${KATAGO_PATH} version 2>&1`, { timeout: 10000 }).toString().trim();
+    } catch (e) {
+      katagoTestOutput = `version test failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+
   console.log(`[go-engine] Diagnosis: katago_bin=${katagoBinExists}, model=${katagoModel}, cfg=${katagoCfgExists}, gnugo=${gnugoPath}, cwd=${process.cwd()}`);
+  console.log(`[go-engine] KataGo ldd:\n${lddOutput}`);
+  console.log(`[go-engine] KataGo version test:\n${katagoTestOutput}`);
 
   return NextResponse.json({
     engines: [
       {
         id: "katago", name: "KataGo", available: isKataGoAvailable(), desc: "深度学习引擎，棋力最强",
-        debug: { binExists: katagoBinExists, model: katagoModel, cfgExists: katagoCfgExists, binPath: KATAGO_PATH, cfgPath: KATAGO_CONFIG },
+        debug: { binExists: katagoBinExists, model: katagoModel, cfgExists: katagoCfgExists, binPath: KATAGO_PATH, cfgPath: KATAGO_CONFIG, ldd: lddOutput, versionTest: katagoTestOutput },
       },
       {
         id: "gnugo", name: "GnuGo", available: isGnuGoAvailable(), desc: "经典围棋引擎，棋力扎实",
