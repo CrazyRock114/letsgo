@@ -21,32 +21,31 @@ RUN mkdir -p /usr/local/katago && \
     unzip -o katago.zip -d katago-extracted && \
     find katago-extracted -name katago -type f -exec cp {} /usr/local/katago/katago \; && \
     chmod +x /usr/local/katago/katago && \
-    echo "Checking if katago is an AppImage..." && \
-    file /usr/local/katago/katago && \
+    echo "Checking katago binary type..." && \
     cd /usr/local/katago && \
-    if head -c 100 katago | grep -qi "appimage\|elf"; then \
-      if head -c 4 katago | od -A x -t x1z | head -1 | grep -q "7f 45 4c 46"; then \
-        echo "Regular ELF binary detected, no extraction needed"; \
-      else \
-        echo "AppImage detected, extracting with 7z (no FUSE needed)..." && \
-        7z x katago -okatago_extracted -y 2>/dev/null && \
-        find katago_extracted -type f -executable -name "katago" | head -3 && \
-        KATA_BIN=$(find katago_extracted -type f -executable -name "katago" | head -1) && \
+    if od -A n -t x1 -N 4 katago | grep -q "7f 45 4c 46"; then \
+      echo "ELF binary detected - checking if statically linked..." && \
+      if ldd katago 2>&1 | grep -q "not a dynamic"; then \
+        echo "Statically linked or AppImage, trying 7z extraction..." && \
+        7z x katago -okatago_extracted -y 2>/dev/null; \
+        KATA_BIN=$(find katago_extracted -type f -executable -name "katago" | head -1); \
         if [ -n "$KATA_BIN" ]; then \
-          echo "Found real katago binary: $KATA_BIN" && \
+          echo "Found real katago binary inside: $KATA_BIN" && \
           cp "$KATA_BIN" /usr/local/katago/katago-real && \
           mv /usr/local/katago/katago-real /usr/local/katago/katago && \
           chmod +x /usr/local/katago/katago; \
         else \
-          echo "Trying squashfs-root approach..." && \
-          ls katago_extracted/ 2>/dev/null | head -10; \
+          echo "No katago binary found in extraction, keeping original"; \
+          ls -la katago_extracted/ 2>/dev/null | head -10; \
         fi && \
         rm -rf katago_extracted; \
+      else \
+        echo "Regular dynamic ELF binary, no extraction needed"; \
       fi; \
     else \
-      echo "Binary type unclear, trying 7z extraction anyway..." && \
-      7z x katago -okatago_extracted -y 2>/dev/null && \
-      KATA_BIN=$(find katago_extracted -type f -executable -name "katago" | head -1) && \
+      echo "Not standard ELF, trying 7z extraction..." && \
+      7z x katago -okatago_extracted -y 2>/dev/null; \
+      KATA_BIN=$(find katago_extracted -type f -executable -name "katago" | head -1); \
       if [ -n "$KATA_BIN" ]; then \
         echo "Extracted real katago: $KATA_BIN" && \
         cp "$KATA_BIN" /usr/local/katago/katago && \
@@ -54,6 +53,10 @@ RUN mkdir -p /usr/local/katago && \
       fi && \
       rm -rf katago_extracted; \
     fi && \
+    echo "Final binary info:" && \
+    ls -lh /usr/local/katago/katago && \
+    od -A n -t x1 -N 4 /usr/local/katago/katago && \
+    /usr/local/katago/katago version 2>&1 | head -3 && \
     rm -rf /tmp/katago.zip /tmp/katago-extracted
 
 # 直接生成最小化 CPU 配置（不依赖官方配置模板）
