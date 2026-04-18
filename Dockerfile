@@ -1,31 +1,34 @@
 # ================================================================
 # 小围棋乐园 - Docker 镜像
-# Next.js + KataGo (源码编译) + GnuGo (apt安装)
+# Next.js + KataGo (预编译二进制) + GnuGo (apt安装)
 # ================================================================
-# 构建约 5-8 分钟（KataGo编译3分钟 + 模型下载1分钟 + npm构建2分钟）
+# 构建约 2-3 分钟（下载KataGo二进制30秒 + 模型下载30秒 + npm构建2分钟）
 # 运行时内存 ~200-400MB（KataGo模型加载后）
 
-# ---- Stage 1: 编译 KataGo ----
+# ---- Stage 1: 准备 KataGo（预编译二进制 + 模型）----
 FROM node:24-slim AS katago-builder
 
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-      cmake g++ git libeigen3-dev zlib1g-dev libzip-dev ca-certificates curl && \
+      ca-certificates curl unzip && \
     rm -rf /var/lib/apt/lists/*
 
-ARG KATAGO_VERSION=v1.15.3
-RUN git clone --depth 1 --branch ${KATAGO_VERSION} https://github.com/lightvector/KataGo.git /tmp/katago-src && \
-    mkdir -p /tmp/katago-src/cpp/build && \
-    cd /tmp/katago-src/cpp/build && \
-    cmake .. -DUSE_BACKEND=EIGEN -DUSE_AVX2=1 -DCMAKE_BUILD_TYPE=Release && \
-    make -j"$(nproc)" && \
-    mkdir -p /usr/local/katago && \
-    cp katago /usr/local/katago/katago && \
-    chmod +x /usr/local/katago/katago
+ARG KATAGO_VERSION=v1.16.4
+RUN mkdir -p /usr/local/katago && \
+    cd /tmp && \
+    # 下载 KataGo 预编译二进制（eigenavx2 = CPU + AVX2，无需GPU）
+    curl -sL --max-time 120 -o katago.zip \
+      "https://github.com/lightvector/KataGo/releases/download/${KATAGO_VERSION}/katago-${KATAGO_VERSION#v}-eigenavx2-linux-x64.zip" && \
+    unzip -o katago.zip -d katago-extracted && \
+    # 二进制在 zip 根目录
+    cp katago-extracted/katago /usr/local/katago/katago && \
+    chmod +x /usr/local/katago/katago && \
+    # 复制官方配置模板
+    cp katago-extracted/default_gtp.cfg /usr/local/katago/gtp.cfg 2>/dev/null || true && \
+    rm -rf katago.zip katago-extracted
 
-# 复制官方完整配置并注释重复键
-RUN cp /tmp/katago-src/cpp/configs/gtp_example.cfg /usr/local/katago/gtp.cfg && \
-    for key in numSearchThreads nnMaxBatchSize logAllGTPCommunication logSearchInfo; do \
+# 注释掉官方配置中的重复键（后面会追加覆盖值）
+RUN for key in numSearchThreads nnMaxBatchSize logAllGTPCommunication logSearchInfo; do \
       sed -i "s/^[[:space:]]*\(${key}[[:space:]]*=\)/#\\1/; t; s/^\(${key}[[:space:]]*=\)/#\\1/" /usr/local/katago/gtp.cfg; \
     done && \
     cat >> /usr/local/katago/gtp.cfg << 'CPUCFG'
@@ -68,8 +71,7 @@ RUN curl -sL --max-time 120 -H "Referer: https://katagotraining.org/extra_networ
 
 # 验证安装
 RUN /usr/local/katago/katago version && \
-    ls -lh /usr/local/katago/*.gz 2>/dev/null || true && \
-    rm -rf /tmp/katago-src
+    ls -lh /usr/local/katago/*.gz 2>/dev/null || true
 
 # ---- Stage 2: 构建 Next.js ----
 FROM node:24-slim AS app-builder
@@ -80,18 +82,18 @@ WORKDIR /app
 
 # 先复制依赖文件（利用 Docker 缓存层）
 COPY package.json pnpm-lock.yaml* ./
-# 覆盖 npm 镜像配置（Railway 构建环境用默认 registry 更快）
+# 覆盖 npm 镜像配置
 RUN echo "registry=https://registry.npmjs.org/" > .npmrc
 RUN pnpm install --frozen-lockfile --prefer-offline 2>/dev/null || pnpm install
 
-# 复制源码并构建（直接用 next build，跳过 tsup 和 prepare.sh）
+# 复制源码并构建
 COPY . .
 RUN pnpm next build
 
 # ---- Stage 3: 运行时镜像 ----
 FROM node:24-slim AS runner
 
-# 安装 GnuGo（比捆绑二进制更可靠）和运行时依赖
+# 安装 GnuGo
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends gnugo && \
     rm -rf /var/lib/apt/lists/*
@@ -105,9 +107,6 @@ WORKDIR /app
 COPY --from=app-builder /app/.next/standalone/app ./
 COPY --from=app-builder /app/.next/static ./.next/static
 COPY --from=app-builder /app/public ./public
-
-# GnuGo 二进制也需要能被找到（项目代码搜索 /usr/games/gnugo）
-# apt 安装的 gnugo 已经在 /usr/games/gnugo
 
 # 环境变量
 ENV NODE_ENV=production
