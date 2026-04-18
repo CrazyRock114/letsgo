@@ -170,8 +170,10 @@ export default function GoGamePage() {
     const timer = setTimeout(() => setDifficultyToast(''), 2000);
     return () => clearTimeout(timer);
   }, [difficultyToast]);
-  const [showEngineConfirm, setShowEngineConfirm] = useState(false);
-  const [pendingEngine, setPendingEngine] = useState<EngineId | null>(null);
+  // 统一的重开确认弹窗（引擎/执子/棋盘大小切换）
+  const [showRestartConfirm, setShowRestartConfirm] = useState(false);
+  const [restartConfirmMsg, setRestartConfirmMsg] = useState('');
+  const [pendingRestartAction, setPendingRestartAction] = useState<(() => void) | null>(null);
 
   // AI先手触发：restartGame后如果playerColor=white，触发AI下第一步
   useEffect(() => {
@@ -1231,7 +1233,16 @@ export default function GoGamePage() {
               key={size}
               size="sm"
               variant={boardSize === size ? 'default' : 'outline'}
-              onClick={() => changeBoardSize(size)}
+              onClick={() => {
+                if (size === boardSize) return;
+                if (history.length > 0 && !gameEnded) {
+                  setRestartConfirmMsg('切换棋盘大小将重新开始一局棋，当前棋局不会保存。');
+                  setPendingRestartAction(() => () => changeBoardSize(size));
+                  setShowRestartConfirm(true);
+                } else {
+                  changeBoardSize(size);
+                }
+              }}
               className={boardSize === size ? 'bg-amber-700 hover:bg-amber-800 h-7 text-xs' : 'h-7 text-xs'}
               disabled={isReplayMode}
             >
@@ -1252,8 +1263,12 @@ export default function GoGamePage() {
                     if (id === engine) return;
                     // 如果棋局已开始（有落子历史），弹窗确认
                     if (history.length > 0 && !gameEnded) {
-                      setPendingEngine(id);
-                      setShowEngineConfirm(true);
+                      setRestartConfirmMsg(`切换引擎将重新开始一局棋，当前棋局不会保存。`);
+                      setPendingRestartAction(() => () => {
+                        setEngine(id);
+                        restartGame();
+                      });
+                      setShowRestartConfirm(true);
                     } else {
                       // 棋局未开始或已结束，直接切换
                       setEngine(id);
@@ -1310,8 +1325,17 @@ export default function GoGamePage() {
                 variant={playerColor === key ? 'default' : 'outline'}
                 onClick={() => {
                   if (key === playerColor) return;
-                  setPlayerColor(key);
-                  setNeedsNewGame(true);
+                  if (history.length > 0 && !gameEnded) {
+                    setRestartConfirmMsg('切换执子颜色将重新开始一局棋，当前棋局不会保存。');
+                    setPendingRestartAction(() => () => {
+                      setPlayerColor(key);
+                      setNeedsNewGame(true);
+                    });
+                    setShowRestartConfirm(true);
+                  } else {
+                    setPlayerColor(key);
+                    setNeedsNewGame(true);
+                  }
                 }}
                 className={playerColor === key ? 'bg-amber-700 hover:bg-amber-800 h-7 text-xs' : 'h-7 text-xs'}
                 disabled={isReplayMode}
@@ -1816,7 +1840,7 @@ export default function GoGamePage() {
           <DialogHeader className="items-center">
             <DialogTitle className="flex flex-col items-center gap-2">
               <Trophy className="w-12 h-12 text-yellow-500" />
-              <span className="text-xl">{gameResult?.winner === 'black' ? '你赢了!' : '白方(AI)获胜'}</span>
+              <span className="text-xl">{gameResult?.winner === playerColor ? '你赢了!' : (playerColor === 'black' ? '白方(AI)获胜' : '黑方(AI)获胜')}</span>
             </DialogTitle>
           </DialogHeader>
           <div className="text-center space-y-3 py-2">
@@ -1833,26 +1857,25 @@ export default function GoGamePage() {
         </DialogContent>
       </Dialog>
 
-      {/* 引擎切换确认弹窗 */}
-      <Dialog open={showEngineConfirm} onOpenChange={(open) => { if (!open) { setShowEngineConfirm(false); setPendingEngine(null); } }}>
+      {/* 重开确认弹窗（引擎/执子/棋盘大小切换） */}
+      <Dialog open={showRestartConfirm} onOpenChange={(open) => { if (!open) { setShowRestartConfirm(false); setPendingRestartAction(null); } }}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>切换引擎</DialogTitle>
-            <DialogDescription>切换引擎将重新开始一局棋，当前棋局不会保存。</DialogDescription>
+            <DialogTitle>重新开始</DialogTitle>
+            <DialogDescription>{restartConfirmMsg}</DialogDescription>
           </DialogHeader>
           <div className="flex gap-3 justify-end pt-2">
-            <Button variant="outline" onClick={() => { setShowEngineConfirm(false); setPendingEngine(null); }}>
+            <Button variant="outline" onClick={() => { setShowRestartConfirm(false); setPendingRestartAction(null); }}>
               取消
             </Button>
             <Button className="bg-amber-700 hover:bg-amber-800 text-white" onClick={() => {
-              if (pendingEngine) {
-                setEngine(pendingEngine);
-                restartGame();
+              if (pendingRestartAction) {
+                pendingRestartAction();
               }
-              setShowEngineConfirm(false);
-              setPendingEngine(null);
+              setShowRestartConfirm(false);
+              setPendingRestartAction(null);
             }}>
-              切换并重开
+              确认并重开
             </Button>
           </div>
         </DialogContent>
