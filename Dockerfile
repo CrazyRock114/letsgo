@@ -98,9 +98,9 @@ RUN echo "=== Standalone output structure ===" && \
 # ---- Stage 3: 运行时镜像 ----
 FROM node:24-slim AS runner
 
-# 安装 GnuGo
+# 安装 GnuGo + KataGo 运行时依赖（fuse/libgomp1）
 RUN apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends gnugo && \
+    apt-get install -y -qq --no-install-recommends gnugo fuse libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
 # 从 katago-builder 复制 KataGo

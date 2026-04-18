@@ -6,6 +6,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { spawn, ChildProcess } from "child_process";
 import fs from "fs";
 
+// 防止 EPIPE 等管道错误导致进程崩溃
+process.on('uncaughtException', (err: Error) => {
+  if (err.code === 'EPIPE') {
+    // KataGo 进程退出后 stdin 写入会触发 EPIPE，忽略即可
+    console.warn('[go-engine] Ignored EPIPE error (KataGo process likely exited)');
+    return;
+  }
+  throw err;
+});
+
 // 引擎路径
 const KATAGO_PATH = "/usr/local/katago/katago";
 const KATAGO_DIR = "/usr/local/katago";
@@ -235,7 +245,15 @@ class PersistentKataGo {
       }, timeoutMs);
 
       this.commandQueue.push({ resolve, reject, timeout });
-      this.proc.stdin?.write(command + "\n");
+      try {
+        this.proc.stdin?.write(command + "\n");
+      } catch (writeErr) {
+        // 进程已退出，stdin 写入会 EPIPE，清理超时并拒绝
+        clearTimeout(timeout);
+        const idx = this.commandQueue.findIndex(i => i.resolve === resolve);
+        if (idx !== -1) this.commandQueue.splice(idx, 1);
+        reject(new Error(`KataGo stdin write failed (process may have exited): ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`));
+      }
     });
   }
 
