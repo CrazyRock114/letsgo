@@ -101,28 +101,34 @@ RUN apt-get update -qq && \
 COPY --from=katago-builder /usr/local/katago /usr/local/katago
 
 # 从 app-builder 复制构建产物
-# standalone 模式会保留完整构建路径: .next/standalone/<absolute-workdir>/
-# 先复制整个 standalone 目录，再用 find 定位 server.js 并展平目录结构
-COPY --from=app-builder /app/.next/standalone /tmp/standalone
-COPY --from=app-builder /app/.next/static /tmp/static
-COPY --from=app-builder /app/public /tmp/public
+# Next.js standalone 模式保留完整构建路径: .next/standalone/<workdir-path>/
+# 关键：不能展平目录结构，server.js 的 require('../constant') 等相对路径依赖原始目录层级
+# 做法：复制整个 standalone 目录到 /，然后 WORKDIR 设为 server.js 所在目录
+COPY --from=app-builder /app/.next/standalone /next-standalone
+COPY --from=app-builder /app/.next/static /next-standalone-static
+COPY --from=app-builder /app/public /next-standalone-public
 
-RUN SERVER_JS=$(find /tmp/standalone -name "server.js" | head -1) && \
+# 定位 server.js 并设置运行目录，复制 static 和 public 到正确位置
+RUN SERVER_JS=$(find /next-standalone -name "server.js" -type f | head -1) && \
     if [ -z "$SERVER_JS" ]; then \
-      echo "ERROR: server.js not found" && find /tmp/standalone -type f | head -30 && exit 1; \
+      echo "ERROR: server.js not found in standalone output" && \
+      find /next-standalone -type f | head -30 && exit 1; \
     fi && \
-    STANDALONE_DIR=$(dirname "$SERVER_JS") && \
+    SERVER_DIR=$(dirname "$SERVER_JS") && \
     echo "Found server.js at: $SERVER_JS" && \
-    echo "Standalone dir: $STANDALONE_DIR" && \
-    mkdir -p /app-deploy && \
-    cp -r "$STANDALONE_DIR/." /app-deploy/ && \
-    mkdir -p /app-deploy/.next/static && \
-    cp -r /tmp/static/. /app-deploy/.next/static/ && \
-    cp -r /tmp/public /app-deploy/public && \
-    rm -rf /tmp/standalone /tmp/static /tmp/public && \
-    echo "=== Deploy dir ===" && ls -la /app-deploy/ && echo "=== .next ===" && ls -la /app-deploy/.next/
+    echo "Server directory: $SERVER_DIR" && \
+    mkdir -p "$SERVER_DIR/.next/static" && \
+    cp -r /next-standalone-static/. "$SERVER_DIR/.next/static/" && \
+    cp -r /next-standalone-public "$SERVER_DIR/public" && \
+    echo "SERVER_DIR=$SERVER_DIR" > /app-location && \
+    rm -rf /next-standalone-static /next-standalone-public
 
-WORKDIR /app-deploy
+# 读取 server.js 的目录作为 WORKDIR
+RUN SERVER_DIR=$(cat /app-location | grep SERVER_DIR | cut -d= -f2) && \
+    echo "Setting WORKDIR to: $SERVER_DIR" && \
+    ln -s "$SERVER_DIR" /app
+
+WORKDIR /app
 
 # 环境变量
 ENV NODE_ENV=production
