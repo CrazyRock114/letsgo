@@ -8,10 +8,10 @@ FROM node:24-slim AS katago-builder
 
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-      ca-certificates curl unzip p7zip-full && \
+      ca-certificates curl unzip && \
     rm -rf /var/lib/apt/lists/*
 
-ARG KATAGO_VERSION=v1.16.4
+ARG KATAGO_VERSION=v1.15.3
 RUN mkdir -p /usr/local/katago && \
     cd /tmp && \
     KATAGO_URL="https://github.com/lightvector/KataGo/releases/download/${KATAGO_VERSION}/katago-${KATAGO_VERSION}-eigenavx2-linux-x64.zip" && \
@@ -21,42 +21,8 @@ RUN mkdir -p /usr/local/katago && \
     unzip -o katago.zip -d katago-extracted && \
     find katago-extracted -name katago -type f -exec cp {} /usr/local/katago/katago \; && \
     chmod +x /usr/local/katago/katago && \
-    echo "Checking katago binary type..." && \
-    cd /usr/local/katago && \
-    if od -A n -t x1 -N 4 katago | grep -q "7f 45 4c 46"; then \
-      echo "ELF binary detected - checking if statically linked..." && \
-      if ldd katago 2>&1 | grep -q "not a dynamic"; then \
-        echo "Statically linked or AppImage, trying 7z extraction..." && \
-        7z x katago -okatago_extracted -y 2>/dev/null; \
-        KATA_BIN=$(find katago_extracted -type f -executable -name "katago" | head -1); \
-        if [ -n "$KATA_BIN" ]; then \
-          echo "Found real katago binary inside: $KATA_BIN" && \
-          cp "$KATA_BIN" /usr/local/katago/katago-real && \
-          mv /usr/local/katago/katago-real /usr/local/katago/katago && \
-          chmod +x /usr/local/katago/katago; \
-        else \
-          echo "No katago binary found in extraction, keeping original"; \
-          ls -la katago_extracted/ 2>/dev/null | head -10; \
-        fi && \
-        rm -rf katago_extracted; \
-      else \
-        echo "Regular dynamic ELF binary, no extraction needed"; \
-      fi; \
-    else \
-      echo "Not standard ELF, trying 7z extraction..." && \
-      7z x katago -okatago_extracted -y 2>/dev/null; \
-      KATA_BIN=$(find katago_extracted -type f -executable -name "katago" | head -1); \
-      if [ -n "$KATA_BIN" ]; then \
-        echo "Extracted real katago: $KATA_BIN" && \
-        cp "$KATA_BIN" /usr/local/katago/katago && \
-        chmod +x /usr/local/katago/katago; \
-      fi && \
-      rm -rf katago_extracted; \
-    fi && \
-    echo "Final binary info:" && \
-    ls -lh /usr/local/katago/katago && \
-    od -A n -t x1 -N 4 /usr/local/katago/katago && \
-    /usr/local/katago/katago version 2>&1 | head -3 && \
+    echo "Verifying katago binary..." && \
+    /usr/local/katago/katago version && \
     rm -rf /tmp/katago.zip /tmp/katago-extracted
 
 # 直接生成最小化 CPU 配置（不依赖官方配置模板）
@@ -136,7 +102,7 @@ FROM node:24-slim AS runner
 
 # 安装 GnuGo + KataGo 运行时依赖（fuse/libgomp1）
 RUN apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends gnugo fuse libgomp1 && \
+    apt-get install -y -qq --no-install-recommends gnugo libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
 # 从 katago-builder 复制 KataGo
