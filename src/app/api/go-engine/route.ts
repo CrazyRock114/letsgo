@@ -7,8 +7,8 @@ import { spawn, ChildProcess } from "child_process";
 import fs from "fs";
 
 // 防止 EPIPE 等管道错误导致进程崩溃
-process.on('uncaughtException', (err: Error) => {
-  if (err.code === 'EPIPE') {
+process.on('uncaughtException', (err: unknown) => {
+  if (typeof err === 'object' && err !== null && 'code' in err && (err as { code: string }).code === 'EPIPE') {
     // KataGo 进程退出后 stdin 写入会触发 EPIPE，忽略即可
     console.warn('[go-engine] Ignored EPIPE error (KataGo process likely exited)');
     return;
