@@ -26,7 +26,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import {
   RotateCcw,
@@ -154,6 +154,18 @@ export default function GoGamePage() {
   const [isCommentaryStreaming, setIsCommentaryStreaming] = useState(false);
 
   const [streamingText, setStreamingText] = useState('');
+
+  // ===== 切换确认 =====
+  const [difficultyToast, setDifficultyToast] = useState<string>('');
+
+  // 难度提示自动消失
+  useEffect(() => {
+    if (!difficultyToast) return;
+    const timer = setTimeout(() => setDifficultyToast(''), 2000);
+    return () => clearTimeout(timer);
+  }, [difficultyToast]);
+  const [showEngineConfirm, setShowEngineConfirm] = useState(false);
+  const [pendingEngine, setPendingEngine] = useState<EngineId | null>(null);
 
   // 解说请求ID，用于非阻塞时取消旧请求的流式输出
   const commentaryRequestId = useRef(0);
@@ -1031,7 +1043,19 @@ export default function GoGamePage() {
               return (
                 <button
                   key={id}
-                  onClick={() => { if (avail) { setEngine(id); restartGame(); } }}
+                  onClick={() => {
+                    if (!avail) return;
+                    if (id === engine) return;
+                    // 如果棋局已开始（有落子历史），弹窗确认
+                    if (history.length > 0 && !gameEnded) {
+                      setPendingEngine(id);
+                      setShowEngineConfirm(true);
+                    } else {
+                      // 棋局未开始或已结束，直接切换
+                      setEngine(id);
+                      restartGame();
+                    }
+                  }}
                   disabled={isReplayMode || !avail}
                   title={avail ? desc : `${name}不可用`}
                   className={`
@@ -1056,7 +1080,12 @@ export default function GoGamePage() {
               key={key}
               size="sm"
               variant={difficulty === key ? 'default' : 'outline'}
-              onClick={() => { setDifficulty(key); restartGame(); }}
+              onClick={() => {
+                if (key === difficulty) return;
+                setDifficulty(key);
+                const diffInfo = DIFFICULTIES.find(d => d.key === key);
+                setDifficultyToast(`难度已调整为${diffInfo?.emoji || ''} ${diffInfo?.label || key}`);
+              }}
               className={difficulty === key ? 'bg-amber-700 hover:bg-amber-800 h-7 text-xs' : 'h-7 text-xs'}
               disabled={isReplayMode}
             >
@@ -1570,6 +1599,41 @@ export default function GoGamePage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* 引擎切换确认弹窗 */}
+      <Dialog open={showEngineConfirm} onOpenChange={(open) => { if (!open) { setShowEngineConfirm(false); setPendingEngine(null); } }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>切换引擎</DialogTitle>
+            <DialogDescription>切换引擎将重新开始一局棋，当前棋局不会保存。</DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-3 justify-end pt-2">
+            <Button variant="outline" onClick={() => { setShowEngineConfirm(false); setPendingEngine(null); }}>
+              取消
+            </Button>
+            <Button className="bg-amber-700 hover:bg-amber-800 text-white" onClick={() => {
+              if (pendingEngine) {
+                setEngine(pendingEngine);
+                restartGame();
+              }
+              setShowEngineConfirm(false);
+              setPendingEngine(null);
+            }}>
+              切换并重开
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 难度调整提示 */}
+      {difficultyToast && (
+        <div
+          className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-white/95 shadow-lg rounded-lg px-5 py-3 text-sm font-medium text-amber-800 border border-amber-200 transition-all duration-300 animate-in fade-in slide-in-from-top-2"
+          onAnimationEnd={() => {}}
+        >
+          {difficultyToast}
+        </div>
+      )}
     </div>
   );
 }
