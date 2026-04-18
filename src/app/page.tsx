@@ -135,6 +135,7 @@ export default function GoGamePage() {
   const [boardSize, setBoardSize] = useState(9);
   const [difficulty, setDifficulty] = useState<string>('easy');
   const [engine, setEngine] = useState<EngineId>('local');
+  const [playerColor, setPlayerColor] = useState<Stone>('black'); // 玩家执子颜色
   const [availableEngines, setAvailableEngines] = useState<Record<EngineId, boolean>>({ katago: false, gnugo: false, local: true });
   const [board, setBoard] = useState<Board>(() => createEmptyBoard(9));
   const [currentPlayer, setCurrentPlayer] = useState<Stone>('black');
@@ -155,6 +156,11 @@ export default function GoGamePage() {
 
   const [streamingText, setStreamingText] = useState('');
 
+  // AI先下标记
+  const needsAIMoveRef = useRef(false);
+  // 切换执子需要重开标记
+  const [needsNewGame, setNeedsNewGame] = useState(false);
+
   // ===== 切换确认 =====
   const [difficultyToast, setDifficultyToast] = useState<string>('');
 
@@ -167,7 +173,22 @@ export default function GoGamePage() {
   const [showEngineConfirm, setShowEngineConfirm] = useState(false);
   const [pendingEngine, setPendingEngine] = useState<EngineId | null>(null);
 
-  // 解说请求ID，用于非阻塞时取消旧请求的流式输出
+  // AI先手触发：restartGame后如果playerColor=white，触发AI下第一步
+  useEffect(() => {
+    if (!needsAIMoveRef.current) return;
+    needsAIMoveRef.current = false;
+    // AI先下的触发在restartGame中通过setTimeout处理
+  }, [history, playerColor, gameEnded, isAIThinking]);
+
+  // 切换执子颜色需要重开
+  useEffect(() => {
+    if (!needsNewGame) return;
+    setNeedsNewGame(false);
+    restartGame();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsNewGame]);
+
+  // 解说请求ID，用于取消旧请求的流式输出
   const commentaryRequestId = useRef(0);
   // 当前正在进行的解说Promise，AI落子时需要等它完成后再发起新解说
   const commentaryPromiseRef = useRef<Promise<void> | null>(null);
@@ -278,7 +299,7 @@ export default function GoGamePage() {
   const changeBoardSize = useCallback((newSize: number) => {
     setBoardSize(newSize);
     setBoard(createEmptyBoard(newSize));
-    setCurrentPlayer('black');
+    setCurrentPlayer(playerColor);
     setHistory([]);
     setLastMove(null);
     setShowHint(null);
@@ -297,10 +318,14 @@ export default function GoGamePage() {
     moveIdx: number,
     currentHistory: MoveEntry[]
   ) => {
-    // 每次新请求递增ID，旧请求的回调会被忽略
+    // 每次新请求递增ID，仅用于控制流式文本显示（不阻止旧解说保存）
     const thisRequestId = ++commentaryRequestId.current;
-    setIsCommentaryStreaming(true);
-    setStreamingText('');
+    const isLatestRequest = () => commentaryRequestId.current === thisRequestId;
+
+    if (isLatestRequest()) {
+      setIsCommentaryStreaming(true);
+      setStreamingText('');
+    }
 
     // 兜底解说（API失败时使用）
     const fallbackCommentary = `${moveColor === 'black' ? '黑方' : '白方'}下在${positionToCoordinate(movePos.row, movePos.col, boardSize)}`;
@@ -319,35 +344,23 @@ export default function GoGamePage() {
           moveHistory: currentHistory,
         }),
       });
-      if (response.ok && commentaryRequestId.current === thisRequestId) {
+      if (response.ok) {
         const fullText = await readStream(response, (text) => {
-          if (commentaryRequestId.current === thisRequestId) {
+          // 只有最新请求才更新流式文本显示
+          if (isLatestRequest()) {
             setStreamingText(text);
           }
         });
-        if (commentaryRequestId.current === thisRequestId) {
-          setCommentaries(prev => [...prev, {
-            moveIndex: moveIdx,
-            color: moveColor,
-            position: movePos,
-            commentary: fullText || fallbackCommentary,
-          }]);
-        }
+        // 始终保存解说，即使不是最新请求（防止快速落子时AI解说丢失）
+        setCommentaries(prev => [...prev, {
+          moveIndex: moveIdx,
+          color: moveColor,
+          position: movePos,
+          commentary: fullText || fallbackCommentary,
+        }]);
       } else {
-        // API 返回非200，使用兜底解说
+        // API 返回非200，使用兜底解说（始终保存）
         console.warn('[commentary] API returned', response.status, await response.text().catch(() => ''));
-        if (commentaryRequestId.current === thisRequestId) {
-          setCommentaries(prev => [...prev, {
-            moveIndex: moveIdx,
-            color: moveColor,
-            position: movePos,
-            commentary: fallbackCommentary,
-          }]);
-        }
-      }
-    } catch (err) {
-      console.warn('[commentary] fetch error:', err);
-      if (commentaryRequestId.current === thisRequestId) {
         setCommentaries(prev => [...prev, {
           moveIndex: moveIdx,
           color: moveColor,
@@ -355,8 +368,18 @@ export default function GoGamePage() {
           commentary: fallbackCommentary,
         }]);
       }
+    } catch (err) {
+      console.warn('[commentary] fetch error:', err);
+      // 始终保存兜底解说
+      setCommentaries(prev => [...prev, {
+        moveIndex: moveIdx,
+        color: moveColor,
+        position: movePos,
+        commentary: fallbackCommentary,
+      }]);
     } finally {
-      if (commentaryRequestId.current === thisRequestId) {
+      // 只有最新请求才清理流式状态
+      if (isLatestRequest()) {
         setIsCommentaryStreaming(false);
         setStreamingText('');
       }
@@ -366,6 +389,8 @@ export default function GoGamePage() {
   // ===== 处理落子 =====
   const handleMove = useCallback(async (row: number, col: number) => {
     if (!isValidMove(board, row, col, currentPlayer) || isAIThinking || isReplayMode || gameEnded) return;
+    // 只允许玩家在自己的回合落子
+    if (currentPlayer !== playerColor) return;
 
     const { newBoard, captured } = playMove(board, row, col, currentPlayer);
     const moveIdx = history.length;
@@ -390,12 +415,13 @@ export default function GoGamePage() {
       setGameEnded(true);
     setShowGameEndDialog(true);
       setGameResult(result);
-      setCurrentPlayer('black');
+      setCurrentPlayer(playerColor);
       return;
     }
 
-    // AI回合
-    if (currentPlayer === 'black') {
+    // AI回合 - 玩家落子后，AI执另一种颜色
+    const aiColor = playerColor === 'black' ? 'white' : 'black';
+    if (currentPlayer === playerColor) {
       setIsAIThinking(true);
 
       // 等待玩家落子解说完成，避免解说流式输出被打断
@@ -406,7 +432,7 @@ export default function GoGamePage() {
       // AI思考延迟，让体验更自然（模拟思考时间）
       await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
 
-      const validMoves = getValidMoves(newBoard, 'white');
+      const validMoves = getValidMoves(newBoard, aiColor);
       if (validMoves.length > 0) {
         let aiMove: Position = validMoves[0];
         let usedEngine = false;
@@ -432,7 +458,7 @@ export default function GoGamePage() {
             if (res.ok) {
               const data = await res.json();
               console.log(`[engine] ${engine} response:`, JSON.stringify(data));
-              if (data.move && isValidMove(newBoard, data.move.row, data.move.col, 'white')) {
+              if (data.move && isValidMove(newBoard, data.move.row, data.move.col, aiColor)) {
                 aiMove = data.move;
                 usedEngine = true;
               } else if (data.pass) {
@@ -444,7 +470,7 @@ export default function GoGamePage() {
     setShowGameEndDialog(true);
                   setGameResult(result);
                 }
-                setCurrentPlayer('black');
+                setCurrentPlayer(playerColor);
                 setIsAIThinking(false);
                 return;
               } else {
@@ -463,24 +489,24 @@ export default function GoGamePage() {
         if (!usedEngine) {
           // 本地AI
           if (difficulty === 'hard') {
-            aiMove = hardAIMove(newBoard, 'white') || validMoves[0];
+            aiMove = hardAIMove(newBoard, aiColor) || validMoves[0];
           } else if (difficulty === 'medium') {
-            aiMove = mediumAIMove(newBoard, 'white') || validMoves[0];
+            aiMove = mediumAIMove(newBoard, aiColor) || validMoves[0];
           } else {
-            aiMove = easyAIMove(newBoard, 'white') || validMoves[0];
+            aiMove = easyAIMove(newBoard, aiColor) || validMoves[0];
           }
         }
 
-        const { newBoard: finalBoard, captured: aiCaptured } = playMove(newBoard, aiMove.row, aiMove.col, 'white');
+        const { newBoard: finalBoard, captured: aiCaptured } = playMove(newBoard, aiMove.row, aiMove.col, aiColor);
         const aiMoveIdx = moveIdx + 1;
-        const historyWithAIMove = [...historyWithThisMove, { position: aiMove, color: 'white' as Stone, captured: aiCaptured }];
+        const historyWithAIMove = [...historyWithThisMove, { position: aiMove, color: aiColor as Stone, captured: aiCaptured }];
 
         setBoard(finalBoard);
         setLastMove({ row: aiMove.row, col: aiMove.col });
         setHistory(historyWithAIMove);
 
         // AI落子解说 - 同步发起，因为玩家解说已经完成
-        requestCommentary(finalBoard, aiMove, 'white', aiCaptured, aiMoveIdx, historyWithAIMove);
+        requestCommentary(finalBoard, aiMove, aiColor, aiCaptured, aiMoveIdx, historyWithAIMove);
 
         // 检查游戏是否应该结束
         const endCheck2 = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
@@ -502,10 +528,10 @@ export default function GoGamePage() {
         }
       }
 
-      setCurrentPlayer('black');
+      setCurrentPlayer(playerColor);
       setIsAIThinking(false);
     }
-  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, engine, history, requestCommentary, gameEnded, consecutivePasses, boardSize]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, engine, history, requestCommentary, gameEnded, consecutivePasses, boardSize, playerColor]);
 
 
   // ===== 悔棋 =====
@@ -520,15 +546,15 @@ export default function GoGamePage() {
     }
     setBoard(newBoard);
     setHistory(newHistory);
-    setCurrentPlayer('black');
+    setCurrentPlayer(playerColor);
     setLastMove(newHistory.length > 0 ? newHistory[newHistory.length - 1].position : null);
     setCommentaries(prev => prev.slice(0, -stepsToUndo));
-  }, [history, boardSize, isReplayMode]);
+  }, [history, boardSize, isReplayMode, playerColor]);
 
   // ===== 重新开始 =====
   const restartGame = useCallback(() => {
     setBoard(createEmptyBoard(boardSize));
-    setCurrentPlayer('black');
+    setCurrentPlayer(playerColor);
     setHistory([]);
     setLastMove(null);
     setShowHint(null);
@@ -541,11 +567,57 @@ export default function GoGamePage() {
     setGameEnded(false);
     setGameResult(null);
     setShowGameEndDialog(false);
-  }, [boardSize]);
+    // AI先下：玩家执白时，AI（黑棋）先走
+    if (playerColor === 'white') {
+      setCurrentPlayer('black');
+      // 延迟触发AI落子，等状态更新完成
+      setTimeout(() => {
+        void (async () => {
+          setIsAIThinking(true);
+          try {
+            const aiColor = 'black';
+            const res = await fetch('/api/go-engine', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ boardSize, difficulty, engine, moves: [] }),
+            });
+            const data = await res.json();
+            if (data.move) {
+              const { row, col } = data.move;
+              const { newBoard, captured } = playMove(board, row, col, aiColor);
+              if (newBoard) {
+                setBoard(newBoard);
+                setHistory([{ position: { row, col }, color: aiColor, captured }]);
+                setCurrentPlayer(playerColor);
+                void requestCommentary(newBoard, { row, col }, aiColor, captured, 0, []);
+              }
+            } else if (data.noEngine) {
+              // 引擎不可用，用本地AI
+              const aiMove = findBestHint(board, aiColor);
+              if (aiMove) {
+                const { newBoard: nb, captured: cap } = playMove(board, aiMove.row, aiMove.col, aiColor);
+                if (nb) {
+                  setBoard(nb);
+                  setHistory([{ position: { row: aiMove.row, col: aiMove.col }, color: aiColor, captured: cap }]);
+                  setCurrentPlayer(playerColor);
+                  void requestCommentary(nb, { row: aiMove.row, col: aiMove.col }, aiColor, cap, 0, []);
+                }
+              }
+            }
+          } catch (err) {
+            console.warn('[engine] AI first move failed:', err);
+          } finally {
+            setIsAIThinking(false);
+          }
+        })();
+      }, 200);
+    }
+  }, [boardSize, playerColor]);
 
   // ===== 停手 =====
   const passMove = useCallback(async () => {
-    if (currentPlayer !== 'black' || isAIThinking || isReplayMode || gameEnded) return;
+    if (currentPlayer !== playerColor || isAIThinking || isReplayMode || gameEnded) return;
+    const aiColor: 'black' | 'white' = playerColor === 'black' ? 'white' : 'black';
 
     const newPasses = consecutivePasses + 1;
     setConsecutivePasses(newPasses);
@@ -571,7 +643,7 @@ export default function GoGamePage() {
     await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
 
     // AI也考虑停手（如果没好位置）
-    const validMoves = getValidMoves(board, 'white');
+    const validMoves = getValidMoves(board, aiColor);
     if (validMoves.length === 0) {
       // AI也无子可下
       const result = calculateFinalScore(board);
@@ -606,7 +678,7 @@ export default function GoGamePage() {
         if (res.ok) {
           const data = await res.json();
           console.log(`[engine-restart] ${engine} response:`, JSON.stringify(data));
-          if (data.move && isValidMove(board, data.move.row, data.move.col, 'white')) {
+          if (data.move && isValidMove(board, data.move.row, data.move.col, aiColor)) {
             aiMove = data.move;
             usedEngine = true;
           } else if (data.pass) {
@@ -629,17 +701,17 @@ export default function GoGamePage() {
 
     if (!usedEngine) {
       if (difficulty === 'hard') {
-        aiMove = hardAIMove(board, 'white') || validMoves[0];
+        aiMove = hardAIMove(board, aiColor) || validMoves[0];
       } else if (difficulty === 'medium') {
-        aiMove = mediumAIMove(board, 'white') || validMoves[0];
+        aiMove = mediumAIMove(board, aiColor) || validMoves[0];
       } else {
-        aiMove = easyAIMove(board, 'white') || validMoves[0];
+        aiMove = easyAIMove(board, aiColor) || validMoves[0];
       }
     }
 
     const moveIdx = history.length;
-    const { newBoard: finalBoard, captured: aiCaptured } = playMove(board, aiMove.row, aiMove.col, 'white');
-    const historyWithAIMove = [...history, { position: aiMove, color: 'white' as Stone, captured: aiCaptured }];
+    const { newBoard: finalBoard, captured: aiCaptured } = playMove(board, aiMove.row, aiMove.col, aiColor);
+    const historyWithAIMove = [...history, { position: aiMove, color: aiColor as Stone, captured: aiCaptured }];
 
     setBoard(finalBoard);
     setLastMove({ row: aiMove.row, col: aiMove.col });
@@ -647,7 +719,7 @@ export default function GoGamePage() {
     setConsecutivePasses(0);
 
     // AI落子解说 - 同步发起
-    requestCommentary(finalBoard, aiMove, 'white', aiCaptured, moveIdx, historyWithAIMove);
+    requestCommentary(finalBoard, aiMove, aiColor, aiCaptured, moveIdx, historyWithAIMove);
 
     // 检查游戏结束
     const endCheck = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
@@ -658,9 +730,9 @@ export default function GoGamePage() {
       setGameResult(result);
     }
 
-    setCurrentPlayer('black');
+    setCurrentPlayer(playerColor);
     setIsAIThinking(false);
-  }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, engine, history, requestCommentary, boardSize]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, engine, history, requestCommentary, boardSize, playerColor]);
 
   // ===== 提示 =====
   const showHintFn = useCallback(() => {
@@ -769,7 +841,7 @@ export default function GoGamePage() {
           black_score: score.black,
           white_score: score.white,
           status: gameEnded ? 'finished' : 'playing',
-          title: saveTitle || `${boardSize}路${difficulty === 'easy' ? '初级' : difficulty === 'medium' ? '中级' : '高级'}对局`,
+          title: saveTitle || `${boardSize}路 ${difficulty === 'easy' ? '初级' : difficulty === 'medium' ? '中级' : '高级'} ${engine === 'katago' ? 'KataGo' : engine === 'gnugo' ? 'GnuGo' : '本地AI'} ${new Date().toLocaleDateString('zh-CN')}`,
         }),
       });
       const data = await res.json();
@@ -827,7 +899,7 @@ export default function GoGamePage() {
       // 重放棋步到初始状态
       setBoard(createEmptyBoard(game.board_size));
       setLastMove(null);
-      setCurrentPlayer('black');
+      setCurrentPlayer(playerColor);
 
       // 存储复盘数据
       setReplayMoves(game.moves || []);
@@ -871,6 +943,138 @@ export default function GoGamePage() {
     setReplayIndex(0);
     restartGame();
   }, [restartGame]);
+
+  // 从复盘的当前步继续对弈
+  const resumeFromReplay = useCallback(() => {
+    if (!isReplayMode || replayIndex === 0) {
+      // 没有步数，直接退出复盘重开
+      exitReplay();
+      return;
+    }
+
+    // 截取到当前步的落子历史
+    const truncatedMoves = replayMoves.slice(0, replayIndex);
+    const truncatedCommentaries = commentaries.filter(c => c.moveIndex < replayIndex);
+
+    // 重放到当前步的棋盘状态
+    let newBoard = createEmptyBoard(boardSize);
+    for (let i = 0; i < truncatedMoves.length; i++) {
+      const move = truncatedMoves[i];
+      const result = playMove(newBoard, move.position.row, move.position.col, move.color);
+      newBoard = result.newBoard;
+    }
+
+    // 判断下一步是谁：偶数步=黑方，奇数步=白方
+    const nextColor: Stone = replayIndex % 2 === 0 ? 'black' : 'white';
+
+    // 设置状态
+    setBoard(newBoard);
+    setHistory(truncatedMoves);
+    setCommentaries(truncatedCommentaries);
+    setLastMove(replayIndex > 0 ? replayMoves[replayIndex - 1].position : null);
+    setGameEnded(false);
+    setShowGameEndDialog(false);
+    setConsecutivePasses(0);
+    setShowHint(null);
+    setCurrentPlayer(nextColor);
+
+    // 退出复盘模式
+    setIsReplayMode(false);
+    setReplayIndex(0);
+    setReplayMoves([]);
+
+    // 如果下一步是AI的回合，延迟触发AI落子
+    if (nextColor !== playerColor) {
+      setTimeout(() => {
+        void (async () => {
+          setIsAIThinking(true);
+          try {
+            const aiColorCalc = nextColor;
+            const moveHistoryForEngine = truncatedMoves.map(m => ({
+              row: m.position.row,
+              col: m.position.col,
+              color: m.color,
+            }));
+            let aiMove: Position | null = null;
+            let usedEngine = false;
+
+            if (engine !== 'local') {
+              try {
+                const res = await fetch('/api/go-engine', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ boardSize, difficulty, engine, moves: moveHistoryForEngine }),
+                });
+                const data = await res.json();
+                if (data.move && isValidMove(newBoard, data.move.row, data.move.col, aiColorCalc)) {
+                  aiMove = data.move;
+                  usedEngine = true;
+                } else if (data.pass) {
+                  // AI停手
+                  setConsecutivePasses(prev => {
+                    if (prev + 1 >= 2) {
+                      const result = calculateFinalScore(newBoard);
+                      setGameEnded(true);
+                      setShowGameEndDialog(true);
+                      setGameResult(result);
+                    }
+                    return prev + 1;
+                  });
+                  setCurrentPlayer(playerColor);
+                  setIsAIThinking(false);
+                  return;
+                }
+              } catch {
+                // 引擎失败，用本地AI
+              }
+            }
+
+            if (!usedEngine) {
+              const validMoves = getValidMoves(newBoard, aiColorCalc);
+              if (validMoves.length === 0) {
+                // AI无合法落子
+                setConsecutivePasses(prev => {
+                  if (prev + 1 >= 2) {
+                    const result = calculateFinalScore(newBoard);
+                    setGameEnded(true);
+                    setShowGameEndDialog(true);
+                    setGameResult(result);
+                  }
+                  return prev + 1;
+                });
+                setCurrentPlayer(playerColor);
+                setIsAIThinking(false);
+                return;
+              }
+              if (difficulty === 'hard') {
+                aiMove = hardAIMove(newBoard, aiColorCalc) || validMoves[0];
+              } else if (difficulty === 'medium') {
+                aiMove = mediumAIMove(newBoard, aiColorCalc) || validMoves[0];
+              } else {
+                aiMove = easyAIMove(newBoard, aiColorCalc) || validMoves[0];
+              }
+            }
+
+            if (aiMove) {
+              const { newBoard: finalBoard, captured: aiCaptured } = playMove(newBoard, aiMove.row, aiMove.col, aiColorCalc);
+              const aiMoveIdx = truncatedMoves.length;
+              const historyWithAIMove = [...truncatedMoves, { position: aiMove, color: aiColorCalc as Stone, captured: aiCaptured }];
+
+              setBoard(finalBoard);
+              setLastMove({ row: aiMove.row, col: aiMove.col });
+              setHistory(historyWithAIMove);
+              setCurrentPlayer(playerColor);
+              requestCommentary(finalBoard, aiMove, aiColorCalc, aiCaptured, aiMoveIdx, historyWithAIMove);
+            }
+          } catch (err) {
+            console.warn('[resumeFromReplay] AI move failed:', err);
+          } finally {
+            setIsAIThinking(false);
+          }
+        })();
+      }, 300);
+    }
+  }, [isReplayMode, replayIndex, replayMoves, boardSize, commentaries, exitReplay, playerColor, engine, difficulty, requestCommentary]);
 
   // ===== SVG棋盘 =====
   const renderSVGBoard = () => {
@@ -1092,6 +1296,30 @@ export default function GoGamePage() {
               {emoji} {label}
             </Button>
           ))}
+
+          {/* 执子选择 */}
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] text-amber-600 mr-0.5">执子</span>
+            {([
+              { key: 'black' as const, label: '⚫黑先', desc: '你执黑' },
+              { key: 'white' as const, label: '⚪白后', desc: '你执白' },
+            ]).map(({ key, label }) => (
+              <Button
+                key={key}
+                size="sm"
+                variant={playerColor === key ? 'default' : 'outline'}
+                onClick={() => {
+                  if (key === playerColor) return;
+                  setPlayerColor(key);
+                  setNeedsNewGame(true);
+                }}
+                className={playerColor === key ? 'bg-amber-700 hover:bg-amber-800 h-7 text-xs' : 'h-7 text-xs'}
+                disabled={isReplayMode}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -1105,20 +1333,20 @@ export default function GoGamePage() {
               <div className="flex justify-around text-center">
                 <div className="flex flex-col items-center">
                   <div className="w-7 h-7 rounded-full bg-gray-800 shadow mb-1" />
-                  <span className="text-xs text-gray-500">黑方(你)</span>
+                  <span className="text-xs text-gray-500">黑方{playerColor === 'black' ? '(你)' : '(AI)'}</span>
                   <span className="text-lg font-bold">{score.black}</span>
                 </div>
                 <div className="flex items-center text-gray-300 text-xs">VS</div>
                 <div className="flex flex-col items-center">
                   <div className="w-7 h-7 rounded-full bg-white border-2 border-gray-300 shadow mb-1" />
-                  <span className="text-xs text-gray-500">白方(AI)</span>
+                  <span className="text-xs text-gray-500">白方{playerColor === 'white' ? '(你)' : '(AI)'}</span>
                   <span className="text-lg font-bold">{score.white}</span>
                   <span className="text-[9px] text-gray-400">含贴目{getKomi(boardSize)}</span>
                 </div>
               </div>
               <div className="mt-2 text-center">
-                <Badge variant={currentPlayer === 'black' ? 'default' : 'secondary'} className="text-xs px-3">
-                  {gameEnded ? '棋局结束' : isReplayMode ? `复盘 ${replayIndex}/${replayMoves.length}步` : isAIThinking ? 'AI思考中...' : currentPlayer === 'black' ? `轮到你落子 (${history.length}手)` : '白方回合'}
+                <Badge variant={currentPlayer === playerColor ? 'default' : 'secondary'} className="text-xs px-3">
+                  {gameEnded ? '棋局结束' : isReplayMode ? `复盘 ${replayIndex}/${replayMoves.length}步` : isAIThinking ? 'AI思考中...' : currentPlayer === playerColor ? `轮到你落子 (${history.length}手)` : 'AI回合'}
                   {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
                 </Badge>
               </div>
@@ -1134,7 +1362,7 @@ export default function GoGamePage() {
               <Button onClick={undoMove} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={history.length === 0 || isReplayMode}>
                 <RotateCcw className="w-3 h-3" /> 悔棋
               </Button>
-              <Button onClick={passMove} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={currentPlayer !== 'black' || isAIThinking || isReplayMode || gameEnded}>
+              <Button onClick={passMove} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={currentPlayer !== playerColor || isAIThinking || isReplayMode || gameEnded}>
                 <Pause className="w-3 h-3" /> 停手
               </Button>
 
@@ -1220,6 +1448,11 @@ export default function GoGamePage() {
                 <Button size="sm" variant="destructive" className="w-full mt-2" onClick={exitReplay}>
                   退出复盘
                 </Button>
+                {replayIndex > 0 && (
+                  <Button size="sm" className="w-full mt-2 bg-green-600 hover:bg-green-700 text-white" onClick={resumeFromReplay}>
+                    从第{replayIndex}步继续对弈
+                  </Button>
+                )}
               </CardContent>
             </Card>
           )}

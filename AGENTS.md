@@ -11,7 +11,8 @@
 - **Language**: TypeScript 5
 - **UI 组件**: shadcn/ui (基于 Radix UI)
 - **Styling**: Tailwind CSS 4
-- **AI 集成**: coze-coding-dev-sdk (LLM流式输出)
+- **AI 集成**: coze-coding-dev-sdk (LLM流式输出) + DeepSeek API (Railway/外部部署)
+- **数据库**: Supabase（表名前缀 `letsgo_`，与其他项目共用同一Supabase实例）
 
 ## 项目结构
 
@@ -50,7 +51,8 @@ src/
 - 棋子落在交叉点上（SVG渲染）
 - 黑白双方轮流落子，自动提子
 - 最后一手标记（圆点标识）
-- AI白方：KataGo深度学习引擎（GTP协议，优先） + GnuGo回退 + 本地AI兜底
+- **玩家颜色选择**：可选执黑(先手)或执白(后手)，执白时AI先下
+- AI方：KataGo深度学习引擎（GTP协议，优先） + GnuGo回退 + 本地AI兜底
   - 初级：KataGo maxVisits=15 / GnuGo Level 3 / 本地随机+避傻
   - 中级：KataGo maxVisits=50 / GnuGo Level 7 / 本地评分选择
   - 高级：KataGo maxVisits=150 / GnuGo Level 10 / 本地1步前瞻
@@ -64,6 +66,7 @@ src/
 - 解说包含落子位置、作用、鼓励
 - **专业术语嵌入**：解说中自然融入围棋术语并在括号中解释
 - **智能气数提及**：只在打吃(1气)或提子时提及气数，3气以上不提
+- **解说防丢失**：快速落子时，旧解说仍会被保存到解说列表，不会被新请求覆盖
 
 ### 3. AI教学
 - 流式AI教学解读（结合当前棋局）
@@ -80,6 +83,9 @@ src/
 - 重新开始（支持切换棋盘大小）
 - 比分实时计算（白方含动态贴目）
 - 游戏结束判定（停手/步数上限/棋盘满）
+- 引擎/难度无缝切换：难度切换不重开棋局（toast提示），引擎切换需确认
+- 保存棋局命名含引擎信息（如"9路 初级 KataGo 2026/4/19"）
+- 复盘从任意步继续对弈：复盘模式下可"从第N步继续对弈"，截取历史继续游戏
 
 ## API接口
 
