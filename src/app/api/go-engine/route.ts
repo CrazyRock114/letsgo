@@ -471,17 +471,19 @@ function sendOneShotGTP(proc: ChildProcess, command: string, timeoutMs: number =
 export async function POST(request: NextRequest) {
   try {
     const { boardSize, moves, difficulty, engine: requestedEngine } = await request.json();
+    console.log(`[go-engine] POST request: engine=${requestedEngine}, boardSize=${boardSize}, difficulty=${difficulty}, moves=${moves?.length || 0}`);
 
     // KataGo：使用持久化进程
     if (requestedEngine === "katago" && isKataGoAvailable()) {
       try {
         const result = await getKataGoMove(boardSize, moves, difficulty);
+        console.log(`[go-engine] KataGo result:`, JSON.stringify(result));
         return NextResponse.json(result);
       } catch (katagoError) {
-        console.error("KataGo failed:", katagoError);
+        console.error("[go-engine] KataGo failed:", katagoError instanceof Error ? katagoError.message : katagoError);
         // 如果持久化进程崩溃，重置状态以便下次重试
         persistentKataGo.resetCrashState();
-        return NextResponse.json({ move: null, engine: "katago", engineError: true });
+        return NextResponse.json({ move: null, engine: "katago", engineError: true, errorDetail: katagoError instanceof Error ? katagoError.message : String(katagoError) });
       }
     }
 
@@ -489,14 +491,16 @@ export async function POST(request: NextRequest) {
     if (requestedEngine === "gnugo" && isGnuGoAvailable()) {
       try {
         const result = await getGnuGoMove(boardSize, moves, difficulty);
+        console.log(`[go-engine] GnuGo result:`, JSON.stringify(result));
         return NextResponse.json(result);
       } catch (gtpError) {
-        console.error("GnuGo failed:", gtpError);
-        return NextResponse.json({ move: null, engine: "gnugo", engineError: true });
+        console.error("[go-engine] GnuGo failed:", gtpError instanceof Error ? gtpError.message : gtpError);
+        return NextResponse.json({ move: null, engine: "gnugo", engineError: true, errorDetail: gtpError instanceof Error ? gtpError.message : String(gtpError) });
       }
     }
 
     // requestedEngine === "local" 或引擎不可用
+    console.log(`[go-engine] No engine available for: ${requestedEngine}, katagoAvail=${isKataGoAvailable()}, gnugoAvail=${isGnuGoAvailable()}`);
     return NextResponse.json({ move: null, engine: requestedEngine || "local", noEngine: true });
   } catch (error) {
     console.error("Go engine API error:", error);

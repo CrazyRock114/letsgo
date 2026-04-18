@@ -402,6 +402,7 @@ export default function GoGamePage() {
             });
             if (res.ok) {
               const data = await res.json();
+              console.log(`[engine] ${engine} response:`, JSON.stringify(data));
               if (data.move && isValidMove(newBoard, data.move.row, data.move.col, 'white')) {
                 aiMove = data.move;
                 usedEngine = true;
@@ -416,10 +417,16 @@ export default function GoGamePage() {
                 setCurrentPlayer('black');
                 setIsAIThinking(false);
                 return;
+              } else {
+                // 引擎返回了但 move 无效或为 null
+                console.warn(`[engine] ${engine} returned invalid/null move, falling back to local AI. Data:`, data);
               }
+            } else {
+              console.warn(`[engine] ${engine} API returned ${res.status}`);
             }
-          } catch {
+          } catch (engineErr) {
             // 引擎失败，使用本地AI
+            console.warn(`[engine] ${engine} fetch failed:`, engineErr);
           }
         }
 
@@ -563,6 +570,7 @@ export default function GoGamePage() {
         });
         if (res.ok) {
           const data = await res.json();
+          console.log(`[engine-restart] ${engine} response:`, JSON.stringify(data));
           if (data.move && isValidMove(board, data.move.row, data.move.col, 'white')) {
             aiMove = data.move;
             usedEngine = true;
@@ -572,10 +580,14 @@ export default function GoGamePage() {
             setGameResult(result);
             setIsAIThinking(false);
             return;
+          } else {
+            console.warn(`[engine-restart] ${engine} returned invalid/null move, falling back. Data:`, data);
           }
+        } else {
+          console.warn(`[engine-restart] ${engine} API returned ${res.status}`);
         }
-      } catch {
-        // 引擎失败，使用本地AI
+      } catch (engineErr) {
+        console.warn(`[engine-restart] ${engine} fetch failed:`, engineErr);
       }
     }
 
