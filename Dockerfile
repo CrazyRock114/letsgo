@@ -87,6 +87,14 @@ RUN pnpm install --frozen-lockfile --prefer-offline 2>/dev/null || pnpm install
 COPY . .
 RUN pnpm next build
 
+# 调试：确认 standalone 输出结构
+RUN echo "=== Standalone output structure ===" && \
+    find /app/.next/standalone -maxdepth 3 -type f -name "server.js" && \
+    echo "=== Static files ===" && \
+    ls /app/.next/static/chunks/ 2>/dev/null | head -5 && \
+    echo "=== Public files ===" && \
+    ls /app/public/ 2>/dev/null | head -5
+
 # ---- Stage 3: 运行时镜像 ----
 FROM node:24-slim AS runner
 
@@ -98,36 +106,21 @@ RUN apt-get update -qq && \
 # 从 katago-builder 复制 KataGo
 COPY --from=katago-builder /usr/local/katago /usr/local/katago
 
-# 从 app-builder 复制构建产物
-# Next.js standalone 保留完整构建路径，不能展平（server.js 有相对路径 require）
-COPY --from=app-builder /app/.next/standalone /next-standalone
-COPY --from=app-builder /app/.next/static /next-standalone-static
-COPY --from=app-builder /app/public /next-standalone-public
-
-# 定位 server.js 并将 static/public 复制到正确位置
-RUN SERVER_JS=$(find /next-standalone -name "server.js" -type f | head -1) && \
-    if [ -z "$SERVER_JS" ]; then \
-      echo "ERROR: server.js not found in standalone output" && \
-      find /next-standalone -type f | head -30 && exit 1; \
-    fi && \
-    SERVER_DIR=$(dirname "$SERVER_JS") && \
-    echo "Found server.js at: $SERVER_JS" && \
-    echo "Server directory: $SERVER_DIR" && \
-    mkdir -p "$SERVER_DIR/.next/static" && \
-    cp -r /next-standalone-static/. "$SERVER_DIR/.next/static/" && \
-    cp -r /next-standalone-public "$SERVER_DIR/public" && \
-    rm -rf /next-standalone-static /next-standalone-public
-
-# 复制启动脚本
-COPY docker-start.sh /docker-start.sh
-RUN chmod +x /docker-start.sh
+# === Next.js standalone 部署 ===
+# app-builder 的 WORKDIR 是 /app，所以 standalone 输出在 .next/standalone/app/ 下
+# 直接复制到 /app 保持路径一致
+COPY --from=app-builder /app/.next/standalone/app /app
+# static 和 public 需要单独复制（standalone 不包含这些）
+COPY --from=app-builder /app/.next/static /app/.next/static
+COPY --from=app-builder /app/public /app/public
 
 # 环境变量
 ENV NODE_ENV=production
 ENV PORT=5000
 ENV HOSTNAME="0.0.0.0"
 
+WORKDIR /app
+
 EXPOSE 5000
 
-# 使用启动脚本动态定位 server.js 并运行
-CMD ["/docker-start.sh"]
+CMD ["node", "server.js"]
