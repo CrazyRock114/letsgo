@@ -1,0 +1,12 @@
+[deploy]
+# Railway 部署配置
+
+# 健康检查
+[deploy.healthcheck]
+path = "/"
+interval = 30
+timeout = 10
+
+# 重启策略
+[deploy.restart]
+policy = "on-failure"
