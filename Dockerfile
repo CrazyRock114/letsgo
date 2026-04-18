@@ -101,11 +101,28 @@ RUN apt-get update -qq && \
 COPY --from=katago-builder /usr/local/katago /usr/local/katago
 
 # 从 app-builder 复制构建产物
-# standalone 模式会保留构建路径结构: .next/standalone/<workdir>/
-WORKDIR /app
-COPY --from=app-builder /app/.next/standalone/app ./
-COPY --from=app-builder /app/.next/static ./.next/static
-COPY --from=app-builder /app/public ./public
+# standalone 模式会保留完整构建路径: .next/standalone/<absolute-workdir>/
+# 先复制整个 standalone 目录，再用 find 定位 server.js 并展平目录结构
+COPY --from=app-builder /app/.next/standalone /tmp/standalone
+COPY --from=app-builder /app/.next/static /tmp/static
+COPY --from=app-builder /app/public /tmp/public
+
+RUN SERVER_JS=$(find /tmp/standalone -name "server.js" | head -1) && \
+    if [ -z "$SERVER_JS" ]; then \
+      echo "ERROR: server.js not found" && find /tmp/standalone -type f | head -30 && exit 1; \
+    fi && \
+    STANDALONE_DIR=$(dirname "$SERVER_JS") && \
+    echo "Found server.js at: $SERVER_JS" && \
+    echo "Standalone dir: $STANDALONE_DIR" && \
+    mkdir -p /app-deploy && \
+    cp -r "$STANDALONE_DIR/." /app-deploy/ && \
+    mkdir -p /app-deploy/.next/static && \
+    cp -r /tmp/static/. /app-deploy/.next/static/ && \
+    cp -r /tmp/public /app-deploy/public && \
+    rm -rf /tmp/standalone /tmp/static /tmp/public && \
+    echo "=== Deploy dir ===" && ls -la /app-deploy/ && echo "=== .next ===" && ls -la /app-deploy/.next/
+
+WORKDIR /app-deploy
 
 # 环境变量
 ENV NODE_ENV=production
