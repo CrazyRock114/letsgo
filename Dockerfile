@@ -101,13 +101,17 @@ RUN echo "=== Standalone output structure ===" && \
 FROM node:24-slim AS runner
 
 # 安装 GnuGo + KataGo 运行时依赖
-# KataGo v1.15.3 编译于 Ubuntu 20.04，依赖 OpenSSL 1.1，Debian 12 只有 3.x
-# 需要从 Debian 11 单独下载安装 libssl1.1
+# KataGo v1.15.3 编译于 Ubuntu 20.04，依赖：
+#   libssl.so.1.1 + libcrypto.so.1.1 → Debian 12 只有 OpenSSL 3.x，从 Debian 11 下载
+#   libzip.so.5 → Debian 12 libzip4 只提供 libzip.so.4，从 Ubuntu 20.04 下载 libzip5
 RUN apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends gnugo libgomp1 libzip4 ca-certificates curl && \
+    apt-get install -y -qq --no-install-recommends gnugo libgomp1 ca-certificates curl && \
     curl -sSL http://deb.debian.org/debian/pool/main/o/openssl/libssl1.1_1.1.1w-0+deb11u1_amd64.deb -o /tmp/libssl1.1.deb && \
     dpkg -i /tmp/libssl1.1.deb && \
     rm -f /tmp/libssl1.1.deb && \
+    curl -sSL http://archive.ubuntu.com/ubuntu/pool/main/libz/libzip/libzip5_1.7.3-1ubuntu1_amd64.deb -o /tmp/libzip5.deb && \
+    dpkg -i /tmp/libzip5.deb && \
+    rm -f /tmp/libzip5.deb && \
     rm -rf /var/lib/apt/lists/*
 
 # 从 katago-builder 复制 KataGo
