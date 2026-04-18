@@ -315,26 +315,35 @@ async function streamCoze(request: NextRequest, messages: Array<{ role: 'system'
 // ========== DeepSeek API 流式输出（OpenAI 兼容格式） ==========
 async function streamDeepSeek(messages: Array<{ role: 'system' | 'user'; content: string }>, temperature: number) {
   const apiKey = process.env.DEEPSEEK_API_KEY!;
+  const url = `${DEEPSEEK_API_URL}/chat/completions`;
 
-  const response = await fetch(`${DEEPSEEK_API_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: DEEPSEEK_MODEL,
-      messages,
-      temperature,
-      stream: true,
-      max_tokens: 512,
-    }),
-  });
+  console.log(`[go-ai] Calling DeepSeek: url=${url}, model=${DEEPSEEK_MODEL}, msgs=${messages.length}`);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        messages,
+        temperature,
+        stream: true,
+        max_tokens: 512,
+      }),
+    });
+  } catch (fetchError) {
+    console.error('[go-ai] DeepSeek fetch network error:', fetchError);
+    return NextResponse.json({ error: `DeepSeek 网络错误: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}` }, { status: 502 });
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`DeepSeek API error: ${response.status} ${errorText}`);
-    return NextResponse.json({ error: `DeepSeek API 调用失败: ${response.status}` }, { status: 502 });
+    console.error(`[go-ai] DeepSeek API error: ${response.status} ${errorText}`);
+    return NextResponse.json({ error: `DeepSeek API 调用失败: ${response.status}`, detail: errorText }, { status: 502 });
   }
 
   // 将 DeepSeek 的 SSE 格式转换为纯文本流

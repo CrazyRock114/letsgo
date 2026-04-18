@@ -289,6 +289,9 @@ export default function GoGamePage() {
     setIsCommentaryStreaming(true);
     setStreamingText('');
 
+    // 兜底解说（API失败时使用）
+    const fallbackCommentary = `${moveColor === 'black' ? '黑方' : '白方'}下在${positionToCoordinate(movePos.row, movePos.col, boardSize)}`;
+
     try {
       const response = await fetch('/api/go-ai', {
         method: 'POST',
@@ -314,17 +317,29 @@ export default function GoGamePage() {
             moveIndex: moveIdx,
             color: moveColor,
             position: movePos,
-            commentary: fullText,
+            commentary: fullText || fallbackCommentary,
+          }]);
+        }
+      } else {
+        // API 返回非200，使用兜底解说
+        console.warn('[commentary] API returned', response.status, await response.text().catch(() => ''));
+        if (commentaryRequestId.current === thisRequestId) {
+          setCommentaries(prev => [...prev, {
+            moveIndex: moveIdx,
+            color: moveColor,
+            position: movePos,
+            commentary: fallbackCommentary,
           }]);
         }
       }
-    } catch {
+    } catch (err) {
+      console.warn('[commentary] fetch error:', err);
       if (commentaryRequestId.current === thisRequestId) {
         setCommentaries(prev => [...prev, {
           moveIndex: moveIdx,
           color: moveColor,
           position: movePos,
-          commentary: `${moveColor === 'black' ? '黑方' : '白方'}下在${positionToCoordinate(movePos.row, movePos.col, boardSize)}`,
+          commentary: fallbackCommentary,
         }]);
       }
     } finally {
@@ -654,7 +669,12 @@ export default function GoGamePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(teachingBody),
       });
-      if (response.ok) await readStream(response, text => setTeachingMessage(text));
+      if (response.ok) {
+        await readStream(response, text => setTeachingMessage(text));
+      } else {
+        console.warn('[teach] API returned', response.status);
+        setTeachingMessage('小围棋暂时无法思考，请稍后再试。');
+      }
     } catch {
       setTeachingMessage('小围棋正在思考中...');
     } finally {
@@ -690,6 +710,9 @@ export default function GoGamePage() {
             return u;
           });
         });
+      } else {
+        console.warn('[chat] API returned', response.status);
+        setMessages(prev => [...prev, { role: 'assistant', content: '抱歉，小围棋暂时无法回答，请稍后再试。' }]);
       }
     } catch {
       setMessages(prev => [...prev, { role: 'assistant', content: '抱歉，遇到问题了，请再试。' }]);
