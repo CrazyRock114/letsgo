@@ -8,7 +8,7 @@ FROM node:24-slim AS katago-builder
 
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-      ca-certificates curl unzip && \
+      ca-certificates curl unzip libzip4 && \
     rm -rf /var/lib/apt/lists/*
 
 ARG KATAGO_VERSION=v1.15.3
