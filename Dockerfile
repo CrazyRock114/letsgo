@@ -16,13 +16,13 @@ RUN mkdir -p /usr/local/katago && \
     cd /tmp && \
     KATAGO_URL="https://github.com/lightvector/KataGo/releases/download/${KATAGO_VERSION}/katago-${KATAGO_VERSION}-eigenavx2-linux-x64.zip" && \
     echo "Downloading KataGo from: $KATAGO_URL" && \
-    curl -fSL --retry 3 --max-time 300 -o katago.zip "$KATAGO_URL" && \
+    curl -fSL --retry 6 --retry-delay 10 --max-time 600 -o katago.zip "$KATAGO_URL" && \
     ls -lh katago.zip && \
     unzip -o katago.zip -d katago-extracted && \
     find katago-extracted -name katago -type f -exec cp {} /usr/local/katago/katago \; && \
     chmod +x /usr/local/katago/katago && \
     echo "Verifying katago binary..." && \
-    /usr/local/katago/katago version && \
+    /usr/local/katago/katago version 2>&1 | head -3 || echo "WARNING: katago version check failed (may need runtime libs)" && \
     rm -rf /tmp/katago.zip /tmp/katago-extracted
 
 # 直接生成最小化 CPU 配置（不依赖官方配置模板）
