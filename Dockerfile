@@ -79,7 +79,7 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
 
 # 先复制依赖文件（利用 Docker 缓存层）
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml* ./
 # 覆盖 npm 镜像配置（Railway 构建环境用默认 registry 更快）
 RUN echo "registry=https://registry.npmjs.org/" > .npmrc
 RUN pnpm install --frozen-lockfile --prefer-offline 2>/dev/null || pnpm install
