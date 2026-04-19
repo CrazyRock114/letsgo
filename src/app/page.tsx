@@ -160,6 +160,8 @@ export default function GoGamePage() {
   const gameEpochRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const commentaryAbortRef = useRef<AbortController | null>(null);
+  // 防止handleMove重入（快速点击时闭包值可能过期）
+  const isProcessingMoveRef = useRef(false);
   // KataGo分析数据（来自引擎响应，传给解说/教学API）
   const latestAnalysisRef = useRef<{winRate: number; scoreLead: number; bestMoves: {move: string; winrate: number; scoreMean: number}[]} | null>(null);
   const [gameEnded, setGameEnded] = useState(false);
@@ -463,8 +465,15 @@ export default function GoGamePage() {
     if (!isValidMove(board, row, col, currentPlayer) || isAIThinking || isReplayMode || gameEnded) return;
     // 只允许玩家在自己的回合落子
     if (currentPlayer !== playerColor) return;
+    // 防止重入：快速点击时闭包值可能过期
+    if (isProcessingMoveRef.current) return;
+    isProcessingMoveRef.current = true;
 
     const { newBoard, captured } = playMove(board, row, col, currentPlayer);
+    if (!newBoard) {
+      isProcessingMoveRef.current = false;
+      return;
+    }
     const moveIdx = history.length;
 
     // 构建含本手的落子历史
@@ -488,6 +497,7 @@ export default function GoGamePage() {
     setShowGameEndDialog(true);
       setGameResult(result);
       setCurrentPlayer(playerColor);
+      isProcessingMoveRef.current = false;
       return;
     }
 
@@ -506,7 +516,7 @@ export default function GoGamePage() {
       await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
 
       // 检查epoch：如果用户已经重新开始，丢弃本次AI落子
-      if (gameEpochRef.current !== epochAtStart) return;
+      if (gameEpochRef.current !== epochAtStart) { isProcessingMoveRef.current = false; return; }
 
       const validMoves = getValidMoves(newBoard, aiColor);
       if (validMoves.length > 0) {
@@ -536,7 +546,7 @@ export default function GoGamePage() {
             if (res.ok) {
               const data = await res.json();
               // 检查epoch：引擎响应可能很慢，用户可能已重新开始
-              if (gameEpochRef.current !== epochAtStart) return;
+              if (gameEpochRef.current !== epochAtStart) { isProcessingMoveRef.current = false; return; }
               console.log(`[engine] ${engine} response:`, JSON.stringify(data));
               // 保存KataGo分析数据，供解说/教学API使用
               if (data.analysis) {
@@ -563,6 +573,7 @@ export default function GoGamePage() {
                 }
                 setCurrentPlayer(playerColor);
                 if (gameEpochRef.current === epochAtStart) setIsAIThinking(false);
+                isProcessingMoveRef.current = false;
                 return;
               } else {
                 // 引擎返回了但 move 无效或为 null
@@ -583,10 +594,14 @@ export default function GoGamePage() {
               console.warn(`[engine] ${engine} API returned ${res.status}`);
             }
           } catch (engineErr) {
-            // 请求被中止（用户重新开始），直接返回不处理
-            if (engineErr instanceof DOMException && engineErr.name === 'AbortError') return;
-            // 引擎失败，使用本地AI
-            console.warn(`[engine] ${engine} fetch failed:`, engineErr);
+            // 请求被中止：如果epoch变了说明用户重新开始，直接返回；否则回退本地AI
+            if (engineErr instanceof DOMException && engineErr.name === 'AbortError') {
+              if (gameEpochRef.current !== epochAtStart) { isProcessingMoveRef.current = false; return; }
+              // 超时或被新请求中止，回退到本地AI继续
+              console.warn(`[engine] ${engine} request aborted (not epoch change), falling back to local AI`);
+            } else {
+              console.warn(`[engine] ${engine} fetch failed:`, engineErr);
+            }
           }
         }
 
@@ -602,6 +617,14 @@ export default function GoGamePage() {
         }
 
         const { newBoard: finalBoard, captured: aiCaptured } = playMove(newBoard, aiMove.row, aiMove.col, aiColor);
+        if (!finalBoard) {
+          // AI落子无效（不应发生，但做防御性处理），跳过AI回合
+          console.warn('[AI] playMove returned null for', aiMove, aiColor);
+          setCurrentPlayer(playerColor);
+          if (gameEpochRef.current === epochAtStart) setIsAIThinking(false);
+          isProcessingMoveRef.current = false;
+          return;
+        }
         const aiMoveIdx = moveIdx + 1;
         const historyWithAIMove = [...historyWithThisMove, { position: aiMove, color: aiColor as Stone, captured: aiCaptured }];
 
@@ -637,6 +660,7 @@ export default function GoGamePage() {
         setIsAIThinking(false);
       }
     }
+    isProcessingMoveRef.current = false;
   }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, engine, history, requestCommentary, gameEnded, consecutivePasses, boardSize, playerColor, token, deductPoints, refreshUser]);
 
 
@@ -664,6 +688,10 @@ export default function GoGamePage() {
     }
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    // 30秒超时，避免引擎响应过慢导致卡死
+    setTimeout(() => {
+      try { controller.abort(); } catch {}
+    }, 30000);
     return controller.signal;
   }, []);
 
@@ -852,8 +880,12 @@ export default function GoGamePage() {
           console.warn(`[engine-restart] ${engine} API returned ${res.status}`);
         }
       } catch (engineErr) {
-        if (engineErr instanceof DOMException && engineErr.name === 'AbortError') return;
-        console.warn(`[engine-restart] ${engine} fetch failed:`, engineErr);
+        if (engineErr instanceof DOMException && engineErr.name === 'AbortError') {
+          if (gameEpochRef.current !== epochAtStart) return;
+          console.warn(`[engine-restart] request aborted (not epoch change), falling back to local AI`);
+        } else {
+          console.warn(`[engine-restart] ${engine} fetch failed:`, engineErr);
+        }
       }
     }
 
@@ -869,6 +901,12 @@ export default function GoGamePage() {
 
     const moveIdx = history.length;
     const { newBoard: finalBoard, captured: aiCaptured } = playMove(board, aiMove.row, aiMove.col, aiColor);
+    if (!finalBoard) {
+      console.warn('[AI-passMove] playMove returned null for', aiMove, aiColor);
+      setCurrentPlayer(playerColor);
+      if (gameEpochRef.current === epochAtStart) setIsAIThinking(false);
+      return;
+    }
     const historyWithAIMove = [...history, { position: aiMove, color: aiColor as Stone, captured: aiCaptured }];
 
     setBoard(finalBoard);
@@ -1666,7 +1704,7 @@ export default function GoGamePage() {
               <Button onClick={restartGame} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={isReplayMode}>
                 <RotateCcw className="w-3 h-3" /> 重新开始
               </Button>
-              <Button onClick={undoMove} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={history.length === 0 || isReplayMode}>
+              <Button onClick={undoMove} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={history.length === 0 || isReplayMode || isAIThinking}>
                 <RotateCcw className="w-3 h-3" /> 悔棋
               </Button>
               <Button onClick={passMove} variant="outline" size="sm" className="gap-1 h-8 text-xs" disabled={currentPlayer !== playerColor || isAIThinking || isReplayMode || gameEnded}>
@@ -1783,7 +1821,7 @@ export default function GoGamePage() {
                 variant="default"
                 size="sm"
                 className="w-full gap-1.5 h-9 bg-amber-600 hover:bg-amber-700"
-                disabled={isReplayMode || isTeachStreaming || gameEnded}
+                disabled={isReplayMode || isTeachStreaming || gameEnded || isAIThinking}
               >
                 <Lightbulb className="w-4 h-4" /> 提示与教学
                 {isTeachStreaming && <Spinner className="w-3 h-3 ml-1" />}
