@@ -310,6 +310,7 @@ export default function GoGamePage() {
   // ===== 切换棋盘大小 =====
   const changeBoardSize = useCallback((newSize: number) => {
     gameEpochRef.current++;
+    commentaryRequestId.current++;
     // 中止所有正在进行的AI请求
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -321,6 +322,10 @@ export default function GoGamePage() {
       commentaryAbortRef.current = null;
     }
     setIsAIThinking(false);
+    setIsCommentaryStreaming(false);
+    setStreamingText('');
+    setIsTeachStreaming(false);
+    setIsChatStreaming(false);
     setBoardSize(newSize);
     setBoard(createEmptyBoard(newSize));
     setCurrentPlayer(playerColor);
@@ -658,6 +663,8 @@ export default function GoGamePage() {
   // ===== 重新开始 =====
   const restartGame = useCallback(() => {
     const epoch = ++gameEpochRef.current;
+    // 递增解说请求ID，使旧请求的isLatestRequest()返回false
+    commentaryRequestId.current++;
     // 中止所有正在进行的AI请求
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -669,6 +676,10 @@ export default function GoGamePage() {
       commentaryAbortRef.current = null;
     }
     setIsAIThinking(false);
+    setIsCommentaryStreaming(false);
+    setStreamingText('');
+    setIsTeachStreaming(false);
+    setIsChatStreaming(false);
     const emptyBoard = createEmptyBoard(boardSize);
     setBoard(emptyBoard);
     setCurrentPlayer(playerColor);
@@ -1120,6 +1131,7 @@ export default function GoGamePage() {
     setCurrentPlayer(nextColor);
 
     // 清理流式状态
+    commentaryRequestId.current++;
     setIsCommentaryStreaming(false);
     setStreamingText('');
     setIsTeachStreaming(false);
