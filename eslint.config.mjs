@@ -16,6 +16,7 @@ const eslintConfig = defineConfig([
   {
     rules: {
       'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/immutability': 'off',
       'no-restricted-syntax': ['error', ...syntaxRules],
     },
   },

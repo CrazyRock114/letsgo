@@ -20,21 +20,29 @@
 src/
 ├── app/
 │   ├── api/
+│   │   ├── auth/
+│   │   │   ├── register/route.ts  # 用户注册API
+│   │   │   ├── login/route.ts     # 用户登录API
+│   │   │   └── me/route.ts        # 当前用户信息API
 │   │   ├── go-ai/
 │   │   │   └── route.ts     # AI教学与解说API（LLM流式输出）
 │   │   ├── go-engine/
-│   │   │   └── route.ts     # KataGo/GnuGo围棋AI引擎（GTP协议桥接）
+│   │   │   └── route.ts     # KataGo/GnuGo围棋AI引擎（GTP协议桥接+排队+积分扣除）
 │   │   ├── games/
-│   │   │   ├── route.ts     # 棋局保存/载入/列表/删除API
-│   │   │   └── [id]/route.ts # 单个棋局载入API
-│   │   └── players/
-│   │       └── route.ts     # 用户创建/查找API
+│   │   │   ├── route.ts     # 棋局保存/载入/列表/删除API（需登录）
+│   │   │   └── [id]/route.ts # 单个棋局载入/删除API
+│   │   ├── users/
+│   │   │   └── points/route.ts # 积分查询API
+│   │   └── db-check/
+│   │       └── route.ts     # 数据库诊断端点
 │   ├── globals.css           # 全局样式
-│   ├── layout.tsx            # 布局组件
-│   └── page.tsx              # 主页面（围棋游戏+百科+教程）
+│   ├── layout.tsx            # 布局组件（含AuthProvider+Toaster）
+│   └── page.tsx              # 主页面（围棋游戏+百科+教程+用户面板）
 ├── components/
-│   └── ui/                   # shadcn/ui 组件库
+│   └── ui/                   # shadcn/ui 组件库（含sonner toast）
 ├── lib/
+│   ├── auth.ts               # 认证核心（JWT签发/验证，密码哈希）
+│   ├── auth-context.tsx      # React Auth Context（useAuth hook）
 │   ├── go-logic.ts          # 围棋游戏核心逻辑
 │   ├── go-encyclopedia.ts   # 围棋百科数据（35+核心术语）
 │   ├── go-tutorial.ts       # 围棋教程数据（8章40+步骤）
@@ -76,7 +84,19 @@ src/
 - **围棋教程**：8章40+步骤渐进课程（启蒙→吃子→棋形→布局→中盘→官子→提高）
 - 上下文感知问答（发送棋盘状态给AI）
 
-### 4. 辅助功能
+### 4. 用户系统
+- **注册/登录**：昵称+密码，JWT认证（7天有效期）
+- **积分体系**：注册送100积分，不同引擎消耗不同积分
+  - KataGo: 5积分/步（深度学习引擎）
+  - GnuGo: 2积分/步（经典引擎）
+  - 本地AI: 0积分/步（免费，无需登录）
+- **积分扣除**：引擎API先扣积分再返回落子，积分不足回退本地AI
+- **引擎排队**：EngineQueue类（FIFO队列），KataGo串行处理，支持多人排队
+- **棋局关联**：保存棋局关联user_id，登录用户只看自己的棋局
+- **前端体验**：用户面板显示昵称/积分/局数/胜场，积分不足时toast提示
+- **未登录**：可使用本地AI对弈，不可保存棋局或使用KataGo/GnuGo
+
+### 5. 辅助功能
 - 提示功能（评分引擎选最佳位置，永久停留直到再次点击）
 - 悔棋功能（撤销2步：玩家+AI）
 - 停手功能（双方连续停手结束棋局）
@@ -88,6 +108,34 @@ src/
 - 复盘从任意步继续对弈：复盘模式下可"从第N步继续对弈"，截取历史继续游戏
 
 ## API接口
+
+### POST /api/auth/register
+用户注册
+
+**请求参数：**
+- `nickname`: 昵称（2-20字符，唯一）
+- `password`: 密码（4位以上）
+
+**响应：** `{ user: {id, nickname, points, totalGames, wins}, token }`
+
+### POST /api/auth/login
+用户登录
+
+**请求参数：**
+- `nickname`: 昵称
+- `password`: 密码
+
+**响应：** `{ user: {id, nickname, points, totalGames, wins}, token }`
+
+### GET /api/auth/me
+获取当前用户信息（需Authorization: Bearer token）
+
+**响应：** `{ user: {id, nickname, points, totalGames, wins} }`
+
+### GET /api/users/points
+获取积分余额和交易记录（需登录）
+
+**响应：** `{ points: number, transactions: [{id, amount, type, description, created_at}] }`
 
 ### POST /api/go-ai
 LLM流式响应，Content-Type: text/event-stream
@@ -106,7 +154,10 @@ LLM流式响应，Content-Type: text/event-stream
 - `currentPlayer`: "black" | "white"
 
 ### POST /api/go-engine
-KataGo/GnuGo AI引擎桥接（GTP协议），优先KataGo，GnuGo回退
+KataGo/GnuGo AI引擎桥接（GTP协议+排队+积分扣除）
+
+**请求头：**
+- `Authorization: Bearer <token>`（KataGo/GnuGo必须登录，local无需登录）
 
 **请求参数：**
 - `boardSize`: 9 | 13 | 19
@@ -120,13 +171,21 @@ KataGo/GnuGo AI引擎桥接（GTP协议），优先KataGo，GnuGo回退
 - `resign`: boolean（AI认输）
 - `engine`: "katago" | "gnugo"（使用的引擎）
 - `noEngine`: boolean（引擎不可用，前端应回退本地AI）
-- `score`: 终局得分（仅final_score）
+- `pointsUsed`: number（本次扣除积分数）
+- `remainingPoints`: number（剩余积分）
+- `insufficientPoints`: boolean（积分不足，仅403响应时）
+
+**错误响应：**
+- 401: `{ error, needLogin: true }` — 未登录使用收费引擎
+- 403: `{ error, insufficientPoints: true, required, current }` — 积分不足
 
 ### GET /api/go-engine
-返回可用引擎列表
+返回可用引擎列表（含积分费用和队列信息）
 
 **响应：**
-- `engines`: [{id, name, available, desc}, ...]
+- `engines`: [{id, name, available, desc, cost}, ...]
+- `queueLength`: number（当前排队人数）
+- `isProcessing`: boolean
 
 ## 引擎安装与恢复
 
@@ -149,6 +208,50 @@ KataGo/GnuGo AI引擎桥接（GTP协议），优先KataGo，GnuGo回退
 ### GnuGo（经典引擎）
 - **项目捆绑**: `bin/gnugo`（8MB x86_64 二进制，随 git 持久化）
 - **备选路径**: `/usr/games/gnugo`（系统安装）
+
+## 数据库Schema（Supabase，表名前缀 letsgo_）
+
+### letsgo_users
+| 列名 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PK | 用户ID |
+| nickname | VARCHAR(50) UNIQUE | 昵称 |
+| password_hash | TEXT | bcrypt密码哈希 |
+| points | INTEGER DEFAULT 100 | 积分余额 |
+| total_games | INTEGER DEFAULT 0 | 总局数 |
+| wins | INTEGER DEFAULT 0 | 胜场 |
+| created_at | TIMESTAMPTZ | 创建时间 |
+| updated_at | TIMESTAMPTZ | 更新时间 |
+
+### letsgo_point_transactions
+| 列名 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PK | 交易ID |
+| user_id | INTEGER FK→letsgo_users | 用户ID |
+| amount | INTEGER | 变动量（负数为扣除） |
+| type | VARCHAR(50) | 类型（engine_use等） |
+| description | TEXT | 描述 |
+| game_id | INTEGER | 关联棋局ID |
+| created_at | TIMESTAMPTZ | 创建时间 |
+
+### letsgo_games
+| 列名 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PK | 棋局ID |
+| player_id | INTEGER FK→letsgo_players | 旧关联（可空） |
+| user_id | INTEGER FK→letsgo_users | 新关联（用户系统） |
+| board_size | INTEGER DEFAULT 9 | 棋盘大小 |
+| difficulty | VARCHAR(20) DEFAULT 'easy' | 难度 |
+| engine | TEXT DEFAULT 'local' | 使用的引擎 |
+| moves | JSONB | 落子历史 |
+| commentaries | JSONB | 解说记录 |
+| final_board | JSONB | 终局棋盘 |
+| black_score / white_score | INTEGER | 比分 |
+| status | VARCHAR(20) | playing/finished |
+| title | VARCHAR(200) | 棋局标题 |
+| created_at / updated_at | TIMESTAMPTZ | 时间 |
+
+**迁移方式**：`docker-start.sh` 使用psql自动迁移（需设置 `COZE_SUPABASE_DB_URL` 环境变量，Session pooler模式）
 
 ## 围棋逻辑说明
 

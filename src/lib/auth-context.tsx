@@ -131,7 +131,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // eslint-disable-next-line react-hooks/immutability
   const logout = useCallback(() => {
     setUser(null);
     setToken(null);
@@ -139,7 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem('letsgo_user');
   }, []);
 
-  const deductPoints = useCallback((amount: number) => { // eslint-disable-line react-hooks/immutability
+  const deductPoints = useCallback((amount: number) => {
     setUser(prev => {
       if (!prev) return prev;
       const updated = { ...prev, points: Math.max(0, prev.points - amount) };
