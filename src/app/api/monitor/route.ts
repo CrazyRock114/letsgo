@@ -43,9 +43,34 @@ export async function GET() {
     // 引擎实时数据（从go-engine模块直接获取进程内变量）
     const engineData = getEngineMonitorData();
 
-    // 系统资源信息
-    const totalMem = os.totalmem();
-    const freeMem = os.freemem();
+    // 系统资源信息（容器环境需从cgroup读取实际内存限制）
+    let totalMem = os.totalmem();
+    let freeMem = os.freemem();
+    // Docker/Railway容器中os.totalmem()读取的是宿主机内存，需从cgroup获取容器实际限制
+    try {
+      const fs = await import('fs');
+      const cgroupLimit = fs.readFileSync('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'utf-8').trim();
+      const limitNum = parseInt(cgroupLimit);
+      if (limitNum > 0 && limitNum < totalMem) totalMem = limitNum;
+      const cgroupUsage = fs.readFileSync('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'utf-8').trim();
+      const usageNum = parseInt(cgroupUsage);
+      if (usageNum > 0) freeMem = totalMem - usageNum;
+    } catch {
+      // cgroup v2 尝试
+      try {
+        const fs = await import('fs');
+        const cgroupMax = fs.readFileSync('/sys/fs/cgroup/memory.max', 'utf-8').trim();
+        if (cgroupMax !== 'max') {
+          const limitNum = parseInt(cgroupMax);
+          if (limitNum > 0 && limitNum < totalMem) totalMem = limitNum;
+        }
+        const cgroupCurrent = fs.readFileSync('/sys/fs/cgroup/memory.current', 'utf-8').trim();
+        const usageNum = parseInt(cgroupCurrent);
+        if (usageNum > 0) freeMem = totalMem - usageNum;
+      } catch {
+        // 无法读取cgroup，使用os默认值
+      }
+    }
     const usedMem = totalMem - freeMem;
     const cpus = os.cpus();
     const cpuModel = cpus[0]?.model || "Unknown";
@@ -113,9 +138,12 @@ export async function GET() {
       },
       system: {
         memory: {
-          total: Math.round(totalMem / 1024 / 1024),
-          used: Math.round(usedMem / 1024 / 1024),
-          free: Math.round(freeMem / 1024 / 1024),
+          totalMB: Math.round(totalMem / 1024 / 1024),
+          usedMB: Math.round(usedMem / 1024 / 1024),
+          freeMB: Math.round(freeMem / 1024 / 1024),
+          totalGB: Math.round(totalMem / 1024 / 1024 / 1024 * 10) / 10,
+          usedGB: Math.round(usedMem / 1024 / 1024 / 1024 * 10) / 10,
+          freeGB: Math.round(freeMem / 1024 / 1024 / 1024 * 10) / 10,
           usagePercent: Math.round((usedMem / totalMem) * 100),
         },
         cpu: {

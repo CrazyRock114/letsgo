@@ -29,7 +29,7 @@ interface MonitorData {
   };
   usage: { pointsUsedLastHour: number; engineCallsLastHour: number };
   system: {
-    memory: { total: number; used: number; free: number; usagePercent: number };
+    memory: { totalMB: number; usedMB: number; freeMB: number; totalGB: number; usedGB: number; freeGB: number; usagePercent: number };
     cpu: { model: string; cores: number; nodeUsage: number };
     uptime: number;
   };
@@ -133,7 +133,7 @@ export default function MonitorPage() {
                 <div>
                   <div className="flex justify-between text-sm mb-1">
                     <span>内存</span>
-                    <span>{data.system.memory.used}MB / {data.system.memory.total}MB ({data.system.memory.usagePercent}%)</span>
+                    <span>{data.system.memory.usedGB}GB / {data.system.memory.totalGB}GB ({data.system.memory.usagePercent}%)</span>
                   </div>
                   <div className="h-3 bg-gray-800 rounded-full overflow-hidden">
                     <div
