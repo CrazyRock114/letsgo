@@ -319,8 +319,8 @@ export default function GoGamePage() {
     // 中止正在进行的解说/教学/聊天请求
     if (commentaryAbortRef.current) {
       commentaryAbortRef.current.abort();
-      commentaryAbortRef.current = null;
     }
+    commentaryAbortRef.current = new AbortController();
     setIsAIThinking(false);
     setIsCommentaryStreaming(false);
     setStreamingText('');
@@ -367,12 +367,10 @@ export default function GoGamePage() {
       setStreamingText('');
     }
 
-    // 中止之前的解说请求，创建新的AbortController
-    if (commentaryAbortRef.current) {
-      commentaryAbortRef.current.abort();
-    }
-    const thisAbortController = new AbortController();
-    commentaryAbortRef.current = thisAbortController;
+    // 不中止之前的解说请求——让它继续完成生成，只控制流式文本显示归最新请求
+    // 解说请求之间互不abort，防止快速落子时旧解说丢失
+    // restartGame/changeBoardSize才会统一abort所有解说
+    const thisAbortSignal = commentaryAbortRef.current?.signal;
 
     // 兜底解说（API失败时使用）
     const fallbackCommentary = `${moveColor === 'black' ? '黑方' : '白方'}下在${positionToCoordinate(movePos.row, movePos.col, boardSize)}`;
@@ -380,7 +378,7 @@ export default function GoGamePage() {
     try {
       const response = await fetch('/api/go-ai', {
         method: 'POST',
-        signal: thisAbortController.signal,
+        signal: thisAbortSignal,
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({
           type: 'commentary',
@@ -673,8 +671,8 @@ export default function GoGamePage() {
     // 中止正在进行的解说/教学/聊天请求
     if (commentaryAbortRef.current) {
       commentaryAbortRef.current.abort();
-      commentaryAbortRef.current = null;
     }
+    commentaryAbortRef.current = new AbortController();
     setIsAIThinking(false);
     setIsCommentaryStreaming(false);
     setStreamingText('');
