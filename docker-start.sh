@@ -9,8 +9,23 @@ echo "=== 小围棋乐园 启动 ==="
 
 # 尝试数据库迁移
 if [ -n "$COZE_SUPABASE_DB_URL" ]; then
-  echo "[migrate] 检测到数据库连接，运行迁移..."
-  psql "$COZE_SUPABASE_DB_URL" -v ON_ERROR_STOP=0 <<'SQL' 2>/dev/null || echo "[migrate] 迁移失败（非致命），继续启动..."
+  echo "[migrate] 检测到 COZE_SUPABASE_DB_URL，运行迁移..."
+
+  # 先测试连接
+  echo "[migrate] 测试数据库连接..."
+  if psql "$COZE_SUPABASE_DB_URL" -c "SELECT 1 AS test;" >/dev/null 2>&1; then
+    echo "[migrate] 数据库连接成功 ✓"
+  else
+    echo "[migrate] ✗ 数据库连接失败！尝试输出详细错误："
+    psql "$COZE_SUPABASE_DB_URL" -c "SELECT 1;" 2>&1 || true
+    echo "[migrate] 跳过迁移，继续启动（非致命）"
+    echo "[app] 启动服务器..."
+    exec node server.js
+  fi
+
+  # 运行迁移 SQL
+  echo "[migrate] 执行迁移 SQL..."
+  MIGRATE_OUTPUT=$(psql "$COZE_SUPABASE_DB_URL" -v ON_ERROR_STOP=0 <<'SQL' 2>&1 || true
     -- 创建 letsgo_players 表（如不存在）
     CREATE TABLE IF NOT EXISTS letsgo_players (
       id SERIAL PRIMARY KEY,
@@ -55,7 +70,13 @@ if [ -n "$COZE_SUPABASE_DB_URL" ]; then
     WHERE NOT EXISTS (SELECT 1 FROM letsgo_games WHERE letsgo_games.id = games.id)
     LIMIT 100;
 SQL
-  echo "[migrate] 迁移完成"
+  )
+
+  if [ -n "$MIGRATE_OUTPUT" ]; then
+    echo "[migrate] 迁移输出:"
+    echo "$MIGRATE_OUTPUT" | head -20
+  fi
+  echo "[migrate] 迁移完成 ✓"
 else
   echo "[migrate] 未设置 COZE_SUPABASE_DB_URL，跳过数据库迁移"
   echo "[migrate] 如需自动迁移，请在 Railway 设置该环境变量"
