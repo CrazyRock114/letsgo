@@ -100,12 +100,12 @@ RUN echo "=== Standalone output structure ===" && \
 # ---- Stage 3: 运行时镜像 ----
 FROM node:24-slim AS runner
 
-# 安装 GnuGo + KataGo 运行时依赖
+# 安装 GnuGo + KataGo 运行时依赖 + postgresql-client（用于数据库迁移）
 # KataGo v1.15.3 编译于 Ubuntu 20.04，依赖：
 #   libssl.so.1.1 + libcrypto.so.1.1 → Debian 12 只有 OpenSSL 3.x，从 Debian 11 下载
 #   libzip.so.5 → Debian 12 libzip4 只提供 libzip.so.4，创建 symlink 兼容
 RUN apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends gnugo libgomp1 libzip4 ca-certificates curl && \
+    apt-get install -y -qq --no-install-recommends gnugo libgomp1 libzip4 ca-certificates curl postgresql-client && \
     curl -sSL http://deb.debian.org/debian/pool/main/o/openssl/libssl1.1_1.1.1w-0+deb11u1_amd64.deb -o /tmp/libssl1.1.deb && \
     dpkg -i /tmp/libssl1.1.deb && \
     rm -f /tmp/libssl1.1.deb && \
@@ -123,20 +123,9 @@ COPY --from=app-builder /app/.next/standalone /app
 COPY --from=app-builder /app/.next/static /app/.next/static
 COPY --from=app-builder /app/public /app/public
 
-# 复制迁移脚本和启动脚本
-COPY --from=app-builder /app/migrate.js /app/migrate.js
+# 复制启动脚本
 COPY --from=app-builder /app/docker-start.sh /app/docker-start.sh
 RUN chmod +x /app/docker-start.sh
-
-# pg 库需要被包含在 standalone 输出中（standalone 不自动包含所有 node_modules）
-# 从 builder 阶段复制 pg 及所有依赖（使用通配符避免遗漏子依赖）
-COPY --from=app-builder /app/node_modules/pg /app/node_modules/pg
-COPY --from=app-builder /app/node_modules/pg-* /app/node_modules/
-COPY --from=app-builder /app/node_modules/split2 /app/node_modules/split2
-COPY --from=app-builder /app/node_modules/buffer-writer /app/node_modules/buffer-writer
-COPY --from=app-builder /app/node_modules/packet-reader /app/node_modules/packet-reader
-COPY --from=app-builder /app/node_modules/pgpass /app/node_modules/pgpass
-COPY --from=app-builder /app/node_modules/postgres-* /app/node_modules/
 
 # 环境变量
 ENV NODE_ENV=production
