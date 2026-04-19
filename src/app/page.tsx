@@ -100,6 +100,7 @@ interface SavedGame {
   player_id?: number;
   board_size: number;
   difficulty: string;
+  engine?: string;
   moves: MoveEntry[];
   commentaries: CommentaryEntry[];
   final_board: Board | null;
@@ -839,6 +840,7 @@ export default function GoGamePage() {
           player_id: pid,
           board_size: boardSize,
           difficulty,
+          engine,
           moves: history,
           commentaries,
           final_board: board,
@@ -865,7 +867,7 @@ export default function GoGamePage() {
       setSaveMessage('保存失败，请重试');
     }
     setIsSaving(false);
-  }, [ensurePlayer, savedGameId, boardSize, difficulty, history, commentaries, board, score, saveTitle, isSaving]);
+  }, [ensurePlayer, savedGameId, boardSize, difficulty, engine, history, commentaries, board, score, saveTitle, isSaving]);
 
   // ===== 载入棋局列表 =====
   const loadGames = useCallback(async () => {
@@ -894,6 +896,7 @@ export default function GoGamePage() {
 
       setBoardSize(game.board_size);
       setDifficulty(game.difficulty);
+      if (game.engine) setEngine(game.engine as EngineId);
       setHistory(game.moves || []);
       setCommentaries(game.commentaries || []);
       setSavedGameId(game.id ?? null);
@@ -1274,15 +1277,16 @@ export default function GoGamePage() {
 
           {/* 引擎选择 */}
           <div className="flex items-center gap-1">
-            <span className="text-[10px] text-amber-600 mr-0.5">引擎</span>
+            <span className="text-[10px] text-amber-600 mr-0.5">引擎{isReplayMode ? ' 🔒' : ''}</span>
             {ENGINE_OPTIONS.map(({ id, name, desc }) => {
               const avail = availableEngines[id];
               const isLoading = enginesLoading && id !== 'local' && !avail;
+              const isActive = engine === id && avail;
               return (
                 <button
                   key={id}
                   onClick={() => {
-                    if (!avail || isLoading) return;
+                    if (!avail || isLoading || isReplayMode) return;
                     if (id === engine) return;
                     // 如果棋局已开始（有落子历史），弹窗确认
                     if (history.length > 0 && !gameEnded) {
@@ -1299,20 +1303,25 @@ export default function GoGamePage() {
                     }
                   }}
                   disabled={isReplayMode || !avail || isLoading}
-                  title={isLoading ? `${name}加载中...` : avail ? desc : `${name}不可用`}
+                  title={isReplayMode ? '复盘模式中不可切换引擎' : isLoading ? `${name}加载中...` : avail ? desc : `${name}不可用`}
                   className={`
                     h-7 px-2 text-xs rounded-md border transition-colors flex items-center gap-1
-                    ${engine === id && avail
-                      ? 'bg-amber-700 text-white border-amber-700 hover:bg-amber-800'
+                    ${isActive
+                      ? isReplayMode
+                        ? 'bg-amber-100 text-amber-700 border-amber-300 cursor-not-allowed'
+                        : 'bg-amber-700 text-white border-amber-700 hover:bg-amber-800'
                       : isLoading
                         ? 'bg-amber-50 border-amber-200 text-amber-500 cursor-wait'
                         : avail
-                          ? 'bg-white border-gray-200 hover:border-amber-400 text-gray-700'
+                          ? isReplayMode
+                            ? 'bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed'
+                            : 'bg-white border-gray-200 hover:border-amber-400 text-gray-700'
                           : 'bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed line-through'
                     }
                   `}
                 >
                   {isLoading && <Spinner className="w-3 h-3" />}
+                  {isReplayMode && isActive && <span>🔒</span>}
                   {name}
                 </button>
               );

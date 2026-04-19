@@ -6,7 +6,7 @@ import { getSupabaseClient } from '@/storage/database/supabase-client';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { id, player_id, board_size, difficulty, moves, commentaries, final_board, black_score, white_score, status, title } = body;
+    const { id, player_id, board_size, difficulty, engine, moves, commentaries, final_board, black_score, white_score, status, title } = body;
 
     if (!player_id) {
       return NextResponse.json({ error: '缺少玩家ID' }, { status: 400 });
@@ -26,6 +26,7 @@ export async function POST(request: NextRequest) {
           white_score,
           status,
           title,
+          engine,
           updated_at: new Date().toISOString(),
         })
         .eq('id', id)
@@ -42,6 +43,7 @@ export async function POST(request: NextRequest) {
           player_id,
           board_size,
           difficulty,
+          engine,
           moves,
           commentaries,
           final_board,
@@ -72,7 +74,7 @@ export async function GET(request: NextRequest) {
 
     let query = client
       .from('letsgo_games')
-      .select('id, player_id, board_size, difficulty, status, title, black_score, white_score, created_at, updated_at')
+      .select('id, player_id, board_size, difficulty, engine, status, title, black_score, white_score, created_at, updated_at')
       .order('created_at', { ascending: false })
       .limit(50);
 
