@@ -1092,6 +1092,8 @@ export default function GoGamePage() {
     // 统一的点击/触摸处理函数 - 从屏幕坐标计算棋盘交叉点
     // 防止 touch + click 双重触发：touch 后短时间内忽略 click
     let lastTouchTime = 0;
+    // 记录触摸起始位置，用于区分轻触和滑动
+    let touchStartPos: { x: number; y: number } | null = null;
     const handleBoardInteraction = (clientX: number, clientY: number, isTouchEvent = false) => {
       if (isTouchEvent) {
         lastTouchTime = Date.now();
@@ -1129,11 +1131,29 @@ export default function GoGamePage() {
           // 桌面端和安卓：click 事件处理
           handleBoardInteraction(e.clientX, e.clientY, false);
         }}
+        onTouchStart={(e) => {
+          // 记录触摸起始位置
+          const touch = e.changedTouches[0];
+          if (touch) {
+            touchStartPos = { x: touch.clientX, y: touch.clientY };
+          }
+        }}
         onTouchEnd={(e) => {
-          // iPad Safari：touch 事件处理（iOS 对 SVG 内透明元素不响应 click）
+          // iPad Safari / 手机端：touch 事件处理
           const touch = e.changedTouches[0];
           if (!touch) return;
+          // 如果触摸移动距离过大（滑动/滚动），不视为落子
+          if (touchStartPos) {
+            const dx = touch.clientX - touchStartPos.x;
+            const dy = touch.clientY - touchStartPos.y;
+            if (Math.sqrt(dx * dx + dy * dy) > 15) return;
+          }
+          e.preventDefault(); // 阻止后续 click 事件
           handleBoardInteraction(touch.clientX, touch.clientY, true);
+        }}
+        onTouchMove={() => {
+          // 触摸移动时清除起始位置（表示在滑动而非轻触）
+          touchStartPos = null;
         }}
       >
         <defs>
@@ -1594,17 +1614,21 @@ export default function GoGamePage() {
                   {commentaries.length === 0 && !isCommentaryStreaming && (
                     <p className="text-center text-gray-300 text-xs py-4">落子后，解说员会为你解说每一步</p>
                   )}
-                  {commentaries.map((entry, idx) => (
-                    <div key={idx} className={`rounded-lg px-3 py-2 ${entry.color === 'black' ? 'bg-gray-50 border-l-3 border-gray-700' : 'bg-orange-50 border-l-3 border-orange-400'}`}>
+                  {commentaries.map((entry, idx) => {
+                    // 围棋中 moveIndex 偶数=黑方，奇数=白方，以此为准避免颜色标记错误
+                    const displayColor: 'black' | 'white' = entry.moveIndex % 2 === 0 ? 'black' : 'white';
+                    return (
+                    <div key={idx} className={`rounded-lg px-3 py-2 ${displayColor === 'black' ? 'bg-gray-50 border-l-3 border-gray-700' : 'bg-orange-50 border-l-3 border-orange-400'}`}>
                       <div className="flex items-center gap-1.5 mb-0.5">
-                        <div className={`w-4 h-4 rounded-full ${entry.color === 'black' ? 'bg-gray-800' : 'bg-white border border-gray-300'}`} />
+                        <div className={`w-4 h-4 rounded-full ${displayColor === 'black' ? 'bg-gray-800' : 'bg-white border border-gray-300'}`} />
                         <span className="text-xs font-medium text-gray-600">
-                          第{entry.moveIndex + 1}手 | {entry.color === 'black' ? '黑方' : '白方'} {positionToCoordinate(entry.position.row, entry.position.col, boardSize)}
+                          第{entry.moveIndex + 1}手 | {displayColor === 'black' ? '黑方' : '白方'} {positionToCoordinate(entry.position.row, entry.position.col, boardSize)}
                         </span>
                       </div>
                       <p className="text-xs text-gray-700 leading-relaxed">{entry.commentary}</p>
                     </div>
-                  ))}
+                    );
+                  })}
                   {isCommentaryStreaming && streamingText && (
                     <div className="rounded-lg px-3 py-2 bg-amber-50 border-l-3 border-amber-400">
                       <div className="flex items-center gap-1.5 mb-0.5">
