@@ -137,6 +137,7 @@ export default function GoGamePage() {
   const [engine, setEngine] = useState<EngineId>('local');
   const [playerColor, setPlayerColor] = useState<Stone>('black'); // 玩家执子颜色
   const [availableEngines, setAvailableEngines] = useState<Record<EngineId, boolean>>({ katago: false, gnugo: false, local: true });
+  const [enginesLoading, setEnginesLoading] = useState(true);
   const [board, setBoard] = useState<Board>(() => createEmptyBoard(9));
   const [currentPlayer, setCurrentPlayer] = useState<Stone>('black');
   const [history, setHistory] = useState<MoveEntry[]>([]);
@@ -254,7 +255,8 @@ export default function GoGamePage() {
           else setEngine('local');
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setEnginesLoading(false));
   }, []);
 
   // 计算比分（白方含贴目）
@@ -1255,11 +1257,12 @@ export default function GoGamePage() {
             <span className="text-[10px] text-amber-600 mr-0.5">引擎</span>
             {ENGINE_OPTIONS.map(({ id, name, desc }) => {
               const avail = availableEngines[id];
+              const isLoading = enginesLoading && id !== 'local' && !avail;
               return (
                 <button
                   key={id}
                   onClick={() => {
-                    if (!avail) return;
+                    if (!avail || isLoading) return;
                     if (id === engine) return;
                     // 如果棋局已开始（有落子历史），弹窗确认
                     if (history.length > 0 && !gameEnded) {
@@ -1275,18 +1278,21 @@ export default function GoGamePage() {
                       restartGame();
                     }
                   }}
-                  disabled={isReplayMode || !avail}
-                  title={avail ? desc : `${name}不可用`}
+                  disabled={isReplayMode || !avail || isLoading}
+                  title={isLoading ? `${name}加载中...` : avail ? desc : `${name}不可用`}
                   className={`
-                    h-7 px-2 text-xs rounded-md border transition-colors
+                    h-7 px-2 text-xs rounded-md border transition-colors flex items-center gap-1
                     ${engine === id && avail
                       ? 'bg-amber-700 text-white border-amber-700 hover:bg-amber-800'
-                      : avail
-                        ? 'bg-white border-gray-200 hover:border-amber-400 text-gray-700'
-                        : 'bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed line-through'
+                      : isLoading
+                        ? 'bg-amber-50 border-amber-200 text-amber-500 cursor-wait'
+                        : avail
+                          ? 'bg-white border-gray-200 hover:border-amber-400 text-gray-700'
+                          : 'bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed line-through'
                     }
                   `}
                 >
+                  {isLoading && <Spinner className="w-3 h-3" />}
                   {name}
                 </button>
               );
@@ -1346,6 +1352,14 @@ export default function GoGamePage() {
           </div>
         </div>
       </header>
+
+      {/* 引擎加载提示 */}
+      {enginesLoading && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-center gap-2 text-sm text-amber-700">
+          <Spinner className="w-4 h-4" />
+          <span>AI引擎加载中，请稍候...</span>
+        </div>
+      )}
 
       {/* 主内容 - 桌面端固定视口高度，避免页面整体滚动 */}
       <div className="max-w-7xl mx-auto px-3 pb-3 grid grid-cols-1 lg:grid-cols-12 gap-3 lg:h-[calc(100vh-120px)]">
