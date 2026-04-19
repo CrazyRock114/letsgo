@@ -158,6 +158,7 @@ export default function GoGamePage() {
   const [savedGameId, setSavedGameId] = useState<number | null>(null);
   const [consecutivePasses, setConsecutivePasses] = useState(0);
   const gameEpochRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [gameEnded, setGameEnded] = useState(false);
   const [gameResult, setGameResult] = useState<{ winner: string; detail: string } | null>(null);
   const [showGameEndDialog, setShowGameEndDialog] = useState(false);
@@ -266,15 +267,28 @@ export default function GoGamePage() {
             avail[e.id as EngineId] = e.available;
           }
           setAvailableEngines(avail);
-          // 自动选择最高可用引擎
-          if (avail.katago) setEngine('katago');
-          else if (avail.gnugo) setEngine('gnugo');
-          else setEngine('local');
+          // 自动选择最高可用引擎（未登录只能用本地AI）
+          if (!user) {
+            setEngine('local');
+          } else if (avail.katago) {
+            setEngine('katago');
+          } else if (avail.gnugo) {
+            setEngine('gnugo');
+          } else {
+            setEngine('local');
+          }
         }
       })
       .catch(() => {})
       .finally(() => setEnginesLoading(false));
   }, []);
+
+  // 登录/登出时调整引擎选择
+  useEffect(() => {
+    if (!user && engine !== 'local') {
+      setEngine('local');
+    }
+  }, [user]);
 
   // 计算比分（白方含贴目）
   useEffect(() => {
@@ -295,6 +309,11 @@ export default function GoGamePage() {
   // ===== 切换棋盘大小 =====
   const changeBoardSize = useCallback((newSize: number) => {
     gameEpochRef.current++;
+    // 中止所有正在进行的AI请求
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
     setIsAIThinking(false);
     setBoardSize(newSize);
     setBoard(createEmptyBoard(newSize));
@@ -357,22 +376,41 @@ export default function GoGamePage() {
             setStreamingText(text);
           }
         });
-        // 始终保存解说，即使不是最新请求（防止快速落子时AI解说丢失）
-        // 按 moveIndex 有序插入，防止异步响应导致解说乱序
-        setCommentaries(prev => {
-          const newEntry = {
-            moveIndex: moveIdx,
-            color: moveColor,
-            position: movePos,
-            commentary: fullText || fallbackCommentary,
-          };
-          const next = [...prev, newEntry];
-          next.sort((a, b) => a.moveIndex - b.moveIndex);
-          return next;
-        });
+        // 只有epoch匹配时才保存解说（防止旧棋局解说写入新棋局）
+        if (gameEpochRef.current === epochAtStart) {
+          setCommentaries(prev => {
+            const newEntry = {
+              moveIndex: moveIdx,
+              color: moveColor,
+              position: movePos,
+              commentary: fullText || fallbackCommentary,
+            };
+            const next = [...prev, newEntry];
+            next.sort((a, b) => a.moveIndex - b.moveIndex);
+            return next;
+          });
+        }
       } else {
-        // API 返回非200，使用兜底解说（始终保存）
+        // API 返回非200，使用兜底解说（epoch匹配时才保存）
         console.warn('[commentary] API returned', response.status, await response.text().catch(() => ''));
+        if (gameEpochRef.current === epochAtStart) {
+          setCommentaries(prev => {
+            const newEntry = {
+              moveIndex: moveIdx,
+              color: moveColor,
+              position: movePos,
+              commentary: fallbackCommentary,
+            };
+            const next = [...prev, newEntry];
+            next.sort((a, b) => a.moveIndex - b.moveIndex);
+            return next;
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('[commentary] fetch error:', err);
+      // epoch匹配时才保存兜底解说
+      if (gameEpochRef.current === epochAtStart) {
         setCommentaries(prev => {
           const newEntry = {
             moveIndex: moveIdx,
@@ -385,20 +423,6 @@ export default function GoGamePage() {
           return next;
         });
       }
-    } catch (err) {
-      console.warn('[commentary] fetch error:', err);
-      // 始终保存兜底解说
-      setCommentaries(prev => {
-        const newEntry = {
-          moveIndex: moveIdx,
-          color: moveColor,
-          position: movePos,
-          commentary: fallbackCommentary,
-        };
-        const next = [...prev, newEntry];
-        next.sort((a, b) => a.moveIndex - b.moveIndex);
-        return next;
-      });
     } finally {
       // 只有最新请求才清理流式状态
       if (isLatestRequest()) {
@@ -473,6 +497,7 @@ export default function GoGamePage() {
             }));
             const res = await fetch('/api/go-engine', {
               method: 'POST',
+              signal: createAbortableFetch(),
               headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
               body: JSON.stringify({
                 boardSize,
@@ -506,7 +531,7 @@ export default function GoGamePage() {
                   setGameResult(result);
                 }
                 setCurrentPlayer(playerColor);
-                setIsAIThinking(false);
+                if (gameEpochRef.current === epochAtStart) setIsAIThinking(false);
                 return;
               } else {
                 // 引擎返回了但 move 无效或为 null
@@ -527,6 +552,8 @@ export default function GoGamePage() {
               console.warn(`[engine] ${engine} API returned ${res.status}`);
             }
           } catch (engineErr) {
+            // 请求被中止（用户重新开始），直接返回不处理
+            if (engineErr instanceof DOMException && engineErr.name === 'AbortError') return;
             // 引擎失败，使用本地AI
             console.warn(`[engine] ${engine} fetch failed:`, engineErr);
           }
@@ -599,9 +626,24 @@ export default function GoGamePage() {
     setCommentaries(prev => prev.slice(0, -stepsToUndo));
   }, [history, boardSize, isReplayMode, playerColor]);
 
+  // 创建带中断控制的fetch请求
+  const createAbortableFetch = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    return controller.signal;
+  }, []);
+
   // ===== 重新开始 =====
   const restartGame = useCallback(() => {
     const epoch = ++gameEpochRef.current;
+    // 中止所有正在进行的AI请求
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
     setIsAIThinking(false);
     const emptyBoard = createEmptyBoard(boardSize);
     setBoard(emptyBoard);
@@ -630,6 +672,7 @@ export default function GoGamePage() {
             const aiColor = 'black';
             const res = await fetch('/api/go-engine', {
               method: 'POST',
+              signal: createAbortableFetch(),
               headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
               body: JSON.stringify({ boardSize, difficulty, engine, moves: [] }),
             });
@@ -728,6 +771,7 @@ export default function GoGamePage() {
         }));
         const res = await fetch('/api/go-engine', {
           method: 'POST',
+          signal: createAbortableFetch(),
           headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
           body: JSON.stringify({
             boardSize,
@@ -749,7 +793,7 @@ export default function GoGamePage() {
             setGameEnded(true);
     setShowGameEndDialog(true);
             setGameResult(result);
-            setIsAIThinking(false);
+            if (gameEpochRef.current === epochAtStart) setIsAIThinking(false);
             return;
           } else {
             console.warn(`[engine-restart] ${engine} returned invalid/null move, falling back. Data:`, data);
@@ -758,6 +802,7 @@ export default function GoGamePage() {
           console.warn(`[engine-restart] ${engine} API returned ${res.status}`);
         }
       } catch (engineErr) {
+        if (engineErr instanceof DOMException && engineErr.name === 'AbortError') return;
         console.warn(`[engine-restart] ${engine} fetch failed:`, engineErr);
       }
     }
@@ -1053,6 +1098,7 @@ export default function GoGamePage() {
 
     // 如果下一步是AI的回合，延迟触发AI落子
     if (nextColor !== playerColor) {
+      const resumeEpoch = ++gameEpochRef.current;
       setTimeout(() => {
         void (async () => {
           setIsAIThinking(true);
@@ -1070,6 +1116,7 @@ export default function GoGamePage() {
               try {
                 const res = await fetch('/api/go-engine', {
                   method: 'POST',
+                  signal: createAbortableFetch(),
                   headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
                   body: JSON.stringify({ boardSize, difficulty, engine, moves: moveHistoryForEngine }),
                 });
@@ -1135,9 +1182,10 @@ export default function GoGamePage() {
               requestCommentary(finalBoard, aiMove, aiColorCalc, aiCaptured, aiMoveIdx, historyWithAIMove);
             }
           } catch (err) {
+            if (err instanceof DOMException && err.name === 'AbortError') return;
             console.warn('[resumeFromReplay] AI move failed:', err);
           } finally {
-            setIsAIThinking(false);
+            if (gameEpochRef.current === resumeEpoch) setIsAIThinking(false);
           }
         })();
       }, 300);
@@ -1344,6 +1392,7 @@ export default function GoGamePage() {
               const isLoading = enginesLoading && id !== 'local' && !avail;
               const isActive = engine === id && avail;
               const cost = ENGINE_COSTS[id as keyof typeof ENGINE_COSTS] || 0;
+              const needLogin = cost > 0 && !user;
               const insufficientPoints = user && user.points < cost;
               return (
                 <button
@@ -1351,6 +1400,12 @@ export default function GoGamePage() {
                   onClick={() => {
                     if (!avail || isLoading || isReplayMode) return;
                     if (id === engine) return;
+                    if (needLogin) {
+                      toast.error('请先登录', { description: `${name}引擎需要登录后使用（${cost}积分/步）` });
+                      setAuthTab('login');
+                      setShowAuthDialog(true);
+                      return;
+                    }
                     if (insufficientPoints) {
                       toast.error('积分不足', { description: `${name}每步需要${cost}积分，您当前${user?.points ?? 0}积分` });
                       return;
@@ -1369,15 +1424,15 @@ export default function GoGamePage() {
                       restartGame();
                     }
                   }}
-                  disabled={isReplayMode || !avail || isLoading}
-                  title={isReplayMode ? '复盘模式中不可切换引擎' : isLoading ? `${name}加载中...` : insufficientPoints ? `积分不足（需要${cost}，当前${user?.points ?? 0}）` : avail ? `${desc}（${cost}积分/步）` : `${name}不可用`}
+                  disabled={isReplayMode || !avail || isLoading || needLogin}
+                  title={isReplayMode ? '复盘模式中不可切换引擎' : isLoading ? `${name}加载中...` : needLogin ? `请先登录使用${name}（${cost}积分/步）` : insufficientPoints ? `积分不足（需要${cost}，当前${user?.points ?? 0}）` : avail ? `${desc}（${cost ? cost + '积分/步' : '免费'}）` : `${name}不可用`}
                   className={`
                     h-7 px-2 text-xs rounded-md border transition-colors flex items-center gap-1
                     ${isActive
                       ? isReplayMode
                         ? 'bg-amber-100 text-amber-700 border-amber-300 cursor-not-allowed'
                         : 'bg-amber-700 text-white border-amber-700 hover:bg-amber-800'
-                      : insufficientPoints
+                      : needLogin || insufficientPoints
                         ? 'bg-red-50 border-red-200 text-red-300 cursor-not-allowed'
                         : isLoading
                           ? 'bg-amber-50 border-amber-200 text-amber-500 cursor-wait'

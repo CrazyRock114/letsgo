@@ -8,6 +8,7 @@ interface MonitorData {
   games: {
     total: number;
     active: number;
+    finishedLastHour: number;
     activeByEngine: Record<string, number>;
     activeByBoardSize: Record<number, number>;
     activeGames: {
@@ -21,38 +22,28 @@ interface MonitorData {
       updatedAt: string;
     }[];
   };
-  engineQueue: { note: string };
-}
-
-interface EngineData {
-  engines: {
-    id: string;
-    name: string;
-    available: boolean;
-    desc: string;
-    cost: number;
-  }[];
-  queue: { length: number; processing: boolean };
+  engineQueue: {
+    queueLength: number;
+    isProcessing: boolean;
+    engines: { id: string; name: string; available: boolean; cost: number }[];
+  };
+  usage: {
+    pointsUsedLastHour: number;
+    engineCallsLastHour: number;
+  };
 }
 
 export default function MonitorPage() {
   const [monitor, setMonitor] = useState<MonitorData | null>(null);
-  const [engine, setEngine] = useState<EngineData | null>(null);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
 
   const fetchData = useCallback(async () => {
     try {
-      const [monitorRes, engineRes] = await Promise.all([
-        fetch("/api/monitor"),
-        fetch("/api/go-engine"),
-      ]);
-      if (monitorRes.ok) {
-        setMonitor(await monitorRes.json());
-      }
-      if (engineRes.ok) {
-        setEngine(await engineRes.json());
+      const res = await fetch("/api/monitor");
+      if (res.ok) {
+        setMonitor(await res.json());
       }
       setLastRefresh(new Date());
     } catch (err) {
@@ -91,6 +82,8 @@ export default function MonitorPage() {
       </div>
     );
   }
+
+  const q = monitor?.engineQueue;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50 p-4 md:p-8">
@@ -133,12 +126,13 @@ export default function MonitorPage() {
             <div className="text-3xl font-bold text-amber-900">{monitor?.users.recentlyActive ?? "-"}</div>
           </div>
           <div className="bg-white rounded-xl shadow-sm p-4 border border-amber-100">
-            <div className="text-sm text-amber-600">总棋局数</div>
-            <div className="text-3xl font-bold text-amber-900">{monitor?.games.total ?? "-"}</div>
-          </div>
-          <div className="bg-white rounded-xl shadow-sm p-4 border border-amber-100">
             <div className="text-sm text-amber-600">进行中棋局</div>
             <div className="text-3xl font-bold text-amber-900">{monitor?.games.active ?? "-"}</div>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm p-4 border border-amber-100">
+            <div className="text-sm text-amber-600">最近1小时引擎调用</div>
+            <div className="text-3xl font-bold text-amber-900">{monitor?.usage.engineCallsLastHour ?? "-"}</div>
+            <div className="text-xs text-amber-500 mt-1">消耗 {monitor?.usage.pointsUsedLastHour ?? 0} 积分</div>
           </div>
         </div>
 
@@ -146,7 +140,7 @@ export default function MonitorPage() {
         <div className="bg-white rounded-xl shadow-sm p-5 border border-amber-100 mb-6">
           <h2 className="text-lg font-semibold text-amber-900 mb-4">引擎状态</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {engine?.engines.map((eng) => (
+            {q?.engines.map((eng) => (
               <div
                 key={eng.id}
                 className={`rounded-lg p-4 border-2 ${
@@ -167,7 +161,6 @@ export default function MonitorPage() {
                     {eng.available ? "在线" : "离线"}
                   </span>
                 </div>
-                <div className="text-sm text-gray-600 mt-1">{eng.desc}</div>
                 <div className="text-sm text-gray-500 mt-1">
                   积分消耗: {eng.cost === 0 ? "免费" : `${eng.cost}分/步`}
                 </div>
@@ -180,15 +173,15 @@ export default function MonitorPage() {
             <div className="flex items-center gap-2">
               <div
                 className={`w-3 h-3 rounded-full ${
-                  engine?.queue.processing ? "bg-yellow-400 animate-pulse" : "bg-gray-300"
+                  q?.isProcessing ? "bg-yellow-400 animate-pulse" : "bg-gray-300"
                 }`}
               />
               <span className="text-gray-700">
-                {engine?.queue.processing ? "KataGo 处理中" : "KataGo 空闲"}
+                {q?.isProcessing ? "KataGo 处理中" : "KataGo 空闲"}
               </span>
             </div>
             <div className="text-gray-700">
-              排队等待: <span className="font-semibold">{engine?.queue.length ?? 0}</span> 人
+              排队等待: <span className="font-semibold">{q?.queueLength ?? 0}</span> 人
             </div>
           </div>
         </div>
