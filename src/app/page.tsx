@@ -1403,10 +1403,24 @@ export default function GoGamePage() {
                 </div>
               </div>
               <div className="mt-2 text-center">
-                <Badge variant={currentPlayer === playerColor ? 'default' : 'secondary'} className="text-xs px-3">
-                  {gameEnded ? '棋局结束' : isReplayMode ? `复盘 ${replayIndex}/${replayMoves.length}步` : isAIThinking ? 'AI思考中...' : currentPlayer === playerColor ? `轮到你落子 (${history.length}手)` : 'AI回合'}
-                  {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
-                </Badge>
+                {isReplayMode && replayIndex > 0 ? (
+                  <Badge className="text-xs px-3" style={{
+                    backgroundColor: replayMoves[replayIndex - 1]?.color === 'black' ? '#1f2937' : '#f9fafb',
+                    color: replayMoves[replayIndex - 1]?.color === 'black' ? '#fff' : '#374151',
+                    border: replayMoves[replayIndex - 1]?.color === 'white' ? '1px solid #d1d5db' : 'none',
+                  }}>
+                    复盘 {replayIndex}/{replayMoves.length}手 {replayMoves[replayIndex - 1]?.color === 'black' ? '黑' : '白'} {positionToCoordinate(replayMoves[replayIndex - 1].position.row, replayMoves[replayIndex - 1].position.col, boardSize)}
+                  </Badge>
+                ) : isReplayMode ? (
+                  <Badge variant="secondary" className="text-xs px-3">
+                    复盘 0/{replayMoves.length}手
+                  </Badge>
+                ) : (
+                  <Badge variant={currentPlayer === playerColor ? 'default' : 'secondary'} className="text-xs px-3">
+                    {gameEnded ? '棋局结束' : isAIThinking ? 'AI思考中...' : currentPlayer === playerColor ? `轮到你落子 (${history.length}手)` : 'AI回合'}
+                    {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
+                  </Badge>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -1494,6 +1508,14 @@ export default function GoGamePage() {
                 <CardTitle className="text-sm text-blue-700">复盘模式</CardTitle>
               </CardHeader>
               <CardContent>
+                {replayIndex > 0 && (
+                  <div className="flex items-center justify-center gap-2 mb-2">
+                    <div className={`w-5 h-5 rounded-full ${replayMoves[replayIndex - 1].color === 'black' ? 'bg-gray-800' : 'bg-white border border-gray-300'}`} />
+                    <span className="text-sm font-medium text-blue-800">
+                      {replayMoves[replayIndex - 1].color === 'black' ? '黑' : '白'} {positionToCoordinate(replayMoves[replayIndex - 1].position.row, replayMoves[replayIndex - 1].position.col, boardSize)}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center justify-center gap-2">
                   <Button size="sm" variant="outline" onClick={() => replayStep(-1)} disabled={replayIndex <= 0}>
                     <ChevronLeft className="w-4 h-4" />
