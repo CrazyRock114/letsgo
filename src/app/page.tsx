@@ -879,14 +879,14 @@ export default function GoGamePage() {
   // ===== 载入棋局列表 =====
   const loadGames = useCallback(async () => {
     try {
-      const res = await fetch(`/api/games${playerId ? `?player_id=${playerId}` : ''}`);
+      const res = await fetch('/api/games');
       const data = await res.json();
       if (data.games) setSavedGames(data.games as SavedGame[]);
       else if (data.error) console.error('载入棋局失败:', data.error);
     } catch (err) {
       console.error('载入棋局失败:', err);
     }
-  }, [playerId]);
+  }, []);
 
   // ===== 载入棋局 =====
   const loadGame = useCallback(async (gameId: number) => {
@@ -922,7 +922,7 @@ export default function GoGamePage() {
     } catch (err) {
       console.error('载入棋局失败:', err);
     }
-  }, [playerId]);
+  }, []);
 
   // ===== 删除棋局 =====
   const deleteGame = useCallback(async (gameId: number) => {
