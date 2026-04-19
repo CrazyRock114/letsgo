@@ -565,7 +565,7 @@ async function getKataGoAnalysis(
     // 恢复游戏难度的maxVisits
     gtpCommands.push('kata-set-param maxVisits 150');
 
-    const responses = await persistentKataGo.sendCommands(gtpCommands, 60000);
+    const responses = await persistentKataGo.sendCommands(gtpCommands, 120000);
 
     // kata-analyze的响应是倒数第二个（最后一个是我们恢复maxVisits的响应）
     const analyzeResponse = responses[responses.length - 2] || '';
@@ -746,6 +746,24 @@ class EngineQueue {
   private processing = false;
   private entryId = 0;
 
+  /** 取消所有排队中的分析请求（下棋请求优先） */
+  cancelPendingAnalysis(): number {
+    const before = this.queue.length;
+    this.queue = this.queue.filter(entry => {
+      if (entry.isAnalysis) {
+        // 通知等待者分析已被取消
+        if (entry.analysisResolve) entry.analysisResolve(null);
+        return false;
+      }
+      return true;
+    });
+    const cancelled = before - this.queue.length;
+    if (cancelled > 0) {
+      console.log(`[engine-queue] Cancelled ${cancelled} pending analysis request(s)`);
+    }
+    return cancelled;
+  }
+
   async enqueue(
     userId: number,
     engine: string,
@@ -756,6 +774,9 @@ class EngineQueue {
   ): Promise<EngineQueueResult> {
     const id = `qe-${++this.entryId}-u${userId}`;
     console.log(`[engine-queue] Enqueued: ${id}, engine=${engine}, aiColor=${aiColor}, queueLen=${this.queue.length}`);
+
+    // 下棋请求优先：取消排队中的分析请求
+    this.cancelPendingAnalysis();
 
     return new Promise<EngineQueueResult>((resolve, reject) => {
       this.queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine, aiColor });
@@ -874,8 +895,26 @@ const engineQueue = new EngineQueue();
 // ============================================================
 export async function POST(request: NextRequest) {
   try {
-    const { boardSize, moves, difficulty, engine: requestedEngine, aiColor: rawAiColor } = await request.json();
+    const { boardSize, moves, difficulty, engine: requestedEngine, aiColor: rawAiColor, action } = await request.json();
     const aiColor: 'black' | 'white' = (rawAiColor === 'black' || rawAiColor === 'white') ? rawAiColor : 'white';
+
+    // 按需分析请求：仅当用户点击"提示与教学"时触发
+    if (action === 'analyze') {
+      const authHeader = request.headers.get('Authorization');
+      const user = getUserFromAuthHeader(authHeader);
+      if (!user || !isKataGoAvailable()) {
+        return NextResponse.json({ analysis: null });
+      }
+      try {
+        const analysisResult = await engineQueue.enqueueAnalysis(
+          moves as Array<{row: number, col: number, color: 'black' | 'white'}>,
+          boardSize
+        );
+        return NextResponse.json({ analysis: analysisResult });
+      } catch {
+        return NextResponse.json({ analysis: null });
+      }
+    }
 
     // 认证：从请求头获取用户
     const authHeader = request.headers.get('Authorization');
@@ -956,26 +995,6 @@ export async function POST(request: NextRequest) {
         .eq('id', user.userId)
         .single();
       remainingPoints = latestUser?.points;
-    }
-
-    // 获取KataGo局面分析 - 后台异步执行，不阻塞响应
-    // 分析结果缓存到analysisCache中，go-ai API可直接读取
-    if (result.move && isKataGoAvailable()) {
-      const typedMoves: {row: number, col: number, color: 'black'|'white'}[] = moves;
-      const movesForAnalysis = [...typedMoves, { row: result.move.row, col: result.move.col, color: aiColor }];
-      // 构建缓存key（基于落子历史的hash）
-      const cacheKey = movesForAnalysis.map(m => `${m.color[0]}${m.row},${m.col}`).join('|');
-      // 后台异步执行分析，不await
-      engineQueue.enqueueAnalysis(movesForAnalysis, boardSize).then(analysisResult => {
-        if (analysisResult) {
-          analysisCache.set(cacheKey, { data: analysisResult, timestamp: Date.now() });
-          // 清理超过5分钟的缓存
-          const cutoff = Date.now() - 5 * 60 * 1000;
-          for (const [k, v] of analysisCache) {
-            if (v.timestamp < cutoff) analysisCache.delete(k);
-          }
-        }
-      }).catch(() => { /* 分析失败不影响任何功能 */ });
     }
 
     return NextResponse.json({ ...result, pointsUsed: cost, remainingPoints });

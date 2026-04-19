@@ -395,7 +395,6 @@ export default function GoGamePage() {
           moveColor,
           captured: capturedCount,
           moveHistory: currentHistory,
-          analysis: latestAnalysisRef.current,
         }),
       });
       if (response.ok) {
@@ -559,10 +558,6 @@ export default function GoGamePage() {
               // 检查epoch：引擎响应可能很慢，用户可能已重新开始
               if (gameEpochRef.current !== epochAtStart) { isProcessingMoveRef.current = false; return; }
               console.log(`[engine] ${engine} response:`, JSON.stringify(data));
-              // 保存KataGo分析数据，供解说/教学API使用
-              if (data.analysis) {
-                latestAnalysisRef.current = data.analysis;
-              }
               // 更新前端积分
               if (data.pointsUsed > 0) {
                 deductPoints(data.pointsUsed);
@@ -763,9 +758,6 @@ export default function GoGamePage() {
             const data = await res.json();
             // 检查epoch，如果用户已经重新开始则丢弃结果
             if (gameEpochRef.current !== epoch) return;
-            if (data.analysis) {
-              latestAnalysisRef.current = data.analysis;
-            }
             if (data.move) {
               const { row, col } = data.move;
               const { newBoard, captured } = playMove(emptyBoard, row, col, aiColor);
@@ -876,9 +868,6 @@ export default function GoGamePage() {
           // 检查epoch
           if (gameEpochRef.current !== epochAtStart) return;
           console.log(`[engine-restart] ${engine} response:`, JSON.stringify(data));
-          if (data.analysis) {
-            latestAnalysisRef.current = data.analysis;
-          }
           if (data.move && isValidMove(board, data.move.row, data.move.col, aiColor)) {
             aiMove = data.move;
             usedEngine = true;
@@ -964,12 +953,40 @@ export default function GoGamePage() {
     setTeachingMessage('');
     setTeachMoveIndex(history.length); // 记录教学针对的手数
     try {
+      // 按需请求KataGo分析（仅在用户点击"提示与教学"时）
+      let analysisData = latestAnalysisRef.current;
+      if (token && boardSize > 0 && history.length > 0) {
+        try {
+          const movesForAnalysis = history.map(h => ({
+            row: h.position.row, col: h.position.col, color: h.color
+          }));
+          const analyzeRes = await fetch('/api/go-engine', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({
+              action: 'analyze',
+              boardSize,
+              moves: movesForAnalysis,
+            }),
+          });
+          if (analyzeRes.ok) {
+            const analyzeData = await analyzeRes.json();
+            if (analyzeData.analysis) {
+              analysisData = analyzeData.analysis;
+              latestAnalysisRef.current = analysisData;
+            }
+          }
+        } catch {
+          // 分析失败不影响教学
+        }
+      }
+
       const teachingBody: Record<string, unknown> = {
         type: 'teach',
         board,
         currentPlayer,
         lastMove: lastMove ? { row: lastMove.row, col: lastMove.col } : undefined,
-        analysis: latestAnalysisRef.current,
+        analysis: analysisData,
       };
       // 如果有提示位置，告诉AI要解释这个位置
       if (hintPosition) {
@@ -993,7 +1010,7 @@ export default function GoGamePage() {
     } finally {
       setIsTeachStreaming(false);
     }
-  }, [board, currentPlayer, lastMove, isTeachStreaming, boardSize]);
+  }, [board, currentPlayer, lastMove, isTeachStreaming, boardSize, history, token]);
 
   // ===== 聊天 =====
   const sendMessage = useCallback(async () => {
@@ -1013,7 +1030,6 @@ export default function GoGamePage() {
           currentPlayer,
           lastMove: lastMove ? { row: lastMove.row, col: lastMove.col } : undefined,
           question: userMsg,
-          analysis: latestAnalysisRef.current,
         }),
       });
       if (response.ok) {
@@ -1239,9 +1255,6 @@ export default function GoGamePage() {
                   body: JSON.stringify({ boardSize, difficulty, engine, moves: moveHistoryForEngine, aiColor: aiColorCalc }),
                 });
                 const data = await res.json();
-                if (data.analysis) {
-                  latestAnalysisRef.current = data.analysis;
-                }
                 if (data.move && isValidMove(newBoard, data.move.row, data.move.col, aiColorCalc)) {
                   aiMove = data.move;
                   usedEngine = true;
