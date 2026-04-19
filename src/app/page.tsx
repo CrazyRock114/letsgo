@@ -530,6 +530,7 @@ export default function GoGamePage() {
                 moves: moveHistoryForEngine,
                 difficulty,
                 engine,
+                aiColor,
               }),
             });
             if (res.ok) {
@@ -716,7 +717,7 @@ export default function GoGamePage() {
               method: 'POST',
               signal: createAbortableFetch(),
               headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-              body: JSON.stringify({ boardSize, difficulty, engine, moves: [] }),
+              body: JSON.stringify({ boardSize, difficulty, engine, moves: [], aiColor: 'black' }),
             });
             const data = await res.json();
             // 检查epoch，如果用户已经重新开始则丢弃结果
@@ -823,6 +824,7 @@ export default function GoGamePage() {
             moves: moveHistoryForEngine,
             difficulty,
             engine,
+            aiColor,
           }),
         });
         if (res.ok) {
@@ -1179,7 +1181,7 @@ export default function GoGamePage() {
                   method: 'POST',
                   signal: createAbortableFetch(),
                   headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-                  body: JSON.stringify({ boardSize, difficulty, engine, moves: moveHistoryForEngine }),
+                  body: JSON.stringify({ boardSize, difficulty, engine, moves: moveHistoryForEngine, aiColor: aiColorCalc }),
                 });
                 const data = await res.json();
                 if (data.analysis) {

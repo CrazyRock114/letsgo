@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { LLMClient, Config, HeaderUtils } from "coze-coding-dev-sdk";
 import { boardToString, positionToCoordinate, getMoveContext, type Stone, type Board } from "@/lib/go-logic";
+import { getCachedAnalysis } from "@/app/api/go-engine/route";
 
 // KataGo分析数据类型（与go-engine/route.ts保持一致）
 interface KataGoAnalysis {
@@ -486,8 +487,17 @@ export async function POST(request: NextRequest) {
       row.map((cell: string) => cell === 'empty' ? null : cell)
     ) as Board;
 
-    // 解析KataGo分析数据
-    const analysis: KataGoAnalysis | null = rawAnalysis || null;
+    // 解析KataGo分析数据（优先使用前端传来的，否则从缓存查找）
+    let analysis: KataGoAnalysis | null = rawAnalysis || null;
+    if (!analysis && moveHistory && moveHistory.length > 0) {
+      // 从go-engine的分析缓存中查找
+      const cacheMoves = moveHistory.map((m: {position: {row: number; col: number}; color: string}) => ({
+        row: m.position.row,
+        col: m.position.col,
+        color: m.color,
+      }));
+      analysis = getCachedAnalysis(cacheMoves);
+    }
 
     let messages: Array<{ role: 'system' | 'user'; content: string }> = [];
     const boardDesc = buildBoardDescription(board, currentPlayer, lastMove, moveColor, captured, moveHistory);

@@ -111,6 +111,16 @@ interface ActiveSession {
 }
 const activeSessions: Map<string, ActiveSession> = new Map();
 
+// KataGo分析结果缓存（后台异步分析完成后存储，go-ai API可直接读取）
+const analysisCache: Map<string, { data: KataGoAnalysis; timestamp: number }> = new Map();
+
+// 导出查询分析缓存的方法（供go-ai使用）
+export function getCachedAnalysis(moves: Array<{row: number; col: number; color: string}>): KataGoAnalysis | null {
+  const cacheKey = moves.map(m => `${m.color[0]}${m.row},${m.col}`).join('|');
+  const cached = analysisCache.get(cacheKey);
+  return cached?.data || null;
+}
+
 function trackActiveSession(userId: number, nickname: string, engine: string, boardSize: number, difficulty: string, moveCount: number) {
   const key = `${userId}-${engine}`;
   activeSessions.set(key, { userId, nickname, engine, boardSize, difficulty, moveCount, lastActive: new Date() });
@@ -461,7 +471,8 @@ const persistentKataGo = new PersistentKataGo();
 async function getKataGoMove(
   boardSize: number,
   moves: Array<{ row: number; col: number; color: string }>,
-  difficulty: string
+  difficulty: string,
+  aiColor: 'black' | 'white' = 'white'
 ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string }> {
   const komi = getKomi(boardSize);
   const maxVisits = getKataGoVisits(difficulty);
@@ -484,7 +495,7 @@ async function getKataGoMove(
   }
 
   // 请求AI落子
-  gtpCommands.push("genmove W");
+  gtpCommands.push(`genmove ${aiColor === 'black' ? 'B' : 'W'}`);
 
   // 发送命令，单条超时30秒（总超时由Next.js request timeout控制）
   const responses = await persistentKataGo.sendCommands(gtpCommands, 30000);
@@ -576,7 +587,8 @@ async function getKataGoAnalysis(
 async function getGnuGoMove(
   boardSize: number,
   moves: Array<{ row: number; col: number; color: string }>,
-  difficulty: string
+  difficulty: string,
+  aiColor: 'black' | 'white' = 'white'
 ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string }> {
   const komi = getKomi(boardSize);
   const gnugoLevel = getGnuGoLevel(difficulty);
@@ -607,7 +619,7 @@ async function getGnuGoMove(
     }
   }
 
-  gtpCommands.push("genmove W");
+  gtpCommands.push(`genmove ${aiColor === 'black' ? 'B' : 'W'}`);
 
   // GnuGo用一次性命令发送方式
   try {
@@ -714,6 +726,7 @@ interface QueueEntry {
   moves: Array<{ row: number; col: number; color: string }>;
   difficulty: string;
   engine: string;
+  aiColor: 'black' | 'white';
 }
 
 interface EngineQueueResult {
@@ -736,13 +749,14 @@ class EngineQueue {
     engine: string,
     boardSize: number,
     moves: Array<{ row: number; col: number; color: string }>,
-    difficulty: string
+    difficulty: string,
+    aiColor: 'black' | 'white' = 'white'
   ): Promise<EngineQueueResult> {
     const id = `qe-${++this.entryId}-u${userId}`;
-    console.log(`[engine-queue] Enqueued: ${id}, engine=${engine}, queueLen=${this.queue.length}`);
+    console.log(`[engine-queue] Enqueued: ${id}, engine=${engine}, aiColor=${aiColor}, queueLen=${this.queue.length}`);
 
     return new Promise<EngineQueueResult>((resolve, reject) => {
-      this.queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine });
+      this.queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine, aiColor });
       this.processNext();
     });
   }
@@ -759,7 +773,7 @@ class EngineQueue {
 
       if (entry.engine === "katago" && isKataGoAvailable()) {
         try {
-          const moveResult = await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty);
+          const moveResult = await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty, entry.aiColor);
           result = { ...moveResult };
         } catch (katagoError) {
           persistentKataGo.resetCrashState();
@@ -770,7 +784,7 @@ class EngineQueue {
         }
       } else if (entry.engine === "gnugo" && isGnuGoAvailable()) {
         try {
-          const moveResult = await getGnuGoMove(entry.boardSize, entry.moves, entry.difficulty);
+          const moveResult = await getGnuGoMove(entry.boardSize, entry.moves, entry.difficulty, entry.aiColor);
           result = { ...moveResult };
         } catch (gtpError) {
           result = {
@@ -842,8 +856,8 @@ const engineQueue = new EngineQueue();
 // ============================================================
 export async function POST(request: NextRequest) {
   try {
-    const { boardSize, moves, difficulty, engine: requestedEngine, currentPlayer: rawCurrentPlayer } = await request.json();
-    const currentPlayer: 'black' | 'white' = (rawCurrentPlayer === 'black' || rawCurrentPlayer === 'white') ? rawCurrentPlayer : 'white';
+    const { boardSize, moves, difficulty, engine: requestedEngine, aiColor: rawAiColor } = await request.json();
+    const aiColor: 'black' | 'white' = (rawAiColor === 'black' || rawAiColor === 'white') ? rawAiColor : 'white';
 
     // 认证：从请求头获取用户
     const authHeader = request.headers.get('Authorization');
@@ -912,7 +926,7 @@ export async function POST(request: NextRequest) {
 
     // 加入引擎队列（串行处理，支持多人排队）
     const result = await engineQueue.enqueue(
-      user.userId, requestedEngine, boardSize, moves, difficulty
+      user.userId, requestedEngine, boardSize, moves, difficulty, aiColor
     );
     
     // 获取最新积分余额并附加到响应中
@@ -926,21 +940,27 @@ export async function POST(request: NextRequest) {
       remainingPoints = latestUser?.points;
     }
 
-    // 获取KataGo局面分析（所有引擎都用KataGo分析，异步不阻塞）
-    let analysis: KataGoAnalysis | null = null;
-    try {
-      // AI刚落了一子，分析包含这一手之后的局面
-      const aiColor = currentPlayer;
+    // 获取KataGo局面分析 - 后台异步执行，不阻塞响应
+    // 分析结果缓存到analysisCache中，go-ai API可直接读取
+    if (result.move && isKataGoAvailable()) {
       const typedMoves: {row: number, col: number, color: 'black'|'white'}[] = moves;
-      const movesForAnalysis = result.move 
-        ? [...typedMoves, { row: result.move.row, col: result.move.col, color: aiColor }]
-        : typedMoves;
-      analysis = await engineQueue.enqueueAnalysis(movesForAnalysis, boardSize);
-    } catch {
-      // 分析失败不影响主要功能
+      const movesForAnalysis = [...typedMoves, { row: result.move.row, col: result.move.col, color: aiColor }];
+      // 构建缓存key（基于落子历史的hash）
+      const cacheKey = movesForAnalysis.map(m => `${m.color[0]}${m.row},${m.col}`).join('|');
+      // 后台异步执行分析，不await
+      engineQueue.enqueueAnalysis(movesForAnalysis, boardSize).then(analysisResult => {
+        if (analysisResult) {
+          analysisCache.set(cacheKey, { data: analysisResult, timestamp: Date.now() });
+          // 清理超过5分钟的缓存
+          const cutoff = Date.now() - 5 * 60 * 1000;
+          for (const [k, v] of analysisCache) {
+            if (v.timestamp < cutoff) analysisCache.delete(k);
+          }
+        }
+      }).catch(() => { /* 分析失败不影响任何功能 */ });
     }
 
-    return NextResponse.json({ ...result, pointsUsed: cost, remainingPoints, analysis });
+    return NextResponse.json({ ...result, pointsUsed: cost, remainingPoints });
   } catch (error) {
     console.error("Go engine API error:", error);
     return NextResponse.json({ error: "引擎错误" }, { status: 500 });
