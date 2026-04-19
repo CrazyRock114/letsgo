@@ -727,6 +727,8 @@ interface QueueEntry {
   difficulty: string;
   engine: string;
   aiColor: 'black' | 'white';
+  isAnalysis?: boolean; // 分析请求标记
+  analysisResolve?: (v: KataGoAnalysis | null) => void; // 分析结果回调
 }
 
 interface EngineQueueResult {
@@ -766,40 +768,61 @@ class EngineQueue {
     this.processing = true;
 
     const entry = this.queue.shift()!;
-    console.log(`[engine-queue] Processing: ${entry.id}, engine=${entry.engine}`);
+    console.log(`[engine-queue] Processing: ${entry.id}, engine=${entry.engine}, isAnalysis=${!!entry.isAnalysis}`);
 
     try {
-      let result: EngineQueueResult;
-
-      if (entry.engine === "katago" && isKataGoAvailable()) {
-        try {
-          const moveResult = await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty, entry.aiColor);
-          result = { ...moveResult };
-        } catch (katagoError) {
-          persistentKataGo.resetCrashState();
-          result = {
-            move: null, engine: "katago", engineError: true,
-            errorDetail: katagoError instanceof Error ? katagoError.message : String(katagoError),
-          };
+      // 分析请求：只使用KataGo，不影响下棋结果
+      if (entry.isAnalysis) {
+        let analysisResult: KataGoAnalysis | null = null;
+        if (isKataGoAvailable()) {
+          try {
+            analysisResult = await getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>);
+          } catch (err) {
+            console.warn(`[engine-queue] Analysis failed:`, err instanceof Error ? err.message : String(err));
+            persistentKataGo.resetCrashState();
+          }
         }
-      } else if (entry.engine === "gnugo" && isGnuGoAvailable()) {
-        try {
-          const moveResult = await getGnuGoMove(entry.boardSize, entry.moves, entry.difficulty, entry.aiColor);
-          result = { ...moveResult };
-        } catch (gtpError) {
-          result = {
-            move: null, engine: "gnugo", engineError: true,
-            errorDetail: gtpError instanceof Error ? gtpError.message : String(gtpError),
-          };
+        if (entry.analysisResolve) {
+          entry.analysisResolve(analysisResult);
         }
+        // 分析请求不走正常resolve
       } else {
-        result = { move: null, engine: entry.engine || "local", noEngine: true };
-      }
+        let result: EngineQueueResult;
 
-      console.log(`[engine-queue] Completed: ${entry.id}, engine=${result.engine}`);
-      entry.resolve(result);
+        if (entry.engine === "katago" && isKataGoAvailable()) {
+          try {
+            const moveResult = await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty, entry.aiColor);
+            result = { ...moveResult };
+          } catch (katagoError) {
+            persistentKataGo.resetCrashState();
+            result = {
+              move: null, engine: "katago", engineError: true,
+              errorDetail: katagoError instanceof Error ? katagoError.message : String(katagoError),
+            };
+          }
+        } else if (entry.engine === "gnugo" && isGnuGoAvailable()) {
+          try {
+            const moveResult = await getGnuGoMove(entry.boardSize, entry.moves, entry.difficulty, entry.aiColor);
+            result = { ...moveResult };
+          } catch (gtpError) {
+            result = {
+              move: null, engine: "gnugo", engineError: true,
+              errorDetail: gtpError instanceof Error ? gtpError.message : String(gtpError),
+            };
+          }
+        } else {
+          result = { move: null, engine: entry.engine || "local", noEngine: true };
+        }
+
+        console.log(`[engine-queue] Completed: ${entry.id}, engine=${result.engine}`);
+        entry.resolve(result);
+      }
     } catch (error) {
-      entry.reject(error instanceof Error ? error : new Error(String(error)));
+      if (entry.isAnalysis && entry.analysisResolve) {
+        entry.analysisResolve(null);
+      } else {
+        entry.reject(error instanceof Error ? error : new Error(String(error)));
+      }
     } finally {
       this.processing = false;
       // Process next in queue
@@ -817,35 +840,30 @@ class EngineQueue {
     return this.processing;
   }
 
-  /** 获取KataGo局面分析（不阻塞下棋队列，走完后再分析） */
+  /** 获取KataGo局面分析（通过主队列串行执行，避免与genmove命令冲突） */
   async enqueueAnalysis(moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number): Promise<KataGoAnalysis | null> {
-    return new Promise((resolve) => {
-      // 检查KataGo是否可用
-      if (!isKataGoAvailable()) {
-        resolve(null);
-        return;
-      }
-      this.kataAnalysisQueue.push({ moves, boardSize, resolve });
-      this.processAnalysisQueue();
-    });
-  }
-
-  private kataAnalysisQueue: Array<{moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number, resolve: (v: KataGoAnalysis | null) => void}> = [];
-  private kataAnalysisProcessing = false;
-
-  private async processAnalysisQueue() {
-    if (this.kataAnalysisProcessing || this.kataAnalysisQueue.length === 0) return;
-    this.kataAnalysisProcessing = true;
-    while (this.kataAnalysisQueue.length > 0) {
-      const item = this.kataAnalysisQueue.shift()!;
-      try {
-        const analysis = await getKataGoAnalysis(item.boardSize, item.moves);
-        item.resolve(analysis);
-      } catch {
-        item.resolve(null);
-      }
+    // 检查KataGo是否可用
+    if (!isKataGoAvailable()) {
+      return null;
     }
-    this.kataAnalysisProcessing = false;
+    const id = `qe-${++this.entryId}-analysis`;
+    console.log(`[engine-queue] Enqueued analysis: ${id}, queueLen=${this.queue.length}`);
+    return new Promise((resolve) => {
+      this.queue.push({
+        id,
+        userId: 0,
+        resolve: () => {}, // 分析请求不走正常resolve
+        reject: () => {},
+        boardSize,
+        moves,
+        difficulty: '',
+        engine: 'katago',
+        aiColor: 'black',
+        isAnalysis: true,
+        analysisResolve: resolve,
+      });
+      this.processNext();
+    });
   }
 }
 
