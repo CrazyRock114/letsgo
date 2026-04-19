@@ -311,8 +311,14 @@ export default function GoGamePage() {
     setCommentaries([]);
     setSavedGameId(null);
     setIsReplayMode(false);
+    setReplayIndex(0);
+    setReplayMoves([]);
     setTeachingMessage('');
-  }, []);
+    setConsecutivePasses(0);
+    setGameEnded(false);
+    setGameResult(null);
+    setShowGameEndDialog(false);
+  }, [playerColor]);
 
   // ===== 请求AI解说（第三方观赛视角） =====
   const requestCommentary = useCallback(async (
@@ -567,6 +573,7 @@ export default function GoGamePage() {
     setSavedGameId(null);
     setIsReplayMode(false);
     setReplayIndex(0);
+    setReplayMoves([]);
     setTeachingMessage('');
     setConsecutivePasses(0);
     setGameEnded(false);
@@ -1426,7 +1433,7 @@ export default function GoGamePage() {
                   </Badge>
                 ) : (
                   <Badge variant={currentPlayer === playerColor ? 'default' : 'secondary'} className="text-xs px-3">
-                    {gameEnded ? '棋局结束' : isAIThinking ? 'AI思考中...' : currentPlayer === playerColor ? `轮到你落子 (${history.length}手)` : 'AI回合'}
+                    {gameEnded ? '棋局结束' : isAIThinking ? 'AI思考中...' : currentPlayer === playerColor ? `轮到你落子（已下${history.length}手）` : 'AI回合'}
                     {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
                   </Badge>
                 )}
