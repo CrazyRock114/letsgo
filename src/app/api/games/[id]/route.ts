@@ -18,7 +18,10 @@ export async function GET(
 
     if (error) throw new Error(`载入棋局失败: ${error.message}`);
 
-    return NextResponse.json({ game: data });
+    // 确保 engine 字段有默认值（旧表可能没有此列）
+    const game = data ? { ...data, engine: data.engine || 'local' } : data;
+
+    return NextResponse.json({ game });
   } catch (err) {
     const msg = err instanceof Error ? err.message : '未知错误';
     return NextResponse.json({ error: msg }, { status: 500 });
