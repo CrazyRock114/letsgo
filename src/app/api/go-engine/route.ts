@@ -8,6 +8,52 @@ import fs from "fs";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 import { getUserFromAuthHeader } from "@/lib/auth";
 
+// ==================== 活跃会话追踪 ====================
+interface ActiveSession {
+  userId: number;
+  nickname: string;
+  engine: string;
+  boardSize: number;
+  difficulty: string;
+  lastMoveAt: number;
+  totalMoves: number;
+  startedAt: number;
+}
+const activeSessions: Map<string, ActiveSession> = new Map();
+
+function trackActiveSession(userId: number, nickname: string, engine: string, boardSize: number, difficulty: string) {
+  const key = `${userId}-${engine}`;
+  const existing = activeSessions.get(key);
+  if (existing) {
+    existing.lastMoveAt = Date.now();
+    existing.totalMoves++;
+    existing.difficulty = difficulty;
+    existing.boardSize = boardSize;
+  } else {
+    activeSessions.set(key, { userId, nickname, engine, boardSize, difficulty, lastMoveAt: Date.now(), totalMoves: 1, startedAt: Date.now() });
+  }
+}
+
+function cleanStaleSessions() {
+  const tenMinAgo = Date.now() - 10 * 60 * 1000;
+  for (const [key, session] of activeSessions) {
+    if (session.lastMoveAt < tenMinAgo) activeSessions.delete(key);
+  }
+}
+
+export function getEngineMonitorData() {
+  cleanStaleSessions();
+  return {
+    activeSessions: Array.from(activeSessions.values()),
+    queueLength: engineQueue.getQueueLength(),
+    isProcessing: engineQueue.isProcessing(),
+    kataGoQueueLength: engineQueue.getKataGoQueueLength(),
+    kataGoProcessing: engineQueue.isKataGoProcessing(),
+    gnuGoQueueLength: engineQueue.getGnuGoQueueLength(),
+    gnuGoProcessing: engineQueue.isGnuGoProcessing(),
+  };
+}
+
 // 防止 EPIPE 等管道错误导致进程崩溃
 process.on('uncaughtException', (err: unknown) => {
   if (typeof err === 'object' && err !== null && 'code' in err && (err as { code: string }).code === 'EPIPE') {
@@ -573,8 +619,10 @@ interface EngineQueueResult {
 }
 
 class EngineQueue {
-  private queue: QueueEntry[] = [];
-  private processing = false;
+  private kataGoQueue: QueueEntry[] = [];
+  private gnuGoQueue: QueueEntry[] = [];
+  private kataGoProcessing = false;
+  private gnuGoProcessing = false;
   private entryId = 0;
 
   async enqueue(
@@ -585,68 +633,93 @@ class EngineQueue {
     difficulty: string
   ): Promise<EngineQueueResult> {
     const id = `qe-${++this.entryId}-u${userId}`;
-    console.log(`[engine-queue] Enqueued: ${id}, engine=${engine}, queueLen=${this.queue.length}`);
+    const isKataGo = engine === "katago";
+    const queue = isKataGo ? this.kataGoQueue : this.gnuGoQueue;
+    console.log(`[engine-queue] Enqueued: ${id}, engine=${engine}, queueLen=${queue.length}`);
 
     return new Promise<EngineQueueResult>((resolve, reject) => {
-      this.queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine });
-      this.processNext();
+      queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine });
+      if (isKataGo) {
+        this.processKataGoNext();
+      } else {
+        this.processGnuGoNext();
+      }
     });
   }
 
-  private async processNext(): Promise<void> {
-    if (this.processing || this.queue.length === 0) return;
-    this.processing = true;
-
-    const entry = this.queue.shift()!;
-    console.log(`[engine-queue] Processing: ${entry.id}, engine=${entry.engine}`);
-
+  private async processKataGoNext(): Promise<void> {
+    if (this.kataGoProcessing || this.kataGoQueue.length === 0) return;
+    this.kataGoProcessing = true;
+    const entry = this.kataGoQueue.shift()!;
+    console.log(`[engine-queue] Processing KataGo: ${entry.id}`);
     try {
       let result: EngineQueueResult;
-
-      if (entry.engine === "katago" && isKataGoAvailable()) {
+      if (isKataGoAvailable()) {
         try {
-          const moveResult = await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty);
-          result = { ...moveResult };
-        } catch (katagoError) {
+          result = { ...(await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty)) };
+        } catch (err) {
           persistentKataGo.resetCrashState();
-          result = {
-            move: null, engine: "katago", engineError: true,
-            errorDetail: katagoError instanceof Error ? katagoError.message : String(katagoError),
-          };
-        }
-      } else if (entry.engine === "gnugo" && isGnuGoAvailable()) {
-        try {
-          const moveResult = await getGnuGoMove(entry.boardSize, entry.moves, entry.difficulty);
-          result = { ...moveResult };
-        } catch (gtpError) {
-          result = {
-            move: null, engine: "gnugo", engineError: true,
-            errorDetail: gtpError instanceof Error ? gtpError.message : String(gtpError),
-          };
+          result = { move: null, engine: "katago", engineError: true, errorDetail: err instanceof Error ? err.message : String(err) };
         }
       } else {
-        result = { move: null, engine: entry.engine || "local", noEngine: true };
+        result = { move: null, engine: "katago", noEngine: true };
       }
-
-      console.log(`[engine-queue] Completed: ${entry.id}, engine=${result.engine}`);
       entry.resolve(result);
     } catch (error) {
       entry.reject(error instanceof Error ? error : new Error(String(error)));
     } finally {
-      this.processing = false;
-      // Process next in queue
-      if (this.queue.length > 0) {
-        setImmediate(() => this.processNext());
+      this.kataGoProcessing = false;
+      if (this.kataGoQueue.length > 0) setImmediate(() => this.processKataGoNext());
+    }
+  }
+
+  private async processGnuGoNext(): Promise<void> {
+    if (this.gnuGoProcessing || this.gnuGoQueue.length === 0) return;
+    this.gnuGoProcessing = true;
+    const entry = this.gnuGoQueue.shift()!;
+    console.log(`[engine-queue] Processing GnuGo: ${entry.id}`);
+    try {
+      let result: EngineQueueResult;
+      if (isGnuGoAvailable()) {
+        try {
+          result = { ...(await getGnuGoMove(entry.boardSize, entry.moves, entry.difficulty)) };
+        } catch (err) {
+          result = { move: null, engine: "gnugo", engineError: true, errorDetail: err instanceof Error ? err.message : String(err) };
+        }
+      } else {
+        result = { move: null, engine: "gnugo", noEngine: true };
       }
+      entry.resolve(result);
+    } catch (error) {
+      entry.reject(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      this.gnuGoProcessing = false;
+      if (this.gnuGoQueue.length > 0) setImmediate(() => this.processGnuGoNext());
     }
   }
 
   getQueueLength(): number {
-    return this.queue.length;
+    return this.kataGoQueue.length + this.gnuGoQueue.length;
+  }
+
+  getKataGoQueueLength(): number {
+    return this.kataGoQueue.length;
+  }
+
+  getGnuGoQueueLength(): number {
+    return this.gnuGoQueue.length;
   }
 
   isProcessing(): boolean {
-    return this.processing;
+    return this.kataGoProcessing || this.gnuGoProcessing;
+  }
+
+  isKataGoProcessing(): boolean {
+    return this.kataGoProcessing;
+  }
+
+  isGnuGoProcessing(): boolean {
+    return this.gnuGoProcessing;
   }
 }
 
@@ -719,6 +792,11 @@ export async function POST(request: NextRequest) {
       console.log(`[go-engine] Deducted ${cost} points from user ${user.userId} for ${requestedEngine}`);
     }
 
+    // 追踪活跃会话
+    if (user) {
+      trackActiveSession(user.userId, user.nickname, requestedEngine, boardSize, difficulty);
+    }
+
     // 加入引擎队列（串行处理，支持多人排队）
     const result = await engineQueue.enqueue(
       user.userId, requestedEngine, boardSize, moves, difficulty
@@ -788,5 +866,6 @@ export async function GET() {
       { id: "local", name: "本地AI", available: true, desc: "内置启发式AI，随时可用", cost: ENGINE_COSTS.local },
     ],
     queue: { length: engineQueue.getQueueLength(), processing: engineQueue.isProcessing() },
+    activeSessions: getEngineMonitorData().activeSessions,
   });
 }
