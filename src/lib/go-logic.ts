@@ -162,6 +162,33 @@ export function isValidMove(board: Board, row: number, col: number, color: Stone
   return liberties > 0;
 }
 
+// 获取落子被拒绝的原因（用于给用户提示）
+export function getMoveRejectionReason(board: Board, row: number, col: number, color: Stone): string | null {
+  if (!isValidPosition(board, row, col)) {
+    return '超出棋盘范围';
+  }
+  if (board[row][col] !== null) {
+    return '此处已有棋子';
+  }
+  
+  const testBoard = copyBoard(board);
+  testBoard[row][col] = color;
+  
+  // 检查是否能提对方的子
+  const captured = captureStones(testBoard, row, col);
+  if (captured > 0) {
+    return null; // 可以落子（提子）
+  }
+  
+  // 检查自己是否有气
+  const liberties = getGroupLiberties(testBoard, row, col);
+  if (liberties === 0) {
+    return '禁着点：落子后无气（自杀着）';
+  }
+  
+  return null; // 可以落子
+}
+
 // 获取所有合法落子位置
 export function getValidMoves(board: Board, color: Stone): Position[] {
   const moves: Position[] = [];

@@ -5,6 +5,7 @@ import {
   createEmptyBoard,
   playMove,
   isValidMove,
+  getMoveRejectionReason,
   positionToCoordinate,
   evaluateBoard,
   getValidMoves,
@@ -228,6 +229,7 @@ export default function GoGamePage() {
   // ===== AI教学 =====
   const [teachingMessage, setTeachingMessage] = useState('');
   const [isTeachStreaming, setIsTeachStreaming] = useState(false);
+  const [teachMoveIndex, setTeachMoveIndex] = useState<number | null>(null); // 教学针对的手数
 
   // ===== 聊天 =====
   const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
@@ -462,11 +464,20 @@ export default function GoGamePage() {
 
   // ===== 处理落子 =====
   const handleMove = useCallback(async (row: number, col: number) => {
-    if (!isValidMove(board, row, col, currentPlayer) || isAIThinking || isReplayMode || gameEnded) return;
-    // 只允许玩家在自己的回合落子
-    if (currentPlayer !== playerColor) return;
-    // 防止重入：快速点击时闭包值可能过期
-    if (isProcessingMoveRef.current) return;
+    // 禁用状态提示
+    if (gameEnded) { toast.info('棋局已结束，请开始新棋局'); return; }
+    if (isReplayMode) { toast.info('复盘模式下不能落子'); return; }
+    if (enginesLoading && engine !== 'local') { toast.info('AI引擎加载中，请稍候'); return; }
+    if (isAIThinking) { toast.info('AI正在思考，请稍等'); return; }
+    if (isProcessingMoveRef.current) { toast.info('请稍等，正在处理中'); return; }
+    if (currentPlayer !== playerColor) { toast.info('现在不是你的回合'); return; }
+
+    // 禁着点提示
+    if (!isValidMove(board, row, col, currentPlayer)) {
+      const reason = getMoveRejectionReason(board, row, col, currentPlayer);
+      toast.info(reason || '此处不能落子', { description: positionToCoordinate(row, col, boardSize) });
+      return;
+    }
     isProcessingMoveRef.current = true;
 
     const { newBoard, captured } = playMove(board, row, col, currentPlayer);
@@ -666,7 +677,9 @@ export default function GoGamePage() {
 
   // ===== 悔棋 =====
   const undoMove = useCallback(() => {
-    if (history.length === 0 || isReplayMode) return;
+    if (history.length === 0) { toast.info('还没有落子，无法悔棋'); return; }
+    if (isReplayMode) { toast.info('复盘模式下无法悔棋'); return; }
+    if (isAIThinking) { toast.info('AI正在思考，请稍等'); return; }
     const stepsToUndo = history.length >= 2 ? 2 : 1;
     const newHistory = history.slice(0, -stepsToUndo);
     let newBoard = createEmptyBoard(boardSize);
@@ -790,7 +803,10 @@ export default function GoGamePage() {
 
   // ===== 停手 =====
   const passMove = useCallback(async () => {
-    if (currentPlayer !== playerColor || isAIThinking || isReplayMode || gameEnded) return;
+    if (gameEnded) { toast.info('棋局已结束'); return; }
+    if (isReplayMode) { toast.info('复盘模式下无法操作'); return; }
+    if (isAIThinking) { toast.info('AI正在思考，请稍等'); return; }
+    if (currentPlayer !== playerColor) { toast.info('现在不是你的回合'); return; }
     const aiColor: 'black' | 'white' = playerColor === 'black' ? 'white' : 'black';
     const epochAtStart = gameEpochRef.current;
 
@@ -946,6 +962,7 @@ export default function GoGamePage() {
     if (isTeachStreaming) return;
     setIsTeachStreaming(true);
     setTeachingMessage('');
+    setTeachMoveIndex(history.length); // 记录教学针对的手数
     try {
       const teachingBody: Record<string, unknown> = {
         type: 'teach',
@@ -1417,7 +1434,7 @@ export default function GoGamePage() {
         {board.map((row, r) =>
           row.map((stone, c) => {
             if (!stone) return null;
-            const isLast = lastMove?.row === r && lastMove?.col === c;
+            const isLast = lastMove?.row === r && lastMove?.col === c && history.length > 0 && history[history.length - 1].position.row === r && history[history.length - 1].position.col === c;
             return (
               <g key={`s-${r}-${c}`} filter="url(#stoneShadow)">
                 <circle cx={padding + c * cellSize} cy={padding + r * cellSize} r={stoneRadius} fill={stone === 'black' ? 'url(#blackStone)' : 'url(#whiteStone)'} stroke={stone === 'white' ? '#bbb' : 'none'} strokeWidth={0.5} />
@@ -1613,9 +1630,9 @@ export default function GoGamePage() {
 
       {/* 引擎加载提示 */}
       {enginesLoading && (
-        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-center gap-2 text-sm text-amber-700">
+        <div className="bg-amber-500 text-white border-b border-amber-600 px-4 py-3 flex items-center justify-center gap-2 text-sm font-medium shadow-md z-50">
           <Spinner className="w-4 h-4" />
-          <span>AI引擎加载中，请稍候...</span>
+          <span>AI引擎加载中，请稍候，暂时无法下棋...</span>
         </div>
       )}
 
@@ -1689,8 +1706,8 @@ export default function GoGamePage() {
                     复盘 0/{replayMoves.length}手
                   </Badge>
                 ) : (
-                  <Badge variant={currentPlayer === playerColor ? 'default' : 'secondary'} className="text-xs px-3">
-                    {gameEnded ? '棋局结束' : isAIThinking ? 'AI思考中...' : currentPlayer === playerColor ? `轮到你落子（已下${history.length}手）` : 'AI回合'}
+                  <Badge variant={currentPlayer === playerColor ? 'default' : 'secondary'} className={`text-xs px-3 ${isAIThinking ? 'animate-pulse bg-amber-500 text-white' : ''}`}>
+                    {gameEnded ? '棋局结束' : isAIThinking ? 'AI思考中，请等待...' : currentPlayer === playerColor ? `轮到你落子（已下${history.length}手）` : 'AI回合'}
                     {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
                   </Badge>
                 )}
@@ -1833,9 +1850,13 @@ export default function GoGamePage() {
                       建议落在 {positionToCoordinate(showHint.row, showHint.col, boardSize)}
                     </p>
                   )}
-                  <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">
+                  <p className={`text-xs leading-relaxed whitespace-pre-wrap ${teachMoveIndex !== null && teachMoveIndex < history.length ? 'text-gray-400' : 'text-gray-700'}`}>
+                    {teachMoveIndex !== null && <span className="text-amber-600 font-medium">【第{teachMoveIndex + 1}手】</span>}
                     {teachingMessage || (isTeachStreaming ? '正在分析...' : '')}
                   </p>
+                  {teachMoveIndex !== null && teachMoveIndex < history.length && (
+                    <p className="text-xs text-gray-400 italic">（已过时，针对第{teachMoveIndex + 1}手的教学）</p>
+                  )}
                 </div>
               )}
             </CardContent>
