@@ -2126,7 +2126,7 @@ export default function GoGamePage() {
           <DialogHeader>
             <DialogTitle>{authTab === 'login' ? '登录' : '注册'}</DialogTitle>
             <DialogDescription>
-              {authTab === 'login' ? '登录后即可与AI对弈' : '注册账号，获取100初始积分'}
+              {authTab === 'login' ? '登录后即可与AI对弈' : '注册账号，获取1000积分'}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -2142,11 +2142,18 @@ export default function GoGamePage() {
               setAuthSubmitting(true);
               setAuthError('');
               try {
-                const result = authTab === 'login'
-                  ? await login(n, p)
-                  : await register(n, p);
-                if (!result.success) { setAuthError(result.error || '操作失败'); return; }
-                setShowAuthDialog(false);
+                if (authTab === 'login') {
+                  const result = await login(n, p);
+                  if (!result.success) { setAuthError(result.error || '登录失败'); return; }
+                  setShowAuthDialog(false);
+                  if (result.dailyBonusAwarded && result.dailyBonusAmount) {
+                    toast.success(`每日登录奖励 +${result.dailyBonusAmount}积分！`);
+                  }
+                } else {
+                  const result = await register(n, p);
+                  if (!result.success) { setAuthError(result.error || '注册失败'); return; }
+                  setShowAuthDialog(false);
+                }
               } catch { setAuthError('网络错误'); }
               finally { setAuthSubmitting(false); }
             }}
@@ -2162,7 +2169,7 @@ export default function GoGamePage() {
               <label className="text-sm font-medium text-gray-700">密码</label>
               <input name="password" type="password" required minLength={6} maxLength={50}
                 className="w-full mt-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
-                placeholder="4-50个字符" />
+                placeholder="6-50个字符" />
             </div>
             {authTab === 'register' && (
               <div>

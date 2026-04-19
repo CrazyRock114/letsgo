@@ -38,7 +38,7 @@ if [ -n "$COZE_SUPABASE_DB_URL" ]; then
       id SERIAL PRIMARY KEY,
       nickname VARCHAR(50) NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
-      points INTEGER NOT NULL DEFAULT 100,
+      points INTEGER NOT NULL DEFAULT 1000,
       total_games INTEGER NOT NULL DEFAULT 0,
       wins INTEGER NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
@@ -114,6 +114,12 @@ if [ -n "$COZE_SUPABASE_DB_URL" ]; then
     CREATE INDEX IF NOT EXISTS idx_point_transactions_user_id ON letsgo_point_transactions(user_id);
     CREATE INDEX IF NOT EXISTS idx_point_transactions_type ON letsgo_point_transactions(type);
     CREATE INDEX IF NOT EXISTS idx_games_user_id ON letsgo_games(user_id);
+
+    -- 历史用户积分补偿：给所有现有用户增加1000积分
+    UPDATE letsgo_users SET points = points + 1000 WHERE points < 2000;
+
+    -- 修改默认积分为1000
+    ALTER TABLE letsgo_users ALTER COLUMN points SET DEFAULT 1000;
 SQL
   )
 

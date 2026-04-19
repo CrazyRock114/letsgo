@@ -14,7 +14,7 @@ interface AuthContextType {
   user: UserInfo | null;
   loading: boolean;
   token: string | null;
-  login: (nickname: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  login: (nickname: string, password: string) => Promise<{ success: boolean; error?: string; dailyBonusAwarded?: boolean; dailyBonusAmount?: number }>;
   register: (nickname: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   refreshUser: () => Promise<void>;
@@ -77,7 +77,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(interval);
   }, [token, refreshUser]);
 
-  const login = async (nickname: string, password: string) => {
+  const login = async (nickname: string, password: string): Promise<{ success: boolean; error?: string; dailyBonusAwarded?: boolean; dailyBonusAmount?: number }> => {
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -98,7 +98,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(userInfo);
       localStorage.setItem('letsgo_token', data.token);
       localStorage.setItem('letsgo_user', JSON.stringify(userInfo));
-      return { success: true };
+      return { 
+        success: true, 
+        dailyBonusAwarded: data.dailyBonusAwarded || false,
+        dailyBonusAmount: data.dailyBonusAmount || 0,
+      };
     } catch {
       return { success: false, error: '网络错误' };
     }
