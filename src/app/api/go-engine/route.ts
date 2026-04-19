@@ -289,6 +289,7 @@ class PersistentKataGo {
   }> = [];
   private crashed = false;
   private lastError = "";
+  private procEpoch = 0;  // 进程纪元，用于区分新旧进程
 
   isAvailable(): boolean {
     return !!(this.proc && !this.proc.killed && this.proc.exitCode === null);
@@ -325,6 +326,7 @@ class PersistentKataGo {
 
     // Kill any old process
     this.killProcess();
+    this.procEpoch++;  // 递增纪元，旧进程的onData会被忽略
 
     this.proc = spawn(KATAGO_PATH, [
       "gtp",
@@ -338,31 +340,38 @@ class PersistentKataGo {
     this.buffer = "";
     this.crashed = false;
     this.lastError = "";
+    const currentEpoch = this.procEpoch;  // 闭包捕获当前纪元
 
     // 持续收集stdout数据，按\n\n分割响应并分发到等待的Promise
+    // 只处理与当前纪元匹配的进程数据
     this.proc.stdout?.on("data", (data: Buffer) => {
+      if (this.procEpoch !== currentEpoch) return;  // 旧进程数据，忽略
       this.buffer += data.toString();
       this.dispatchResponses();
     });
 
     // 收集stderr用于错误诊断
     this.proc.stderr?.on("data", (data: Buffer) => {
+      if (this.procEpoch !== currentEpoch) return;
       const text = data.toString().trim();
       if (text) this.lastError = text;
     });
 
     // 进程退出处理
     this.proc.on("exit", (code) => {
-      console.log(`[KataGo] Process exited with code ${code}`);
-      this.proc = null;
-      this.buffer = "";
-      // 拒绝所有等待中的命令
-      for (const item of this.commandQueue) {
+      console.log(`[KataGo] Process exited with code ${code}, epoch=${currentEpoch}`);
+      // 只有当前纪元的进程退出才清理
+      if (this.procEpoch === currentEpoch) {
+        this.proc = null;
+        this.buffer = "";
+        // 拒绝所有等待中的命令
+        for (const item of this.commandQueue) {
         clearTimeout(item.timeout);
         item.reject(new Error(`KataGo process exited (code=${code}): ${this.lastError}`));
       }
       this.commandQueue = [];
-      if (code !== 0) this.crashed = true;
+        if (code !== 0) this.crashed = true;
+      }  // end if procEpoch === currentEpoch
     });
 
     // 等待进程就绪：发送name命令，成功则表示GTP握手完成
@@ -434,11 +443,6 @@ class PersistentKataGo {
     return this.crashed;
   }
 
-  // 重置崩溃状态（允许重试）
-  resetCrashState(): void {
-    this.crashed = false;
-  }
-
   // 杀掉进程
   private killProcess(): void {
     if (this.proc && !this.proc.killed) {
@@ -451,13 +455,39 @@ class PersistentKataGo {
         try { this.proc?.kill(); } catch { /* ignore */ }
       }, 500);
     }
+    this.procEpoch++;  // 递增纪元，旧进程的onData会被忽略
     this.proc = null;
     this.buffer = "";
     this.commandQueue = [];
   }
 
+  /** 中断正在进行的KataGo分析（杀掉进程重启，下棋优先） */
+  async stopAnalysis(): Promise<void> {
+    if (!this.proc || this.proc.killed) return;
+    console.log(`[KataGo] stopAnalysis - killing process to interrupt analysis for genmove priority`);
+    try {
+      // 拒绝所有等待中的命令
+      for (const item of this.commandQueue) {
+        clearTimeout(item.timeout);
+        item.reject(new Error("KataGo analysis interrupted for genmove priority"));
+      }
+      this.commandQueue = [];
+      this.procEpoch++;  // 递增纪元，旧进程的onData会被忽略
+      this.buffer = "";
+      // 杀掉进程（下次getProcess()会自动重启）
+      try { this.proc.kill('SIGKILL'); } catch { /* ignore */ }
+      this.proc = null;
+    } catch (e) {
+      console.log(`[KataGo] stopAnalysis error:`, e);
+    }
+  }
+
   // 完全关闭（进程退出时调用）
   shutdown(): void {
+    this.killProcess();
+  }
+
+  resetCrashState(): void {
     this.killProcess();
   }
 }
@@ -745,6 +775,7 @@ class EngineQueue {
   private queue: QueueEntry[] = [];
   private processing = false;
   private entryId = 0;
+  private currentEntry: QueueEntry | null = null; // 当前正在处理的条目
 
   /** 取消所有排队中的分析请求（下棋请求优先） */
   cancelPendingAnalysis(): number {
@@ -778,6 +809,22 @@ class EngineQueue {
     // 下棋请求优先：取消排队中的分析请求
     this.cancelPendingAnalysis();
 
+    // 下棋请求优先：如果当前正在运行分析，用GTP stop中断
+    if (this.processing && this.currentEntry?.isAnalysis) {
+      console.log(`[engine-queue] Genmove arrived while analysis is running - sending stop`);
+      await persistentKataGo.stopAnalysis();
+      // stopAnalysis会拒绝当前分析的command，导致processNext结束
+      // 等待processing变false（最多3秒）
+      const waitStart = Date.now();
+      while (this.processing && Date.now() - waitStart < 3000) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      if (this.processing) {
+        console.warn(`[engine-queue] Analysis still processing after stop, forcing processing=false`);
+        this.processing = false;
+      }
+    }
+
     return new Promise<EngineQueueResult>((resolve, reject) => {
       this.queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine, aiColor });
       this.processNext();
@@ -787,8 +834,8 @@ class EngineQueue {
   private async processNext(): Promise<void> {
     if (this.processing || this.queue.length === 0) return;
     this.processing = true;
-
-    const entry = this.queue.shift()!;
+    this.currentEntry = this.queue.shift()!;
+    const entry = this.currentEntry;
     console.log(`[engine-queue] Processing: ${entry.id}, engine=${entry.engine}, isAnalysis=${!!entry.isAnalysis}`);
 
     try {
@@ -846,6 +893,7 @@ class EngineQueue {
       }
     } finally {
       this.processing = false;
+      this.currentEntry = null;
       // Process next in queue
       if (this.queue.length > 0) {
         setImmediate(() => this.processNext());

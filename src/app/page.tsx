@@ -953,13 +953,15 @@ export default function GoGamePage() {
     setTeachingMessage('');
     setTeachMoveIndex(history.length); // 记录教学针对的手数
     try {
-      // 按需请求KataGo分析（仅在用户点击"提示与教学"时）
+      // 按需请求KataGo分析（仅在用户点击"提示与教学"时），10秒超时
       let analysisData = latestAnalysisRef.current;
       if (token && boardSize > 0 && history.length > 0) {
         try {
           const movesForAnalysis = history.map(h => ({
             row: h.position.row, col: h.position.col, color: h.color
           }));
+          const analyzeController = new AbortController();
+          const analyzeTimeout = setTimeout(() => analyzeController.abort(), 10000);
           const analyzeRes = await fetch('/api/go-engine', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -968,7 +970,9 @@ export default function GoGamePage() {
               boardSize,
               moves: movesForAnalysis,
             }),
+            signal: analyzeController.signal,
           });
+          clearTimeout(analyzeTimeout);
           if (analyzeRes.ok) {
             const analyzeData = await analyzeRes.json();
             if (analyzeData.analysis) {
@@ -977,7 +981,7 @@ export default function GoGamePage() {
             }
           }
         } catch {
-          // 分析失败不影响教学
+          // 分析失败/超时不影响教学，无分析数据也能给出专业解说
         }
       }
 
