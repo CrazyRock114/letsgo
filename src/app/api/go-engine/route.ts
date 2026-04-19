@@ -8,50 +8,58 @@ import fs from "fs";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 import { getUserFromAuthHeader } from "@/lib/auth";
 
-// ==================== 活跃会话追踪 ====================
-interface ActiveSession {
-  userId: number;
-  nickname: string;
-  engine: string;
-  boardSize: number;
-  difficulty: string;
-  lastMoveAt: number;
-  totalMoves: number;
-  startedAt: number;
+// KataGo分析结果类型
+interface KataGoAnalysis {
+  winRate: number;       // 黑方胜率 0-100
+  scoreLead: number;     // 黑方领先目数（负数=白方领先）
+  bestMoves: {           // 推荐落点（前3）
+    move: string;        // GTP坐标 如 "D4"
+    winrate: number;     // 该点黑方胜率
+    scoreMean: number;   // 该点目数领先
+  }[];
 }
-const activeSessions: Map<string, ActiveSession> = new Map();
 
-function trackActiveSession(userId: number, nickname: string, engine: string, boardSize: number, difficulty: string) {
-  const key = `${userId}-${engine}`;
-  const existing = activeSessions.get(key);
-  if (existing) {
-    existing.lastMoveAt = Date.now();
-    existing.totalMoves++;
-    existing.difficulty = difficulty;
-    existing.boardSize = boardSize;
-  } else {
-    activeSessions.set(key, { userId, nickname, engine, boardSize, difficulty, lastMoveAt: Date.now(), totalMoves: 1, startedAt: Date.now() });
+// 解析kata-analyze输出
+// 格式: "info move D4 visits 500 winrate 5234 scoreMean 2.1 scoreStdev 1.5 ... info move Q16 visits 480 ..."
+function parseKataAnalyze(output: string): KataGoAnalysis | null {
+  try {
+    const infos = output.split('info ').filter(s => s.trim());
+    if (infos.length === 0) return null;
+
+    const moves: KataGoAnalysis['bestMoves'] = [];
+    let overallWinRate = 50;
+    let overallScoreLead = 0;
+
+    for (const info of infos) {
+      const parts = info.trim().split(/\s+/);
+      let move = '', visits = 0, winrate = 0, scoreMean = 0;
+
+      for (let i = 0; i < parts.length; i++) {
+        if (parts[i] === 'move' && parts[i + 1]) move = parts[i + 1];
+        if (parts[i] === 'visits' && parts[i + 1]) visits = parseInt(parts[i + 1]);
+        if (parts[i] === 'winrate' && parts[i + 1]) winrate = parseFloat(parts[i + 1]) / 100; // 转为0-100
+        if (parts[i] === 'scoreMean' && parts[i + 1]) scoreMean = parseFloat(parts[i + 1]);
+      }
+
+      if (move && visits > 0) {
+        moves.push({ move, winrate, scoreMean });
+      }
+    }
+
+    // 取第一个（最佳）move的数据作为整体形势
+    if (moves.length > 0) {
+      overallWinRate = moves[0].winrate;
+      overallScoreLead = moves[0].scoreMean;
+    }
+
+    return {
+      winRate: Math.round(overallWinRate * 10) / 10,
+      scoreLead: Math.round(overallScoreLead * 10) / 10,
+      bestMoves: moves.slice(0, 3)
+    };
+  } catch {
+    return null;
   }
-}
-
-function cleanStaleSessions() {
-  const tenMinAgo = Date.now() - 10 * 60 * 1000;
-  for (const [key, session] of activeSessions) {
-    if (session.lastMoveAt < tenMinAgo) activeSessions.delete(key);
-  }
-}
-
-export function getEngineMonitorData() {
-  cleanStaleSessions();
-  return {
-    activeSessions: Array.from(activeSessions.values()),
-    queueLength: engineQueue.getQueueLength(),
-    isProcessing: engineQueue.isProcessing(),
-    kataGoQueueLength: engineQueue.getKataGoQueueLength(),
-    kataGoProcessing: engineQueue.isKataGoProcessing(),
-    gnuGoQueueLength: engineQueue.getGnuGoQueueLength(),
-    gnuGoProcessing: engineQueue.isGnuGoProcessing(),
-  };
 }
 
 // 防止 EPIPE 等管道错误导致进程崩溃
@@ -90,6 +98,45 @@ interface QueueItem {
 }
 const kataGoQueue: QueueItem[] = [];
 let isKataGoBusy = false;
+
+// 活跃对弈追踪
+interface ActiveSession {
+  userId: number;
+  nickname: string;
+  engine: string;
+  boardSize: number;
+  difficulty: string;
+  moveCount: number;
+  lastActive: Date;
+}
+const activeSessions: Map<string, ActiveSession> = new Map();
+
+function trackActiveSession(userId: number, nickname: string, engine: string, boardSize: number, difficulty: string, moveCount: number) {
+  const key = `${userId}-${engine}`;
+  activeSessions.set(key, { userId, nickname, engine, boardSize, difficulty, moveCount, lastActive: new Date() });
+  // 清理10分钟未活跃的会话
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [k, v] of activeSessions) {
+    if (v.lastActive.getTime() < cutoff) activeSessions.delete(k);
+  }
+}
+
+// 引擎监控数据导出
+export function getEngineMonitorData() {
+  return {
+    kataGo: { queueLength: kataGoQueue.length, processing: isKataGoBusy },
+    gnugo: { queueLength: 0, processing: false },
+    activeSessions: Array.from(activeSessions.values()).map(s => ({
+      player: s.nickname,
+      engine: s.engine,
+      boardSize: s.boardSize,
+      difficulty: s.difficulty,
+      totalMoves: s.moveCount,
+      lastActive: s.lastActive.toISOString(),
+    })),
+    activeCount: activeSessions.size,
+  };
+}
 
 function enqueueKataGoTask<T>(task: () => Promise<T>): Promise<{ result: T; waitMs: number }> {
   const enqueuedAt = Date.now();
@@ -232,6 +279,14 @@ class PersistentKataGo {
   }> = [];
   private crashed = false;
   private lastError = "";
+
+  isAvailable(): boolean {
+    return !!(this.proc && !this.proc.killed && this.proc.exitCode === null);
+  }
+
+  getProcess(): ChildProcess | null {
+    return this.proc;
+  }
 
   // 确保进程已启动并就绪
   async ensureReady(): Promise<void> {
@@ -463,6 +518,59 @@ async function getKataGoMove(
 }
 
 // ============================================================
+// KataGo分析（kata-analyze命令，固定maxVisits=500）
+// ============================================================
+async function getKataGoAnalysis(
+  boardSize: number,
+  moves: Array<{ row: number; col: number; color: "black" | "white" }>
+): Promise<KataGoAnalysis | null> {
+  try {
+    await persistentKataGo.ensureReady();
+  } catch {
+    console.log('[kata-analyze] KataGo进程未就绪，跳过分析');
+    return null;
+  }
+
+  try {
+    // 设置分析用的maxVisits（固定500，不受游戏难度影响）
+    await persistentKataGo.sendCommand('kata-set-param maxVisits 500');
+
+    // 准备棋盘并重放落子
+    const gtpCommands = [
+      `boardsize ${boardSize}`,
+      'clear_board',
+    ];
+
+    for (const m of moves) {
+      const colChar = String.fromCharCode(65 + (m.col >= 8 ? m.col + 1 : m.col));
+      const coord = `${colChar}${boardSize - m.row}`;
+      const color = m.color === "black" ? "B" : "W";
+      gtpCommands.push(`play ${color} ${coord}`);
+    }
+
+    // 执行分析（kata-analyze interval=10 表示每10次visit输出一次）
+    gtpCommands.push('kata-analyze 10');
+
+    // 恢复游戏难度的maxVisits
+    gtpCommands.push('kata-set-param maxVisits 150');
+
+    const responses = await persistentKataGo.sendCommands(gtpCommands, 60000);
+
+    // kata-analyze的响应是倒数第二个（最后一个是我们恢复maxVisits的响应）
+    const analyzeResponse = responses[responses.length - 2] || '';
+
+    return parseKataAnalyze(analyzeResponse);
+  } catch (err) {
+    console.error('[kata-analyze] 分析失败:', err);
+    try {
+      // 恢复maxVisits
+      await persistentKataGo.sendCommand('kata-set-param maxVisits 150');
+    } catch { /* ignore */ }
+    return null;
+  }
+}
+
+// ============================================================
 // GnuGo落子（每次spawn新进程，GnuGo启动快）
 // ============================================================
 async function getGnuGoMove(
@@ -619,10 +727,8 @@ interface EngineQueueResult {
 }
 
 class EngineQueue {
-  private kataGoQueue: QueueEntry[] = [];
-  private gnuGoQueue: QueueEntry[] = [];
-  private kataGoProcessing = false;
-  private gnuGoProcessing = false;
+  private queue: QueueEntry[] = [];
+  private processing = false;
   private entryId = 0;
 
   async enqueue(
@@ -633,93 +739,99 @@ class EngineQueue {
     difficulty: string
   ): Promise<EngineQueueResult> {
     const id = `qe-${++this.entryId}-u${userId}`;
-    const isKataGo = engine === "katago";
-    const queue = isKataGo ? this.kataGoQueue : this.gnuGoQueue;
-    console.log(`[engine-queue] Enqueued: ${id}, engine=${engine}, queueLen=${queue.length}`);
+    console.log(`[engine-queue] Enqueued: ${id}, engine=${engine}, queueLen=${this.queue.length}`);
 
     return new Promise<EngineQueueResult>((resolve, reject) => {
-      queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine });
-      if (isKataGo) {
-        this.processKataGoNext();
-      } else {
-        this.processGnuGoNext();
-      }
+      this.queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine });
+      this.processNext();
     });
   }
 
-  private async processKataGoNext(): Promise<void> {
-    if (this.kataGoProcessing || this.kataGoQueue.length === 0) return;
-    this.kataGoProcessing = true;
-    const entry = this.kataGoQueue.shift()!;
-    console.log(`[engine-queue] Processing KataGo: ${entry.id}`);
-    try {
-      let result: EngineQueueResult;
-      if (isKataGoAvailable()) {
-        try {
-          result = { ...(await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty)) };
-        } catch (err) {
-          persistentKataGo.resetCrashState();
-          result = { move: null, engine: "katago", engineError: true, errorDetail: err instanceof Error ? err.message : String(err) };
-        }
-      } else {
-        result = { move: null, engine: "katago", noEngine: true };
-      }
-      entry.resolve(result);
-    } catch (error) {
-      entry.reject(error instanceof Error ? error : new Error(String(error)));
-    } finally {
-      this.kataGoProcessing = false;
-      if (this.kataGoQueue.length > 0) setImmediate(() => this.processKataGoNext());
-    }
-  }
+  private async processNext(): Promise<void> {
+    if (this.processing || this.queue.length === 0) return;
+    this.processing = true;
 
-  private async processGnuGoNext(): Promise<void> {
-    if (this.gnuGoProcessing || this.gnuGoQueue.length === 0) return;
-    this.gnuGoProcessing = true;
-    const entry = this.gnuGoQueue.shift()!;
-    console.log(`[engine-queue] Processing GnuGo: ${entry.id}`);
+    const entry = this.queue.shift()!;
+    console.log(`[engine-queue] Processing: ${entry.id}, engine=${entry.engine}`);
+
     try {
       let result: EngineQueueResult;
-      if (isGnuGoAvailable()) {
+
+      if (entry.engine === "katago" && isKataGoAvailable()) {
         try {
-          result = { ...(await getGnuGoMove(entry.boardSize, entry.moves, entry.difficulty)) };
-        } catch (err) {
-          result = { move: null, engine: "gnugo", engineError: true, errorDetail: err instanceof Error ? err.message : String(err) };
+          const moveResult = await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty);
+          result = { ...moveResult };
+        } catch (katagoError) {
+          persistentKataGo.resetCrashState();
+          result = {
+            move: null, engine: "katago", engineError: true,
+            errorDetail: katagoError instanceof Error ? katagoError.message : String(katagoError),
+          };
+        }
+      } else if (entry.engine === "gnugo" && isGnuGoAvailable()) {
+        try {
+          const moveResult = await getGnuGoMove(entry.boardSize, entry.moves, entry.difficulty);
+          result = { ...moveResult };
+        } catch (gtpError) {
+          result = {
+            move: null, engine: "gnugo", engineError: true,
+            errorDetail: gtpError instanceof Error ? gtpError.message : String(gtpError),
+          };
         }
       } else {
-        result = { move: null, engine: "gnugo", noEngine: true };
+        result = { move: null, engine: entry.engine || "local", noEngine: true };
       }
+
+      console.log(`[engine-queue] Completed: ${entry.id}, engine=${result.engine}`);
       entry.resolve(result);
     } catch (error) {
       entry.reject(error instanceof Error ? error : new Error(String(error)));
     } finally {
-      this.gnuGoProcessing = false;
-      if (this.gnuGoQueue.length > 0) setImmediate(() => this.processGnuGoNext());
+      this.processing = false;
+      // Process next in queue
+      if (this.queue.length > 0) {
+        setImmediate(() => this.processNext());
+      }
     }
   }
 
   getQueueLength(): number {
-    return this.kataGoQueue.length + this.gnuGoQueue.length;
-  }
-
-  getKataGoQueueLength(): number {
-    return this.kataGoQueue.length;
-  }
-
-  getGnuGoQueueLength(): number {
-    return this.gnuGoQueue.length;
+    return this.queue.length;
   }
 
   isProcessing(): boolean {
-    return this.kataGoProcessing || this.gnuGoProcessing;
+    return this.processing;
   }
 
-  isKataGoProcessing(): boolean {
-    return this.kataGoProcessing;
+  /** 获取KataGo局面分析（不阻塞下棋队列，走完后再分析） */
+  async enqueueAnalysis(moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number): Promise<KataGoAnalysis | null> {
+    return new Promise((resolve) => {
+      // 检查KataGo是否可用
+      if (!isKataGoAvailable()) {
+        resolve(null);
+        return;
+      }
+      this.kataAnalysisQueue.push({ moves, boardSize, resolve });
+      this.processAnalysisQueue();
+    });
   }
 
-  isGnuGoProcessing(): boolean {
-    return this.gnuGoProcessing;
+  private kataAnalysisQueue: Array<{moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number, resolve: (v: KataGoAnalysis | null) => void}> = [];
+  private kataAnalysisProcessing = false;
+
+  private async processAnalysisQueue() {
+    if (this.kataAnalysisProcessing || this.kataAnalysisQueue.length === 0) return;
+    this.kataAnalysisProcessing = true;
+    while (this.kataAnalysisQueue.length > 0) {
+      const item = this.kataAnalysisQueue.shift()!;
+      try {
+        const analysis = await getKataGoAnalysis(item.boardSize, item.moves);
+        item.resolve(analysis);
+      } catch {
+        item.resolve(null);
+      }
+    }
+    this.kataAnalysisProcessing = false;
   }
 }
 
@@ -730,7 +842,8 @@ const engineQueue = new EngineQueue();
 // ============================================================
 export async function POST(request: NextRequest) {
   try {
-    const { boardSize, moves, difficulty, engine: requestedEngine } = await request.json();
+    const { boardSize, moves, difficulty, engine: requestedEngine, currentPlayer: rawCurrentPlayer } = await request.json();
+    const currentPlayer: 'black' | 'white' = (rawCurrentPlayer === 'black' || rawCurrentPlayer === 'white') ? rawCurrentPlayer : 'white';
 
     // 认证：从请求头获取用户
     const authHeader = request.headers.get('Authorization');
@@ -792,9 +905,9 @@ export async function POST(request: NextRequest) {
       console.log(`[go-engine] Deducted ${cost} points from user ${user.userId} for ${requestedEngine}`);
     }
 
-    // 追踪活跃会话
+    // 追踪活跃对弈
     if (user) {
-      trackActiveSession(user.userId, user.nickname, requestedEngine, boardSize, difficulty);
+      trackActiveSession(user.userId, user.nickname, requestedEngine, boardSize, difficulty, moves.length);
     }
 
     // 加入引擎队列（串行处理，支持多人排队）
@@ -813,7 +926,21 @@ export async function POST(request: NextRequest) {
       remainingPoints = latestUser?.points;
     }
 
-    return NextResponse.json({ ...result, pointsUsed: cost, remainingPoints });
+    // 获取KataGo局面分析（所有引擎都用KataGo分析，异步不阻塞）
+    let analysis: KataGoAnalysis | null = null;
+    try {
+      // AI刚落了一子，分析包含这一手之后的局面
+      const aiColor = currentPlayer;
+      const typedMoves: {row: number, col: number, color: 'black'|'white'}[] = moves;
+      const movesForAnalysis = result.move 
+        ? [...typedMoves, { row: result.move.row, col: result.move.col, color: aiColor }]
+        : typedMoves;
+      analysis = await engineQueue.enqueueAnalysis(movesForAnalysis, boardSize);
+    } catch {
+      // 分析失败不影响主要功能
+    }
+
+    return NextResponse.json({ ...result, pointsUsed: cost, remainingPoints, analysis });
   } catch (error) {
     console.error("Go engine API error:", error);
     return NextResponse.json({ error: "引擎错误" }, { status: 500 });
@@ -866,6 +993,5 @@ export async function GET() {
       { id: "local", name: "本地AI", available: true, desc: "内置启发式AI，随时可用", cost: ENGINE_COSTS.local },
     ],
     queue: { length: engineQueue.getQueueLength(), processing: engineQueue.isProcessing() },
-    activeSessions: getEngineMonitorData().activeSessions,
   });
 }

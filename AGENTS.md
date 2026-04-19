@@ -75,22 +75,24 @@ src/
 ### 2. 每步AI解说
 - 每步棋后自动获取AI简短解说（1句）
 - 真正的LLM流式输出（打字机效果）
-- 解说包含落子位置、作用、鼓励
+- **KataGo分析数据驱动**：所有引擎（包括GnuGo/本地AI）的解说都基于KataGo kata-analyze(maxVisits=500)的专业分析数据
+- 解说包含落子位置、作用、鼓励、形势判断
 - **专业术语嵌入**：解说中自然融入围棋术语并在括号中解释
 - **智能气数提及**：只在打吃(1气)或提子时提及气数，3气以上不提
+- **棋型识别**：自动识别星位占角、挂角、连接、切断、做眼、拆边等棋型
 - **解说防丢失**：快速落子时，旧解说仍会被保存到解说列表，不会被新请求覆盖
 
 ### 3. AI教学
-- 流式AI教学解读（结合当前棋局）
+- 流式AI教学解读（结合当前棋局+KataGo分析数据）
 - **提示与教学合一**：点击按钮同时显示建议落点+AI解释为何该位置好
-- 提示位置由评分引擎选出（findBestHint），教学内容解释该位置
+- 提示位置由评分引擎选出（findBestHint），教学内容结合KataGo分析数据解释该位置
 - **围棋百科**：35+核心术语，7大分类，搜索/筛选/详情查看
 - **围棋教程**：8章40+步骤渐进课程（启蒙→吃子→棋形→布局→中盘→官子→提高）
-- 上下文感知问答（发送棋盘状态给AI）
+- 上下文感知问答（发送棋盘状态+KataGo分析给AI）
 
 ### 4. 用户系统
 - **注册/登录**：昵称+密码，JWT认证（7天有效期）
-- **积分体系**：注册送100积分，不同引擎消耗不同积分
+- **积分体系**：注册送1000积分，每日首次登录送1000积分，不同引擎消耗不同积分
   - KataGo: 5积分/步（深度学习引擎）
   - GnuGo: 2积分/步（经典引擎）
   - 本地AI: 0积分/步（免费，无需登录）
@@ -118,7 +120,7 @@ src/
 
 **请求参数：**
 - `nickname`: 昵称（2-20字符，唯一）
-- `password`: 密码（4位以上）
+- `password`: 密码（6位以上）
 
 **响应：** `{ user: {id, nickname, points, totalGames, wins}, token }`
 
@@ -148,14 +150,15 @@ LLM流式响应，Content-Type: text/event-stream
 
 | type | 说明 | 额外参数 |
 |------|------|---------|
-| `commentary` | 每步棋简短解说 | lastMove, moveColor, captured |
-| `teach` | 教学解读 | lastMove, hintPosition |
-| `chat` | 结合棋局的问答 | question |
+| `commentary` | 每步棋简短解说 | lastMove, moveColor, captured, analysis |
+| `teach` | 教学解读 | lastMove, hintPosition, analysis |
+| `chat` | 结合棋局的问答 | question, analysis |
 | `ai-move` | AI落子建议 | - |
 
 **通用参数：**
 - `board`: 棋盘状态数组
 - `currentPlayer`: "black" | "white"
+- `analysis`: KataGo分析数据（可选）`{ winRate, scoreLead, bestMoves: [{move, winrate, scoreMean}] }`
 
 ### POST /api/go-engine
 KataGo/GnuGo AI引擎桥接（GTP协议+排队+积分扣除）
@@ -178,6 +181,7 @@ KataGo/GnuGo AI引擎桥接（GTP协议+排队+积分扣除）
 - `pointsUsed`: number（本次扣除积分数）
 - `remainingPoints`: number（剩余积分）
 - `insufficientPoints`: boolean（积分不足，仅403响应时）
+- `analysis`: KataGo分析数据（maxVisits=500）`{ winRate, scoreLead, bestMoves: [{move, winrate, scoreMean}] }` 或 null
 
 **错误响应：**
 - 401: `{ error, needLogin: true }` — 未登录使用收费引擎

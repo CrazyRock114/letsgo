@@ -2,10 +2,23 @@
 // 支持两种 LLM 后端：
 //   1. Coze SDK（沙箱环境自动注入 COZE_WORKLOAD_IDENTITY_API_KEY）
 //   2. DeepSeek API（设置 DEEPSEEK_API_KEY 环境变量）
+//
+// 解说/教学采用 KataGo 分析数据驱动（winrate/scoreLead/bestMoves）
 
 import { NextRequest, NextResponse } from "next/server";
 import { LLMClient, Config, HeaderUtils } from "coze-coding-dev-sdk";
 import { boardToString, positionToCoordinate, getMoveContext, type Stone, type Board } from "@/lib/go-logic";
+
+// KataGo分析数据类型（与go-engine/route.ts保持一致）
+interface KataGoAnalysis {
+  winRate: number;       // 黑方胜率 0-100
+  scoreLead: number;     // 黑方领先目数（负数=白方领先）
+  bestMoves: {
+    move: string;        // GTP坐标 如 "D4"
+    winrate: number;     // 该点黑方胜率
+    scoreMean: number;   // 该点目数领先
+  }[];
+}
 
 // LLM 提供者检测
 const LLM_PROVIDER = (() => {
@@ -23,34 +36,70 @@ const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
 
 console.log(`[go-ai] LLM provider: ${LLM_PROVIDER}${LLM_PROVIDER === 'deepseek' ? ` model=${DEEPSEEK_MODEL}` : ''}`);
 
-// 第三方观赛者视角的解说系统提示
-const COMMENTARY_SYSTEM = `你是围棋解说员，为小朋友解说对局。第三方视角，不是棋手。
-规则：
+// ============================================================
+// 专业围棋解说员 System Prompt（基于KataGo分析数据驱动）
+// ============================================================
+const COMMENTARY_SYSTEM = `你是"小棋老师"，一位专业的儿童围棋解说员，擅长用生动有趣的语言为小朋友解说对局。
+
+【核心身份】你是一位懂围棋的解说员，不是棋手。你在解说别人下的棋，基于KataGo引擎的专业分析数据来解说。
+
+【严格规则】
 1. 只说1句话，言简意赅，绝不啰嗦
-2.【最重要】你是在解说"刚刚下出的这步棋"，必须明确说是"黑方"还是"白方"刚落子
-3. 简述这步棋的作用（占角、连接、进攻、防守等）
-4. 如有提子，说明提了几个
-5.【最高优先级】严格依据"局面事实"数据说话！
-   - 不要自己从棋盘数气，直接看给出的气数
+2. 必须明确说是"黑方"还是"白方"刚落子
+3. 严格依据"局面事实"和"引擎分析"数据说话，禁止自行推断
    - 事实没说"只剩1口气"，就不能说"打吃"
    - 事实没说提子，就不能说"提子"
-   - 棋子颜色以事实为准
-6. 不要每次都说"有几口气"，只在打吃(对方只剩1口气)或提子时才提到气
-7. 最多用1个围棋术语，在括号中简短解释。只有事实确实显示只剩1口气时才能说"打吃"
-8. 不要提"即将落子"、"接下来"等关于下一步的内容，只解说刚刚下的这一步`;
+4. 只在打吃(1气)或提子时提及气数，3气以上不提
+5. 最多用1个围棋术语，在括号中用简单语言解释
+6. 不提"即将落子"、"接下来"等关于下一步的内容
 
-// AI教学系统提示
+【引擎分析数据使用】
+当提供KataGo引擎分析数据时，优先使用：
+- 胜率和目数变化：简要说明形势（如"黑方优势"），但不要给具体数字（小朋友看不懂）
+  - winRate差距>20%：可以说"形势对某方有利"
+  - winRate差距<10%：可以说"双方势均力敌"
+- 推荐落点：如果AI推荐的下一手与刚才下的位置有关联，可以适当提及
+- 不要提"KataGo"、"引擎"、"AI分析"等技术词汇，小朋友不懂
+
+【解说风格示例】
+✅ "黑方下了星位（棋盘上标注的圆点位置），这是开局占角的好棋！"
+✅ "白方下了一步长（把自己的棋子延伸出去），让弱子有了更多出路"
+✅ "黑方打吃了！白棋这组子只剩1口气，得赶紧逃跑才行"
+✅ "白方提了2个黑子！在角落取得了实利（实实在在的地盘）"
+❌ "黑方下了D4，引擎评估胜率52.3%"（太技术化，小朋友不懂）
+❌ "黑方下了这步棋，有几口气"（没说打吃就不提气数）`;
+
+// ============================================================
+// AI教学 System Prompt（基于KataGo分析数据驱动）
+// ============================================================
 const GO_TUTOR_SYSTEM = `你是"小围棋"，一个专为儿童围棋学习设计的AI围棋教练。
-规则：
+
+【核心身份】你是一位有围棋专业知识的老师，基于KataGo引擎的专业分析数据来指导孩子。
+
+【教学原则】
 1. 用简单有趣的语言教孩子下围棋，像讲故事一样
 2. 鼓励孩子的每一步尝试，即使下错了也要温和引导
 3. 用生活化的比喻解释围棋概念
 4. 解说要简短，1-3句话即可
 5. 适当使用儿童喜欢的语气词
-6. 【重要】在教学中主动引入围棋专业术语，并在括号中用简单语言解释。帮助孩子逐步积累专业词汇量。例如：
-   - "你这步棋让对方的棋子只剩一口气了，这就是打吃（也叫叫吃，意思是对方必须赶紧逃跑）！"
-   - "你占了星位（棋盘角上四四位置的圆点），这是开局占角的好方法！"
-7. 常见术语参考：气、提子、打吃、长、连、断、双打吃、关门吃、抱吃、征子、枷吃、扑、倒扑、接不归、眼、真眼、假眼、活棋、死棋、双活、星、小目、三三、挂角、守角、拆边、定式、劫、禁着点、先手、后手、厚势、实利、打入、弃子、腾挪、收官、见合、手筋、好形、愚形、金角银边草肚皮`;
+
+【围棋术语教学】
+在教学中主动引入围棋专业术语，并在括号中用简单语言解释。帮助孩子逐步积累专业词汇量。例如：
+- "你这步棋让对方的棋子只剩一口气了，这就是打吃（也叫叫吃，意思是对方必须赶紧逃跑）！"
+- "你占了星位（棋盘角上四四位置的圆点），这是开局占角的好方法！"
+
+常见术语参考：气、提子、打吃、长、连、断、双打吃、关门吃、抱吃、征子、枷吃、扑、倒扑、接不归、眼、真眼、假眼、活棋、死棋、双活、星、小目、三三、挂角、守角、拆边、定式、劫、禁着点、先手、后手、厚势、实利、打入、弃子、腾挪、收官、见合、手筋、好形、愚形、金角银边草肚皮
+
+【引擎分析数据使用】
+当提供KataGo引擎分析数据时，利用专业数据来增强教学准确性：
+- 胜率和目数：判断当前形势，给出针对性的建议（如形势领先可以稳健，落后可以寻找战机）
+- 推荐落点（bestMoves）：这是专业AI认为最好的位置，解释为什么该位置好
+  - 用围棋概念解释：占角、守边、攻击、防守、做眼、连接等
+  - 不要说"引擎建议"或"AI推荐"，而是说"专业分析认为"或直接说"这个位置很好"
+- 形势判断：基于胜率变化告诉孩子当前的局势
+  - winRate差距>20%：明显优势/劣势，给出对应的策略
+  - winRate差距<10%：势均力敌，鼓励继续努力
+- 不要提"KataGo"、"引擎"、"AI分析"等技术词汇`;
 
 // AI对弈系统提示 - 根据难度调整
 function getAIPlaySystem(difficulty: string): string {
@@ -85,7 +134,66 @@ function getAIPlaySystem(difficulty: string): string {
 坐标格式：列用A-T表示（跳过I），行用1-19表示`;
 }
 
+// ============================================================
+// 格式化KataGo分析数据为可读描述
+// ============================================================
+function formatAnalysisForPrompt(
+  analysis: KataGoAnalysis | null | undefined,
+  currentPlayer: Stone,
+  boardSize: number
+): string {
+  if (!analysis) return '（暂无引擎分析数据，请根据棋盘和局面事实进行解说）';
+
+  const lines: string[] = ['=== KataGo引擎分析数据（maxVisits=500） ==='];
+
+  // 胜率
+  const blackWinRate = analysis.winRate;
+  const whiteWinRate = 100 - blackWinRate;
+  lines.push(`胜率：黑方${blackWinRate.toFixed(1)}% / 白方${whiteWinRate.toFixed(1)}%`);
+
+  // 目数领先
+  const scoreLead = analysis.scoreLead;
+  if (scoreLead > 0) {
+    lines.push(`目数：黑方领先约${scoreLead.toFixed(1)}目`);
+  } else if (scoreLead < 0) {
+    lines.push(`目数：白方领先约${Math.abs(scoreLead).toFixed(1)}目`);
+  } else {
+    lines.push('目数：双方持平');
+  }
+
+  // 形势判断
+  const gap = Math.abs(blackWinRate - whiteWinRate);
+  if (gap > 40) {
+    lines.push(`形势判断：${blackWinRate > 50 ? '黑方' : '白方'}明显优势`);
+  } else if (gap > 20) {
+    lines.push(`形势判断：${blackWinRate > 50 ? '黑方' : '白方'}稍占上风`);
+  } else if (gap > 10) {
+    lines.push('形势判断：双方势均力敌，稍有倾斜');
+  } else {
+    lines.push('形势判断：双方势均力敌');
+  }
+
+  // 推荐落点（前3手）
+  if (analysis.bestMoves.length > 0) {
+    lines.push('推荐落点（按优先级）：');
+    for (let i = 0; i < analysis.bestMoves.length; i++) {
+      const m = analysis.bestMoves[i];
+      const coord = gtpToReadableCoord(m.move, boardSize);
+      lines.push(`  ${i + 1}. ${coord}（胜率${m.winrate.toFixed(1)}%，目数${m.scoreMean > 0 ? '+' : ''}${m.scoreMean.toFixed(1)}）`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// GTP坐标转可读坐标（如 "D4" -> "D4"，已经是可读格式）
+function gtpToReadableCoord(gtpCoord: string, _boardSize: number): string {
+  return gtpCoord; // GTP坐标本身就是人类可读的（如D4, Q16）
+}
+
+// ============================================================
 // 构建棋局描述（带行列标签 + 关键位置气数 + 落子历史）
+// ============================================================
 function buildBoardDescription(
   board: Board,
   currentPlayer: Stone,
@@ -155,6 +263,12 @@ function buildBoardDescription(
       facts.push(`【提子】这步棋提了${captured}个${moveColor === 'black' ? '白' : '黑'}子`);
     }
 
+    // === 棋型识别 ===
+    const patterns = recognizePatterns(board, lastMove.row, lastMove.col, moveColor!, size);
+    if (patterns.length > 0) {
+      facts.push(...patterns);
+    }
+
     desc += '\n\n=== 局面事实（解说必须严格依据以下事实，不得自行推断） ===\n' + facts.join('\n');
   }
 
@@ -165,6 +279,132 @@ function buildBoardDescription(
   desc += `\n接下来轮到：${currentPlayer === 'black' ? '黑棋' : '白棋'}`;
 
   return desc;
+}
+
+// ============================================================
+// 棋型识别（增强解说专业度）
+// ============================================================
+function recognizePatterns(
+  board: Board,
+  row: number,
+  col: number,
+  moveColor: Stone,
+  size: number
+): string[] {
+  const patterns: string[] = [];
+  const stone = moveColor;
+  if (!stone) return patterns;
+
+  // 1. 占星位检测
+  const starPoints = getStarPoints(size);
+  if (starPoints.some(([r, c]) => r === row && c === col)) {
+    patterns.push(`【占星位】这步棋下在了星位（棋盘上标注的圆点位置），是开局占角的好手法`);
+  }
+
+  // 2. 挂角检测：在对方占角附近落子
+  const opponentColor = stone === 'black' ? 'white' : 'black';
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nr = row + dr;
+    const nc = col + dc;
+    if (nr >= 0 && nr < size && nc >= 0 && nc < size) {
+      // 相邻有对方在星位或小目的棋子 → 挂角
+      if (board[nr][nc] === opponentColor) {
+        const isOppStar = starPoints.some(([r, c]) => r === nr && c === nc);
+        if (isOppStar) {
+          const coord = positionToCoordinate(row, col, size);
+          patterns.push(`【挂角】${coord}是挂角（在对方占的角附近下子，阻止对方守角），是积极的下法`);
+          break;
+        }
+      }
+    }
+  }
+
+  // 3. 连接检测：与同色棋子相邻（2个以上方向有同色棋子 → 连接/跳）
+  let friendlyNeighbors = 0;
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nr = row + dr;
+    const nc = col + dc;
+    if (nr >= 0 && nr < size && nc >= 0 && nc < size && board[nr][nc] === stone) {
+      friendlyNeighbors++;
+    }
+  }
+  if (friendlyNeighbors >= 2) {
+    patterns.push(`【连接】这步棋连接了多块同色棋子，让棋形更加厚实`);
+  }
+
+  // 4. 切断检测：在对方两块棋之间落子
+  let adjacentOpponentGroups = 0;
+  const checkedGroups = new Set<string>();
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nr = row + dr;
+    const nc = col + dc;
+    if (nr >= 0 && nr < size && nc >= 0 && nc < size && board[nr][nc] === opponentColor) {
+      const key = getGroupKey(board, nr, nc);
+      if (!checkedGroups.has(key)) {
+        checkedGroups.add(key);
+        adjacentOpponentGroups++;
+      }
+    }
+  }
+  if (adjacentOpponentGroups >= 2) {
+    patterns.push(`【切断】这步棋切断了对方法两块棋子的连接，是重要的手筋（巧妙的战术手段）`);
+  }
+
+  // 5. 做眼检测：围住的空间可能形成眼
+  const emptyNeighbors: [number, number][] = [];
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const nr = row + dr;
+    const nc = col + dc;
+    if (nr >= 0 && nr < size && nc >= 0 && nc < size && board[nr][nc] === null) {
+      emptyNeighbors.push([nr, nc]);
+    }
+  }
+  // 检查落子是否在己方棋子包围的空间里（可能是做眼）
+  const surrounded = emptyNeighbors.length <= 1 && friendlyNeighbors >= 2;
+  if (surrounded && emptyNeighbors.length === 1) {
+    const [er, ec] = emptyNeighbors[0];
+    // 检查空位的其他邻居是否也被同色包围
+    let fullySurrounded = true;
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nr = er + dr;
+      const nc = ec + dc;
+      if (nr >= 0 && nr < size && nc >= 0 && nc < size) {
+        if (board[nr][nc] !== stone && !(nr === row && nc === col)) {
+          fullySurrounded = false;
+          break;
+        }
+      }
+    }
+    if (fullySurrounded) {
+      patterns.push(`【做眼】这步棋在帮自己的棋做眼（被围住的空点），是活棋的关键`);
+    }
+  }
+
+  // 6. 边角占位检测
+  const isCorner = (row <= 2 || row >= size - 3) && (col <= 2 || col >= size - 3);
+  const isEdge = row <= 1 || row >= size - 2 || col <= 1 || col >= size - 2;
+  if (isCorner && !patterns.some(p => p.includes('星位') || p.includes('挂角'))) {
+    const coord = positionToCoordinate(row, col, size);
+    patterns.push(`【占角】${coord}在角落，"金角银边草肚皮"，角上最容易围地盘`);
+  } else if (isEdge && !isCorner && !patterns.some(p => p.includes('挂角'))) {
+    patterns.push(`【拆边】这步棋在边上展开，是在扩展势力范围`);
+  }
+
+  return patterns;
+}
+
+// 获取星位坐标
+function getStarPoints(size: number): [number, number][] {
+  if (size === 9) {
+    return [[2,2],[2,6],[4,4],[6,2],[6,6]];
+  }
+  if (size === 13) {
+    return [[3,3],[3,6],[3,9],[6,3],[6,6],[6,9],[9,3],[9,6],[9,9]];
+  }
+  if (size === 19) {
+    return [[3,3],[3,9],[3,15],[9,3],[9,9],[9,15],[15,3],[15,9],[15,15]];
+  }
+  return [];
 }
 
 // 获取棋组唯一标识（避免重复报告同一组的气数）
@@ -218,32 +458,51 @@ function getGroupLibertiesExport(board: Board, row: number, col: number): number
   return liberties.size;
 }
 
+// ============================================================
 // 流式API端点
+// ============================================================
 export async function POST(request: NextRequest) {
   try {
     if (LLM_PROVIDER === 'none') {
       return NextResponse.json({ error: '未配置 LLM API。请设置 COZE_WORKLOAD_IDENTITY_API_KEY 或 DEEPSEEK_API_KEY 环境变量。' }, { status: 503 });
     }
 
-    const { type, board: rawBoard, currentPlayer, lastMove, moveColor, captured, question, difficulty, moveHistory, hintPosition } = await request.json();
+    const {
+      type,
+      board: rawBoard,
+      currentPlayer,
+      lastMove,
+      moveColor,
+      captured,
+      question,
+      difficulty,
+      moveHistory,
+      hintPosition,
+      analysis: rawAnalysis, // KataGo分析数据
+    } = await request.json();
+
     // 标准化棋盘：前端用"empty"字符串表示空位，但围棋逻辑用null
     const board: Board = (rawBoard as string[][]).map((row: string[]) =>
       row.map((cell: string) => cell === 'empty' ? null : cell)
     ) as Board;
 
+    // 解析KataGo分析数据
+    const analysis: KataGoAnalysis | null = rawAnalysis || null;
+
     let messages: Array<{ role: 'system' | 'user'; content: string }> = [];
     const boardDesc = buildBoardDescription(board, currentPlayer, lastMove, moveColor, captured, moveHistory);
+    const analysisDesc = formatAnalysisForPrompt(analysis, currentPlayer, board.length);
 
     if (type === 'commentary') {
-      // 第三方观赛者解说
+      // 第三方观赛者解说（结合KataGo分析数据）
       messages = [
         { role: 'system', content: COMMENTARY_SYSTEM },
-        { role: 'user', content: boardDesc + '\n\n用1句话简短解说这步棋，严格依据上面"局面事实"的数据。不要提气数，除非是打吃或提子。' }
+        { role: 'user', content: `${boardDesc}\n\n${analysisDesc}\n\n用1句话简短解说这步棋，严格依据"局面事实"和"引擎分析"数据。不要提气数，除非是打吃或提子。` }
       ];
     } else if (type === 'teach') {
-      let teachPrompt = boardDesc + '\n\n请给这个孩子一些围棋指导。';
+      let teachPrompt = `${boardDesc}\n\n${analysisDesc}\n\n请给这个孩子一些围棋指导。`;
       if (hintPosition) {
-        teachPrompt = boardDesc + `\n\n系统建议的落子位置是${hintPosition}。请解释为什么这个位置好（1-2句话），用简单有趣的语言告诉孩子。`;
+        teachPrompt = `${boardDesc}\n\n${analysisDesc}\n\n系统建议的落子位置是${hintPosition}。请结合引擎分析数据，解释为什么这个位置好（1-3句话），用简单有趣的语言告诉孩子。如果推荐落点中有更好的位置也请提及。`;
       }
       messages = [
         { role: 'system', content: GO_TUTOR_SYSTEM },
@@ -251,8 +510,8 @@ export async function POST(request: NextRequest) {
       ];
     } else if (type === 'chat') {
       messages = [
-        { role: 'system', content: GO_TUTOR_SYSTEM + '\n\n你要结合当前棋局来回答问题，参考棋盘上棋子的位置和形势来给出具体的、有针对性的回答。' },
-        { role: 'user', content: boardDesc + '\n\n孩子的问题：' + question }
+        { role: 'system', content: GO_TUTOR_SYSTEM + '\n\n你要结合当前棋局和引擎分析数据来回答问题，给出专业的、有针对性的回答。' },
+        { role: 'user', content: `${boardDesc}\n\n${analysisDesc}\n\n孩子的问题：${question}` }
       ];
     } else if (type === 'ai-move') {
       messages = [
