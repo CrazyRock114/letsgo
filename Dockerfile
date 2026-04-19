@@ -129,23 +129,14 @@ COPY --from=app-builder /app/docker-start.sh /app/docker-start.sh
 RUN chmod +x /app/docker-start.sh
 
 # pg 库需要被包含在 standalone 输出中（standalone 不自动包含所有 node_modules）
-# 从 builder 阶段复制 pg 模块
+# 从 builder 阶段复制 pg 及所有依赖（使用通配符避免遗漏子依赖）
 COPY --from=app-builder /app/node_modules/pg /app/node_modules/pg
-COPY --from=app-builder /app/node_modules/pg-connection-string /app/node_modules/pg-connection-string
+COPY --from=app-builder /app/node_modules/pg-* /app/node_modules/
 COPY --from=app-builder /app/node_modules/split2 /app/node_modules/split2
 COPY --from=app-builder /app/node_modules/buffer-writer /app/node_modules/buffer-writer
 COPY --from=app-builder /app/node_modules/packet-reader /app/node_modules/packet-reader
-COPY --from=app-builder /app/node_modules/pg-cloudflare /app/node_modules/pg-cloudflare
-COPY --from=app-builder /app/node_modules/pg-int8 /app/node_modules/pg-int8
-COPY --from=app-builder /app/node_modules/pg-pool /app/node_modules/pg-pool
-COPY --from=app-builder /app/node_modules/pg-protocol /app/node_modules/pg-protocol
-COPY --from=app-builder /app/node_modules/pg-types /app/node_modules/pg-types
 COPY --from=app-builder /app/node_modules/pgpass /app/node_modules/pgpass
-COPY --from=app-builder /app/node_modules/postgres-array /app/node_modules/postgres-array
-COPY --from=app-builder /app/node_modules/postgres-bytea /app/node_modules/postgres-bytea
-COPY --from=app-builder /app/node_modules/postgres-date /app/node_modules/postgres-date
-COPY --from=app-builder /app/node_modules/postgres-interval /app/node_modules/postgres-interval
-COPY --from=app-builder /app/node_modules/postgres-range /app/node_modules/postgres-range
+COPY --from=app-builder /app/node_modules/postgres-* /app/node_modules/
 
 # 环境变量
 ENV NODE_ENV=production
