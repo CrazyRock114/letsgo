@@ -15,8 +15,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '昵称需要2-20个字符' }, { status: 400 });
     }
 
-    if (password.length < 4) {
-      return NextResponse.json({ error: '密码至少4位' }, { status: 400 });
+    if (password.length < 6) {
+      return NextResponse.json({ error: '密码至少6位' }, { status: 400 });
     }
 
     const supabase = getSupabaseClient();

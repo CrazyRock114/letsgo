@@ -30,7 +30,7 @@ const GNUGO_PATHS = [
 
 // 积分消耗配置
 const ENGINE_POINT_COSTS: Record<string, number> = {
-  katago: 3,    // KataGo最强，消耗最多
+  katago: 5,    // KataGo最强，消耗最多
   gnugo: 2,     // GnuGo中等
   local: 0,     // 本地AI免费
 };

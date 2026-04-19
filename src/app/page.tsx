@@ -157,6 +157,7 @@ export default function GoGamePage() {
   const [isAIThinking, setIsAIThinking] = useState(false);
   const [savedGameId, setSavedGameId] = useState<number | null>(null);
   const [consecutivePasses, setConsecutivePasses] = useState(0);
+  const gameEpochRef = useRef(0);
   const [gameEnded, setGameEnded] = useState(false);
   const [gameResult, setGameResult] = useState<{ winner: string; detail: string } | null>(null);
   const [showGameEndDialog, setShowGameEndDialog] = useState(false);
@@ -293,6 +294,8 @@ export default function GoGamePage() {
 
   // ===== 切换棋盘大小 =====
   const changeBoardSize = useCallback((newSize: number) => {
+    gameEpochRef.current++;
+    setIsAIThinking(false);
     setBoardSize(newSize);
     setBoard(createEmptyBoard(newSize));
     setCurrentPlayer(playerColor);
@@ -322,7 +325,8 @@ export default function GoGamePage() {
   ) => {
     // 每次新请求递增ID，仅用于控制流式文本显示（不阻止旧解说保存）
     const thisRequestId = ++commentaryRequestId.current;
-    const isLatestRequest = () => commentaryRequestId.current === thisRequestId;
+    const epochAtStart = gameEpochRef.current;
+    const isLatestRequest = () => commentaryRequestId.current === thisRequestId && gameEpochRef.current === epochAtStart;
 
     if (isLatestRequest()) {
       setIsCommentaryStreaming(true);
@@ -440,6 +444,7 @@ export default function GoGamePage() {
     // AI回合 - 玩家落子后，AI执另一种颜色
     const aiColor = playerColor === 'black' ? 'white' : 'black';
     if (currentPlayer === playerColor) {
+      const epochAtStart = gameEpochRef.current;
       setIsAIThinking(true);
 
       // 等待玩家落子解说完成，避免解说流式输出被打断
@@ -449,6 +454,9 @@ export default function GoGamePage() {
 
       // AI思考延迟，让体验更自然（模拟思考时间）
       await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
+
+      // 检查epoch：如果用户已经重新开始，丢弃本次AI落子
+      if (gameEpochRef.current !== epochAtStart) return;
 
       const validMoves = getValidMoves(newBoard, aiColor);
       if (validMoves.length > 0) {
@@ -475,6 +483,8 @@ export default function GoGamePage() {
             });
             if (res.ok) {
               const data = await res.json();
+              // 检查epoch：引擎响应可能很慢，用户可能已重新开始
+              if (gameEpochRef.current !== epochAtStart) return;
               console.log(`[engine] ${engine} response:`, JSON.stringify(data));
               // 更新前端积分
               if (data.pointsUsed > 0) {
@@ -565,9 +575,11 @@ export default function GoGamePage() {
       }
 
       setCurrentPlayer(playerColor);
-      setIsAIThinking(false);
+      if (gameEpochRef.current === epochAtStart) {
+        setIsAIThinking(false);
+      }
     }
-  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, engine, history, requestCommentary, gameEnded, consecutivePasses, boardSize, playerColor]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, engine, history, requestCommentary, gameEnded, consecutivePasses, boardSize, playerColor, token, deductPoints, refreshUser]);
 
 
   // ===== 悔棋 =====
@@ -589,7 +601,10 @@ export default function GoGamePage() {
 
   // ===== 重新开始 =====
   const restartGame = useCallback(() => {
-    setBoard(createEmptyBoard(boardSize));
+    const epoch = ++gameEpochRef.current;
+    setIsAIThinking(false);
+    const emptyBoard = createEmptyBoard(boardSize);
+    setBoard(emptyBoard);
     setCurrentPlayer(playerColor);
     setHistory([]);
     setLastMove(null);
@@ -619,9 +634,11 @@ export default function GoGamePage() {
               body: JSON.stringify({ boardSize, difficulty, engine, moves: [] }),
             });
             const data = await res.json();
+            // 检查epoch，如果用户已经重新开始则丢弃结果
+            if (gameEpochRef.current !== epoch) return;
             if (data.move) {
               const { row, col } = data.move;
-              const { newBoard, captured } = playMove(board, row, col, aiColor);
+              const { newBoard, captured } = playMove(emptyBoard, row, col, aiColor);
               if (newBoard) {
                 setBoard(newBoard);
                 setHistory([{ position: { row, col }, color: aiColor, captured }]);
@@ -630,9 +647,9 @@ export default function GoGamePage() {
               }
             } else if (data.noEngine) {
               // 引擎不可用，用本地AI
-              const aiMove = findBestHint(board, aiColor);
+              const aiMove = findBestHint(emptyBoard, aiColor);
               if (aiMove) {
-                const { newBoard: nb, captured: cap } = playMove(board, aiMove.row, aiMove.col, aiColor);
+                const { newBoard: nb, captured: cap } = playMove(emptyBoard, aiMove.row, aiMove.col, aiColor);
                 if (nb) {
                   setBoard(nb);
                   setHistory([{ position: { row: aiMove.row, col: aiMove.col }, color: aiColor, captured: cap }]);
@@ -642,19 +659,23 @@ export default function GoGamePage() {
               }
             }
           } catch (err) {
+            if (gameEpochRef.current !== epoch) return;
             console.warn('[engine] AI first move failed:', err);
           } finally {
-            setIsAIThinking(false);
+            if (gameEpochRef.current === epoch) {
+              setIsAIThinking(false);
+            }
           }
         })();
       }, 200);
     }
-  }, [boardSize, playerColor]);
+  }, [boardSize, playerColor, difficulty, engine, token, requestCommentary]);
 
   // ===== 停手 =====
   const passMove = useCallback(async () => {
     if (currentPlayer !== playerColor || isAIThinking || isReplayMode || gameEnded) return;
     const aiColor: 'black' | 'white' = playerColor === 'black' ? 'white' : 'black';
+    const epochAtStart = gameEpochRef.current;
 
     const newPasses = consecutivePasses + 1;
     setConsecutivePasses(newPasses);
@@ -679,6 +700,9 @@ export default function GoGamePage() {
     // AI思考延迟
     await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
 
+    // 检查epoch
+    if (gameEpochRef.current !== epochAtStart) return;
+
     // AI也考虑停手（如果没好位置）
     const validMoves = getValidMoves(board, aiColor);
     if (validMoves.length === 0) {
@@ -687,7 +711,7 @@ export default function GoGamePage() {
       setGameEnded(true);
     setShowGameEndDialog(true);
       setGameResult(result);
-      setIsAIThinking(false);
+      if (gameEpochRef.current === epochAtStart) setIsAIThinking(false);
       return;
     }
 
@@ -714,6 +738,8 @@ export default function GoGamePage() {
         });
         if (res.ok) {
           const data = await res.json();
+          // 检查epoch
+          if (gameEpochRef.current !== epochAtStart) return;
           console.log(`[engine-restart] ${engine} response:`, JSON.stringify(data));
           if (data.move && isValidMove(board, data.move.row, data.move.col, aiColor)) {
             aiMove = data.move;
@@ -768,8 +794,11 @@ export default function GoGamePage() {
     }
 
     setCurrentPlayer(playerColor);
-    setIsAIThinking(false);
-  }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, engine, history, requestCommentary, boardSize, playerColor]);
+    setCurrentPlayer(playerColor);
+    if (gameEpochRef.current === epochAtStart) {
+      setIsAIThinking(false);
+    }
+  }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, engine, history, requestCommentary, boardSize, playerColor, token]);
 
   // ===== 提示 =====
   const showHintFn = useCallback(() => {
@@ -1461,7 +1490,7 @@ export default function GoGamePage() {
                 </div>
               ) : (
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-500">登录后可保存棋局和使用AI引擎</span>
+                  <span className="text-xs text-gray-500">登录后可保存棋局和使用KataGo/GnuGo引擎</span>
                   <Button size="sm" onClick={() => setShowAuthDialog(true)} className="h-7 px-3 text-xs bg-amber-500 hover:bg-amber-600">
                     登录
                   </Button>
@@ -2076,14 +2105,14 @@ export default function GoGamePage() {
             </div>
             <div>
               <label className="text-sm font-medium text-gray-700">密码</label>
-              <input name="password" type="password" required minLength={4} maxLength={50}
+              <input name="password" type="password" required minLength={6} maxLength={50}
                 className="w-full mt-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
                 placeholder="4-50个字符" />
             </div>
             {authTab === 'register' && (
               <div>
                 <label className="text-sm font-medium text-gray-700">确认密码</label>
-                <input name="confirmPassword" type="password" required minLength={4}
+                <input name="confirmPassword" type="password" required minLength={6}
                   className="w-full mt-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
                   placeholder="再次输入密码" />
               </div>
