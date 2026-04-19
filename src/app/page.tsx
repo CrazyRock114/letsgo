@@ -363,31 +363,47 @@ export default function GoGamePage() {
           }
         });
         // 始终保存解说，即使不是最新请求（防止快速落子时AI解说丢失）
-        setCommentaries(prev => [...prev, {
-          moveIndex: moveIdx,
-          color: moveColor,
-          position: movePos,
-          commentary: fullText || fallbackCommentary,
-        }]);
+        // 按 moveIndex 有序插入，防止异步响应导致解说乱序
+        setCommentaries(prev => {
+          const newEntry = {
+            moveIndex: moveIdx,
+            color: moveColor,
+            position: movePos,
+            commentary: fullText || fallbackCommentary,
+          };
+          const next = [...prev, newEntry];
+          next.sort((a, b) => a.moveIndex - b.moveIndex);
+          return next;
+        });
       } else {
         // API 返回非200，使用兜底解说（始终保存）
         console.warn('[commentary] API returned', response.status, await response.text().catch(() => ''));
-        setCommentaries(prev => [...prev, {
-          moveIndex: moveIdx,
-          color: moveColor,
-          position: movePos,
-          commentary: fallbackCommentary,
-        }]);
+        setCommentaries(prev => {
+          const newEntry = {
+            moveIndex: moveIdx,
+            color: moveColor,
+            position: movePos,
+            commentary: fallbackCommentary,
+          };
+          const next = [...prev, newEntry];
+          next.sort((a, b) => a.moveIndex - b.moveIndex);
+          return next;
+        });
       }
     } catch (err) {
       console.warn('[commentary] fetch error:', err);
       // 始终保存兜底解说
-      setCommentaries(prev => [...prev, {
-        moveIndex: moveIdx,
-        color: moveColor,
-        position: movePos,
-        commentary: fallbackCommentary,
-      }]);
+      setCommentaries(prev => {
+        const newEntry = {
+          moveIndex: moveIdx,
+          color: moveColor,
+          position: movePos,
+          commentary: fallbackCommentary,
+        };
+        const next = [...prev, newEntry];
+        next.sort((a, b) => a.moveIndex - b.moveIndex);
+        return next;
+      });
     } finally {
       // 只有最新请求才清理流式状态
       if (isLatestRequest()) {
