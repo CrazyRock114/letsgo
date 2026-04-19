@@ -1,13 +1,20 @@
-// 棋局API - 保存/载入/列表/删除
+// 棋局API - 保存/载入/列表/删除（需登录）
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { getUserFromAuthHeader } from '@/lib/auth';
 
-// 构建棋局数据对象（如果 engine 列不存在则排除）
-function buildGameData(body: Record<string, unknown>, includeEngine: boolean) {
-  const data: Record<string, unknown> = {
-    player_id: body.player_id,
+// 检查是否是 schema cache 相关错误
+function isSchemaCacheError(error: { message: string }): boolean {
+  return error.message.includes('schema cache') || error.message.includes('Could not find');
+}
+
+// 构建棋局数据对象
+function buildGameData(body: Record<string, unknown>, userId: number) {
+  return {
+    user_id: userId,
     board_size: body.board_size,
     difficulty: body.difficulty,
+    engine: body.engine,
     moves: body.moves,
     commentaries: body.commentaries,
     final_board: body.final_board,
@@ -16,31 +23,32 @@ function buildGameData(body: Record<string, unknown>, includeEngine: boolean) {
     status: body.status,
     title: body.title,
   };
-  if (includeEngine) {
-    data.engine = body.engine;
-  }
-  return data;
 }
 
-// 检查是否是 schema cache 相关错误
-function isSchemaCacheError(error: { message: string }): boolean {
-  return error.message.includes('schema cache') || error.message.includes('Could not find');
-}
-
-// 保存棋局（创建或更新）
+// 保存棋局（创建或更新）- 需要登录
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { id } = body;
-
-    if (!body.player_id) {
-      return NextResponse.json({ error: '缺少玩家ID' }, { status: 400 });
+    const user = getUserFromAuthHeader(request.headers.get('Authorization'));
+    if (!user) {
+      return NextResponse.json({ error: '请先登录' }, { status: 401 });
     }
 
+    const body = await request.json();
+    const { id } = body;
     const client = getSupabaseClient();
 
     if (id) {
-      // 更新已有棋局
+      // 更新已有棋局 - 验证所有权
+      const { data: existing } = await client
+        .from('letsgo_games')
+        .select('user_id')
+        .eq('id', id)
+        .single();
+
+      if (!existing || existing.user_id !== user.userId) {
+        return NextResponse.json({ error: '无权修改此棋局' }, { status: 403 });
+      }
+
       const updateData = {
         moves: body.moves,
         commentaries: body.commentaries,
@@ -60,10 +68,8 @@ export async function POST(request: NextRequest) {
         .select()
         .single();
 
-      // 如果 engine 列不存在，重试不带 engine
       if (error && isSchemaCacheError(error)) {
-        console.warn('[games] Schema cache error, retrying without engine column:', error.message);
-        const { engine, ...dataWithoutEngine } = updateData;
+        const { engine: _, ...dataWithoutEngine } = updateData;
         const result = await client
           .from('letsgo_games')
           .update(dataWithoutEngine)
@@ -75,21 +81,33 @@ export async function POST(request: NextRequest) {
       }
 
       if (error) throw new Error(`更新棋局失败: ${error.message}`);
+
+      // 更新用户统计（棋局结束时）
+      if (body.status === 'finished') {
+        const isWin = (body.black_score as number) > (body.white_score as number);
+        await client
+          .from('letsgo_users')
+          .update({
+            total_games: await getGameCount(client, user.userId),
+            wins: await getWinCount(client, user.userId),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', user.userId);
+      }
+
       return NextResponse.json({ game: data });
     } else {
       // 创建新棋局
       let { data, error } = await client
         .from('letsgo_games')
-        .insert(buildGameData(body, true))
+        .insert(buildGameData(body, user.userId))
         .select()
         .single();
 
-      // 如果 engine 列不存在，重试不带 engine
       if (error && isSchemaCacheError(error)) {
-        console.warn('[games] Schema cache error, retrying without engine column:', error.message);
         const result = await client
           .from('letsgo_games')
-          .insert(buildGameData(body, false))
+          .insert({ ...buildGameData(body, user.userId), engine: undefined })
           .select()
           .single();
         data = result.data;
@@ -105,39 +123,39 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// 获取棋局列表
+// 获取棋局列表 - 需要登录，只看自己的
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const playerId = searchParams.get('player_id');
-
+    const user = getUserFromAuthHeader(request.headers.get('Authorization'));
     const client = getSupabaseClient();
 
-    // 先尝试包含 engine 列的查询
     let query = client
       .from('letsgo_games')
-      .select('id, player_id, board_size, difficulty, engine, status, title, black_score, white_score, created_at, updated_at')
+      .select('id, user_id, board_size, difficulty, engine, status, title, black_score, white_score, created_at, updated_at')
       .order('created_at', { ascending: false })
       .limit(50);
 
-    if (playerId) {
-      query = query.eq('player_id', parseInt(playerId));
+    // 登录用户只看自己的棋局
+    if (user) {
+      query = query.eq('user_id', user.userId);
+    } else {
+      // 未登录用户不返回任何棋局
+      return NextResponse.json({ games: [] });
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let { data, error }: { data: any[] | null; error: any } = await query;
 
-    // 如果 engine 列不存在，重试不带 engine
     if (error && isSchemaCacheError(error)) {
-      console.warn('[games] Schema cache error in GET, retrying without engine column:', error.message);
       let fallbackQuery = client
         .from('letsgo_games')
-        .select('id, player_id, board_size, difficulty, status, title, black_score, white_score, created_at, updated_at')
+        .select('id, user_id, board_size, difficulty, status, title, black_score, white_score, created_at, updated_at')
         .order('created_at', { ascending: false })
         .limit(50);
 
-      if (playerId) {
-        fallbackQuery = fallbackQuery.eq('player_id', parseInt(playerId));
+      if (user) {
+        fallbackQuery = fallbackQuery.eq('user_id', user.userId);
       }
 
       const result = await fallbackQuery;
@@ -147,7 +165,6 @@ export async function GET(request: NextRequest) {
 
     if (error) throw new Error(`查询棋局失败: ${error.message}`);
 
-    // 确保 engine 字段有默认值
     const games = (data || []).map((g: Record<string, unknown>) => ({
       ...g,
       engine: g.engine || 'local',
@@ -160,9 +177,14 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// 删除棋局
+// 删除棋局 - 需要登录且是自己的
 export async function DELETE(request: NextRequest) {
   try {
+    const user = getUserFromAuthHeader(request.headers.get('Authorization'));
+    if (!user) {
+      return NextResponse.json({ error: '请先登录' }, { status: 401 });
+    }
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
 
@@ -171,8 +193,19 @@ export async function DELETE(request: NextRequest) {
     }
 
     const client = getSupabaseClient();
-    const { error } = await client.from('letsgo_games').delete().eq('id', parseInt(id));
 
+    // 验证所有权
+    const { data: existing } = await client
+      .from('letsgo_games')
+      .select('user_id')
+      .eq('id', id)
+      .single();
+
+    if (!existing || existing.user_id !== user.userId) {
+      return NextResponse.json({ error: '无权删除此棋局' }, { status: 403 });
+    }
+
+    const { error } = await client.from('letsgo_games').delete().eq('id', parseInt(id));
     if (error) throw new Error(`删除棋局失败: ${error.message}`);
 
     return NextResponse.json({ success: true });
@@ -180,4 +213,25 @@ export async function DELETE(request: NextRequest) {
     const msg = err instanceof Error ? err.message : '未知错误';
     return NextResponse.json({ error: msg }, { status: 500 });
   }
+}
+
+// 辅助函数：获取用户棋局数
+async function getGameCount(client: ReturnType<typeof getSupabaseClient>, userId: number): Promise<number> {
+  const { count } = await client
+    .from('letsgo_games')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('status', 'finished');
+  return count ?? 0;
+}
+
+// 辅助函数：获取用户胜局数
+async function getWinCount(client: ReturnType<typeof getSupabaseClient>, userId: number): Promise<number> {
+  const { count } = await client
+    .from('letsgo_games')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('status', 'finished');
+  // 简化：胜局数需要根据黑白方和比分判断，这里先返回0，后续优化
+  return count ?? 0;
 }

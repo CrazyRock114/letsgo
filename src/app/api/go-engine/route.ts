@@ -5,6 +5,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { spawn, ChildProcess } from "child_process";
 import fs from "fs";
+import { getSupabaseClient } from "@/storage/database/supabase-client";
+import { getUserFromAuthHeader } from "@/lib/auth";
 
 // 防止 EPIPE 等管道错误导致进程崩溃
 process.on('uncaughtException', (err: unknown) => {
@@ -25,6 +27,56 @@ const GNUGO_PATHS = [
   process.cwd() + "/bin/gnugo",  // 项目捆绑，生产环境可用
   "/usr/games/gnugo",             // 系统安装，开发环境
 ];
+
+// 积分消耗配置
+const ENGINE_POINT_COSTS: Record<string, number> = {
+  katago: 3,    // KataGo最强，消耗最多
+  gnugo: 2,     // GnuGo中等
+  local: 0,     // 本地AI免费
+};
+
+// KataGo排队系统：串行处理请求，避免并发冲突
+interface QueueItem {
+  resolve: (result: unknown) => void;
+  reject: (error: Error) => void;
+  task: () => Promise<unknown>;
+  enqueuedAt: number;
+}
+const kataGoQueue: QueueItem[] = [];
+let isKataGoBusy = false;
+
+function enqueueKataGoTask<T>(task: () => Promise<T>): Promise<{ result: T; waitMs: number }> {
+  const enqueuedAt = Date.now();
+  return new Promise((resolve, reject) => {
+    kataGoQueue.push({
+      resolve: (r: unknown) => resolve(r as { result: T; waitMs: number }),
+      reject,
+      task: async () => {
+        const result = await task();
+        return { result, waitMs: Date.now() - enqueuedAt };
+      },
+      enqueuedAt,
+    });
+    processKataGoQueue();
+  });
+}
+
+async function processKataGoQueue() {
+  if (isKataGoBusy || kataGoQueue.length === 0) return;
+  isKataGoBusy = true;
+
+  while (kataGoQueue.length > 0) {
+    const item = kataGoQueue.shift()!;
+    try {
+      const result = await item.task();
+      item.resolve(result);
+    } catch (err) {
+      item.reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  isKataGoBusy = false;
+}
 
 // 自动查找KataGo可用的神经网络模型
 // 支持多种模型格式(.bin.gz, .txt.gz)，按优先级返回
@@ -484,42 +536,206 @@ function sendOneShotGTP(proc: ChildProcess, command: string, timeoutMs: number =
 }
 
 // ============================================================
+// 积分系统
+// ============================================================
+const ENGINE_COSTS: Record<string, number> = {
+  katago: 5,
+  gnugo: 2,
+  local: 0,
+};
+
+function getEngineCost(engine: string): number {
+  return ENGINE_COSTS[engine] ?? 0;
+}
+
+// ============================================================
+// 引擎排队系统
+// ============================================================
+interface QueueEntry {
+  id: string;
+  userId: number;
+  resolve: (result: EngineQueueResult) => void;
+  reject: (error: Error) => void;
+  boardSize: number;
+  moves: Array<{ row: number; col: number; color: string }>;
+  difficulty: string;
+  engine: string;
+}
+
+interface EngineQueueResult {
+  move: { row: number; col: number } | null;
+  pass?: boolean;
+  resign?: boolean;
+  engine: string;
+  engineError?: boolean;
+  errorDetail?: string;
+  noEngine?: boolean;
+}
+
+class EngineQueue {
+  private queue: QueueEntry[] = [];
+  private processing = false;
+  private entryId = 0;
+
+  async enqueue(
+    userId: number,
+    engine: string,
+    boardSize: number,
+    moves: Array<{ row: number; col: number; color: string }>,
+    difficulty: string
+  ): Promise<EngineQueueResult> {
+    const id = `qe-${++this.entryId}-u${userId}`;
+    console.log(`[engine-queue] Enqueued: ${id}, engine=${engine}, queueLen=${this.queue.length}`);
+
+    return new Promise<EngineQueueResult>((resolve, reject) => {
+      this.queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine });
+      this.processNext();
+    });
+  }
+
+  private async processNext(): Promise<void> {
+    if (this.processing || this.queue.length === 0) return;
+    this.processing = true;
+
+    const entry = this.queue.shift()!;
+    console.log(`[engine-queue] Processing: ${entry.id}, engine=${entry.engine}`);
+
+    try {
+      let result: EngineQueueResult;
+
+      if (entry.engine === "katago" && isKataGoAvailable()) {
+        try {
+          const moveResult = await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty);
+          result = { ...moveResult };
+        } catch (katagoError) {
+          persistentKataGo.resetCrashState();
+          result = {
+            move: null, engine: "katago", engineError: true,
+            errorDetail: katagoError instanceof Error ? katagoError.message : String(katagoError),
+          };
+        }
+      } else if (entry.engine === "gnugo" && isGnuGoAvailable()) {
+        try {
+          const moveResult = await getGnuGoMove(entry.boardSize, entry.moves, entry.difficulty);
+          result = { ...moveResult };
+        } catch (gtpError) {
+          result = {
+            move: null, engine: "gnugo", engineError: true,
+            errorDetail: gtpError instanceof Error ? gtpError.message : String(gtpError),
+          };
+        }
+      } else {
+        result = { move: null, engine: entry.engine || "local", noEngine: true };
+      }
+
+      console.log(`[engine-queue] Completed: ${entry.id}, engine=${result.engine}`);
+      entry.resolve(result);
+    } catch (error) {
+      entry.reject(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      this.processing = false;
+      // Process next in queue
+      if (this.queue.length > 0) {
+        setImmediate(() => this.processNext());
+      }
+    }
+  }
+
+  getQueueLength(): number {
+    return this.queue.length;
+  }
+
+  isProcessing(): boolean {
+    return this.processing;
+  }
+}
+
+const engineQueue = new EngineQueue();
+
+// ============================================================
 // API路由
 // ============================================================
 export async function POST(request: NextRequest) {
   try {
     const { boardSize, moves, difficulty, engine: requestedEngine } = await request.json();
-    console.log(`[go-engine] POST request: engine=${requestedEngine}, boardSize=${boardSize}, difficulty=${difficulty}, moves=${moves?.length || 0}`);
 
-    // KataGo：使用持久化进程
-    if (requestedEngine === "katago" && isKataGoAvailable()) {
-      try {
-        const result = await getKataGoMove(boardSize, moves, difficulty);
-        console.log(`[go-engine] KataGo result:`, JSON.stringify(result));
-        return NextResponse.json(result);
-      } catch (katagoError) {
-        console.error("[go-engine] KataGo failed:", katagoError instanceof Error ? katagoError.message : katagoError);
-        // 如果持久化进程崩溃，重置状态以便下次重试
-        persistentKataGo.resetCrashState();
-        return NextResponse.json({ move: null, engine: "katago", engineError: true, errorDetail: katagoError instanceof Error ? katagoError.message : String(katagoError) });
+    // 认证：从请求头获取用户
+    const authHeader = request.headers.get('Authorization');
+    const user = getUserFromAuthHeader(authHeader);
+    
+    if (!user) {
+      // 未登录用户：仍允许使用本地AI，其他引擎需要登录
+      if (requestedEngine === 'local') {
+        console.log(`[go-engine] Guest user using local AI`);
+        return NextResponse.json({ move: null, engine: "local", noEngine: true });
       }
+      return NextResponse.json({ error: '请先登录后再使用AI引擎', needLogin: true }, { status: 401 });
     }
 
-    // GnuGo：每次spawn新进程
-    if (requestedEngine === "gnugo" && isGnuGoAvailable()) {
-      try {
-        const result = await getGnuGoMove(boardSize, moves, difficulty);
-        console.log(`[go-engine] GnuGo result:`, JSON.stringify(result));
-        return NextResponse.json(result);
-      } catch (gtpError) {
-        console.error("[go-engine] GnuGo failed:", gtpError instanceof Error ? gtpError.message : gtpError);
-        return NextResponse.json({ move: null, engine: "gnugo", engineError: true, errorDetail: gtpError instanceof Error ? gtpError.message : String(gtpError) });
+    // 积分检查和扣除
+    const cost = getEngineCost(requestedEngine);
+    const supabase = getSupabaseClient();
+    if (cost > 0) {
+      // 读取当前余额
+      const { data: userData, error: userError } = await supabase
+        .from('letsgo_users')
+        .select('points')
+        .eq('id', user.userId)
+        .single();
+
+      if (userError || !userData) {
+        return NextResponse.json({ error: '用户信息获取失败' }, { status: 500 });
       }
+
+      if (userData.points < cost) {
+        return NextResponse.json({ 
+          error: `积分不足（需要${cost}积分，当前${userData.points}积分）`, 
+          insufficientPoints: true,
+          required: cost,
+          current: userData.points,
+        }, { status: 403 });
+      }
+
+      // 扣除积分（条件更新：只有余额>=cost时才更新，防止并发超扣）
+      const { error: updateError } = await supabase
+        .from('letsgo_users')
+        .update({ points: userData.points - cost, updated_at: new Date().toISOString() })
+        .eq('id', user.userId)
+        .gte('points', cost);
+
+      if (updateError) {
+        console.error('[go-engine] Failed to deduct points:', updateError);
+        return NextResponse.json({ error: '积分扣除失败' }, { status: 500 });
+      }
+
+      // 记录积分交易
+      await supabase.from('letsgo_point_transactions').insert({
+        user_id: user.userId,
+        amount: -cost,
+        type: 'engine_use',
+        description: `${requestedEngine}引擎对弈（${difficulty}难度）`,
+      });
+
+      console.log(`[go-engine] Deducted ${cost} points from user ${user.userId} for ${requestedEngine}`);
     }
 
-    // requestedEngine === "local" 或引擎不可用
-    console.log(`[go-engine] No engine available for: ${requestedEngine}, katagoAvail=${isKataGoAvailable()}, gnugoAvail=${isGnuGoAvailable()}`);
-    return NextResponse.json({ move: null, engine: requestedEngine || "local", noEngine: true });
+    // 加入引擎队列（串行处理，支持多人排队）
+    const result = await engineQueue.enqueue(
+      user.userId, requestedEngine, boardSize, moves, difficulty
+    );
+    
+    // 获取最新积分余额并附加到响应中
+    let remainingPoints: number | undefined;
+    if (cost > 0 && user) {
+      const { data: latestUser } = await supabase
+        .from('letsgo_users')
+        .select('points')
+        .eq('id', user.userId)
+        .single();
+      remainingPoints = latestUser?.points;
+    }
+
+    return NextResponse.json({ ...result, pointsUsed: cost, remainingPoints });
   } catch (error) {
     console.error("Go engine API error:", error);
     return NextResponse.json({ error: "引擎错误" }, { status: 500 });
@@ -561,13 +777,16 @@ export async function GET() {
     engines: [
       {
         id: "katago", name: "KataGo", available: isKataGoAvailable(), desc: "深度学习引擎，棋力最强",
+        cost: ENGINE_COSTS.katago,
         debug: { binExists: katagoBinExists, model: katagoModel, cfgExists: katagoCfgExists, binPath: KATAGO_PATH, cfgPath: KATAGO_CONFIG, ldd: lddOutput, versionTest: katagoTestOutput },
       },
       {
         id: "gnugo", name: "GnuGo", available: isGnuGoAvailable(), desc: "经典围棋引擎，棋力扎实",
+        cost: ENGINE_COSTS.gnugo,
         debug: { path: gnugoPath, searchedPaths: GNUGO_PATHS },
       },
-      { id: "local", name: "本地AI", available: true, desc: "内置启发式AI，随时可用" },
+      { id: "local", name: "本地AI", available: true, desc: "内置启发式AI，随时可用", cost: ENGINE_COSTS.local },
     ],
+    queue: { length: engineQueue.getQueueLength(), processing: engineQueue.isProcessing() },
   });
 }

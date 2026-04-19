@@ -27,7 +27,9 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
+import { toast } from 'sonner';
 import { Input } from '@/components/ui/input';
+import { useAuth } from '@/lib/auth-context';
 import {
   RotateCcw,
   MessageCircle,
@@ -46,6 +48,8 @@ import {
   Trophy,
   X,
   GraduationCap,
+  LogOut,
+  Coins,
 } from 'lucide-react';
 
 // ========== 常量 ==========
@@ -68,6 +72,12 @@ const ENGINE_OPTIONS: { id: EngineId; name: string; desc: string }[] = [
   { id: 'gnugo', name: 'GnuGo', desc: '经典围棋引擎' },
   { id: 'local', name: '本地AI', desc: '内置启发式' },
 ];
+
+const ENGINE_COSTS: Record<EngineId, number> = {
+  katago: 5,
+  gnugo: 2,
+  local: 0,
+};
 
 const COL_LABELS = 'ABCDEFGHJKLMNOPQRST';
 
@@ -128,9 +138,8 @@ async function readStream(response: Response, onChunk: (text: string) => void): 
 }
 
 export default function GoGamePage() {
-  // ===== 玩家身份 =====
-  const [nickname, setNickname] = useState('');
-  const [playerId, setPlayerId] = useState<number | null>(null);
+  // ===== 认证 =====
+  const { user, token, login, register, logout, refreshUser, deductPoints } = useAuth();
 
   // ===== 游戏状态 =====
   const [boardSize, setBoardSize] = useState(9);
@@ -162,6 +171,12 @@ export default function GoGamePage() {
   const needsAIMoveRef = useRef(false);
   // 切换执子需要重开标记
   const [needsNewGame, setNeedsNewGame] = useState(false);
+
+  // ===== 认证 UI =====
+  const [showAuthDialog, setShowAuthDialog] = useState(false);
+  const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
+  const [authError, setAuthError] = useState('');
+  const [authSubmitting, setAuthSubmitting] = useState(false);
 
   // ===== 切换确认 =====
   const [difficultyToast, setDifficultyToast] = useState<string>('');
@@ -274,31 +289,7 @@ export default function GoGamePage() {
     }
   }, [messages]);
 
-  // ===== 登录 =====
-  // ===== 保存时注册/查找玩家 =====
-  const ensurePlayer = useCallback(async () => {
-    if (playerId) return playerId;
-    const name = nickname.trim() || '棋手';
-    try {
-      const res = await fetch('/api/players', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nickname: name }),
-      });
-      const data = await res.json();
-      if (data.player) {
-        setPlayerId(data.player.id);
-        if (!nickname.trim()) setNickname(name);
-        return data.player.id;
-      }
-    } catch {
-      // 降级
-    }
-    const fallbackId = 0;
-    setPlayerId(fallbackId);
-    if (!nickname.trim()) setNickname(name);
-    return fallbackId;
-  }, [nickname, playerId]);
+  // ===== 认证相关（使用auth context）=====
 
   // ===== 切换棋盘大小 =====
   const changeBoardSize = useCallback((newSize: number) => {
@@ -344,7 +335,7 @@ export default function GoGamePage() {
     try {
       const response = await fetch('/api/go-ai', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({
           type: 'commentary',
           board: newBoard,
@@ -474,7 +465,7 @@ export default function GoGamePage() {
             }));
             const res = await fetch('/api/go-engine', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
               body: JSON.stringify({
                 boardSize,
                 moves: moveHistoryForEngine,
@@ -485,6 +476,13 @@ export default function GoGamePage() {
             if (res.ok) {
               const data = await res.json();
               console.log(`[engine] ${engine} response:`, JSON.stringify(data));
+              // 更新前端积分
+              if (data.pointsUsed > 0) {
+                deductPoints(data.pointsUsed);
+              }
+              if (data.queuePosition !== undefined && data.queuePosition > 0) {
+                console.log(`[engine] Queue position: ${data.queuePosition}`);
+              }
               if (data.move && isValidMove(newBoard, data.move.row, data.move.col, aiColor)) {
                 aiMove = data.move;
                 usedEngine = true;
@@ -504,6 +502,17 @@ export default function GoGamePage() {
                 // 引擎返回了但 move 无效或为 null
                 console.warn(`[engine] ${engine} returned invalid/null move, falling back to local AI. Data:`, data);
               }
+            } else if (res.status === 403) {
+              const data = await res.json().catch(() => ({}));
+              console.warn(`[engine] 积分不足:`, data.error);
+              if (data.insufficientPoints) {
+                toast.error('积分不足', { description: data.error || `需要${data.required}积分，当前${data.current}积分` });
+                refreshUser(); // 刷新用户积分信息
+              }
+              // 积分不足，回退到本地AI
+            } else if (res.status === 401) {
+              console.warn(`[engine] 未登录，回退到本地AI`);
+              // 未登录，回退到本地AI
             } else {
               console.warn(`[engine] ${engine} API returned ${res.status}`);
             }
@@ -606,7 +615,7 @@ export default function GoGamePage() {
             const aiColor = 'black';
             const res = await fetch('/api/go-engine', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
               body: JSON.stringify({ boardSize, difficulty, engine, moves: [] }),
             });
             const data = await res.json();
@@ -695,7 +704,7 @@ export default function GoGamePage() {
         }));
         const res = await fetch('/api/go-engine', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
           body: JSON.stringify({
             boardSize,
             moves: moveHistoryForEngine,
@@ -788,7 +797,7 @@ export default function GoGamePage() {
       }
       const response = await fetch('/api/go-ai', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify(teachingBody),
       });
       if (response.ok) {
@@ -814,7 +823,7 @@ export default function GoGamePage() {
     try {
       const response = await fetch('/api/go-ai', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({
           type: 'chat',
           board,
@@ -846,21 +855,22 @@ export default function GoGamePage() {
   // ===== 保存棋局 =====
   const saveGame = useCallback(async () => {
     if (isSaving) return;
-    setIsSaving(true);
-    setSaveMessage('');
-    const pid = await ensurePlayer();
-    if (!pid && pid !== 0) {
-      setSaveMessage('保存失败：无法创建玩家');
-      setIsSaving(false);
+    if (!user) {
+      setSaveMessage('请先登录再保存棋局');
       return;
     }
+    setIsSaving(true);
+    setSaveMessage('');
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
       const res = await fetch('/api/games', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           id: savedGameId,
-          player_id: pid,
           board_size: boardSize,
           difficulty,
           engine,
@@ -890,32 +900,31 @@ export default function GoGamePage() {
       setSaveMessage('保存失败，请重试');
     }
     setIsSaving(false);
-  }, [ensurePlayer, savedGameId, boardSize, difficulty, engine, history, commentaries, board, score, saveTitle, isSaving]);
+  }, [user, token, savedGameId, boardSize, difficulty, engine, history, commentaries, board, score, saveTitle, isSaving]);
 
   // ===== 载入棋局列表 =====
   const loadGames = useCallback(async () => {
     try {
-      const res = await fetch('/api/games');
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch('/api/games', { headers });
       const data = await res.json();
       if (data.games) setSavedGames(data.games as SavedGame[]);
       else if (data.error) console.error('载入棋局失败:', data.error);
     } catch (err) {
       console.error('载入棋局失败:', err);
     }
-  }, []);
+  }, [token]);
 
   // ===== 载入棋局 =====
   const loadGame = useCallback(async (gameId: number) => {
     try {
-      const res = await fetch(`/api/games/${gameId}`);
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(`/api/games/${gameId}`, { headers });
       const data = await res.json();
       const game = data.game as SavedGame;
       if (!game) return;
-
-      // 从棋局数据恢复玩家ID，以便后续保存
-      if (game.player_id && !playerId) {
-        setPlayerId(game.player_id);
-      }
 
       setBoardSize(game.board_size);
       setDifficulty(game.difficulty);
@@ -943,12 +952,12 @@ export default function GoGamePage() {
   // ===== 删除棋局 =====
   const deleteGame = useCallback(async (gameId: number) => {
     try {
-      await fetch(`/api/games?id=${gameId}`, { method: 'DELETE' });
+      await fetch(`/api/games?id=${gameId}`, { method: 'DELETE', headers: token ? { Authorization: `Bearer ${token}` } : {} });
       setSavedGames(prev => prev.filter(g => g.id !== gameId));
     } catch (err) {
       console.error('删除棋局失败:', err);
     }
-  }, []);
+  }, [token]);
 
   // ===== 复盘导航 =====
   const replayStep = useCallback((direction: number) => {
@@ -1032,7 +1041,7 @@ export default function GoGamePage() {
               try {
                 const res = await fetch('/api/go-engine', {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
                   body: JSON.stringify({ boardSize, difficulty, engine, moves: moveHistoryForEngine }),
                 });
                 const data = await res.json();
@@ -1272,7 +1281,7 @@ export default function GoGamePage() {
         <div className="flex items-center justify-center gap-2 mt-2 flex-wrap">
           {/* 用户信息 */}
           <Badge variant="outline" className="text-xs gap-1">
-            <User className="w-3 h-3" /> {nickname || '棋手'}
+            <User className="w-3 h-3" /> {user?.nickname || '棋手'}
           </Badge>
 
           {/* 棋盘尺寸 */}
@@ -1305,12 +1314,18 @@ export default function GoGamePage() {
               const avail = availableEngines[id];
               const isLoading = enginesLoading && id !== 'local' && !avail;
               const isActive = engine === id && avail;
+              const cost = ENGINE_COSTS[id as keyof typeof ENGINE_COSTS] || 0;
+              const insufficientPoints = user && user.points < cost;
               return (
                 <button
                   key={id}
                   onClick={() => {
                     if (!avail || isLoading || isReplayMode) return;
                     if (id === engine) return;
+                    if (insufficientPoints) {
+                      toast.error('积分不足', { description: `${name}每步需要${cost}积分，您当前${user?.points ?? 0}积分` });
+                      return;
+                    }
                     // 如果棋局已开始（有落子历史），弹窗确认
                     if (history.length > 0 && !gameEnded) {
                       setRestartConfirmMsg(`切换引擎将重新开始一局棋，当前棋局不会保存。`);
@@ -1326,26 +1341,29 @@ export default function GoGamePage() {
                     }
                   }}
                   disabled={isReplayMode || !avail || isLoading}
-                  title={isReplayMode ? '复盘模式中不可切换引擎' : isLoading ? `${name}加载中...` : avail ? desc : `${name}不可用`}
+                  title={isReplayMode ? '复盘模式中不可切换引擎' : isLoading ? `${name}加载中...` : insufficientPoints ? `积分不足（需要${cost}，当前${user?.points ?? 0}）` : avail ? `${desc}（${cost}积分/步）` : `${name}不可用`}
                   className={`
                     h-7 px-2 text-xs rounded-md border transition-colors flex items-center gap-1
                     ${isActive
                       ? isReplayMode
                         ? 'bg-amber-100 text-amber-700 border-amber-300 cursor-not-allowed'
                         : 'bg-amber-700 text-white border-amber-700 hover:bg-amber-800'
-                      : isLoading
-                        ? 'bg-amber-50 border-amber-200 text-amber-500 cursor-wait'
-                        : avail
-                          ? isReplayMode
-                            ? 'bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed'
-                            : 'bg-white border-gray-200 hover:border-amber-400 text-gray-700'
-                          : 'bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed line-through'
+                      : insufficientPoints
+                        ? 'bg-red-50 border-red-200 text-red-300 cursor-not-allowed'
+                        : isLoading
+                          ? 'bg-amber-50 border-amber-200 text-amber-500 cursor-wait'
+                          : avail
+                            ? isReplayMode
+                              ? 'bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed'
+                              : 'bg-white border-gray-200 hover:border-amber-400 text-gray-700'
+                            : 'bg-gray-100 border-gray-200 text-gray-300 cursor-not-allowed line-through'
                     }
                   `}
                 >
                   {isLoading && <Spinner className="w-3 h-3" />}
                   {isReplayMode && isActive && <span>🔒</span>}
                   {name}
+                  {cost > 0 && <span className="text-[9px] opacity-70">{cost}分</span>}
                 </button>
               );
             })}
@@ -1417,6 +1435,41 @@ export default function GoGamePage() {
       <div className="max-w-7xl mx-auto px-3 pb-3 grid grid-cols-1 lg:grid-cols-12 gap-3 lg:h-[calc(100vh-120px)]">
         {/* 左侧面板 */}
         <div className="lg:col-span-3 space-y-3 lg:overflow-y-auto lg:pr-1">
+          {/* 用户信息 */}
+          <Card className="bg-white/90 shadow-lg">
+            <CardContent className="py-2 px-3">
+              {user ? (
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center text-amber-700 font-bold text-sm flex-shrink-0">
+                      {user.nickname.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium truncate">{user.nickname}</div>
+                      <div className="text-xs text-gray-500 flex items-center gap-1">
+                        <span className="text-amber-600">💎 {user.points}</span>
+                        <span className="text-gray-300">|</span>
+                        <span>{user.totalGames}局</span>
+                        <span className="text-gray-300">|</span>
+                        <span>胜{user.wins}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <Button variant="ghost" size="sm" onClick={logout} className="text-gray-400 hover:text-gray-600 h-7 px-2 flex-shrink-0">
+                    退出
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">登录后可保存棋局和使用AI引擎</span>
+                  <Button size="sm" onClick={() => setShowAuthDialog(true)} className="h-7 px-3 text-xs bg-amber-500 hover:bg-amber-600">
+                    登录
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {/* 比分 */}
           <Card className="bg-white/90 shadow-lg">
             <CardContent className="py-3">
@@ -1482,7 +1535,7 @@ export default function GoGamePage() {
                     <DialogTitle>保存棋局</DialogTitle>
                   </DialogHeader>
                   <div className="space-y-3">
-                    <Input value={nickname} onChange={e => setNickname(e.target.value)} placeholder="你的昵称" maxLength={20} />
+                    <div className="text-sm text-muted-foreground">棋手：{user?.nickname || '未登录'}</div>
                     <Input value={saveTitle} onChange={e => setSaveTitle(e.target.value)} placeholder="棋局名称（可选）" />
                     {saveMessage && (
                       <p className={`text-sm ${saveMessage.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>{saveMessage}</p>
@@ -1982,6 +2035,73 @@ export default function GoGamePage() {
           {difficultyToast}
         </div>
       )}
+
+      {/* 登录/注册弹窗 */}
+      <Dialog open={showAuthDialog} onOpenChange={(open) => { setShowAuthDialog(open); if (!open) setAuthError(''); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{authTab === 'login' ? '登录' : '注册'}</DialogTitle>
+            <DialogDescription>
+              {authTab === 'login' ? '登录后即可与AI对弈' : '注册账号，获取100初始积分'}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={async (e: React.FormEvent<HTMLFormElement>) => {
+              e.preventDefault();
+              const fd = new FormData(e.currentTarget);
+              const n = fd.get('nickname') as string;
+              const p = fd.get('password') as string;
+              if (authTab === 'register') {
+                const cp = fd.get('confirmPassword') as string;
+                if (p !== cp) { setAuthError('两次密码不一致'); return; }
+              }
+              setAuthSubmitting(true);
+              setAuthError('');
+              try {
+                const result = authTab === 'login'
+                  ? await login(n, p)
+                  : await register(n, p);
+                if (!result.success) { setAuthError(result.error || '操作失败'); return; }
+                setShowAuthDialog(false);
+              } catch { setAuthError('网络错误'); }
+              finally { setAuthSubmitting(false); }
+            }}
+            className="space-y-3"
+          >
+            <div>
+              <label className="text-sm font-medium text-gray-700">昵称</label>
+              <input name="nickname" required minLength={2} maxLength={20}
+                className="w-full mt-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+                placeholder="2-20个字符" />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-gray-700">密码</label>
+              <input name="password" type="password" required minLength={4} maxLength={50}
+                className="w-full mt-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+                placeholder="4-50个字符" />
+            </div>
+            {authTab === 'register' && (
+              <div>
+                <label className="text-sm font-medium text-gray-700">确认密码</label>
+                <input name="confirmPassword" type="password" required minLength={4}
+                  className="w-full mt-1 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  placeholder="再次输入密码" />
+              </div>
+            )}
+            {authError && <p className="text-xs text-red-500">{authError}</p>}
+            <Button type="submit" disabled={authSubmitting} className="w-full bg-amber-600 hover:bg-amber-700 text-white">
+              {authSubmitting ? '处理中...' : authTab === 'login' ? '登录' : '注册'}
+            </Button>
+            <p className="text-xs text-center text-gray-500">
+              {authTab === 'login' ? (
+                <>没有账号？<button type="button" className="text-amber-600 hover:underline" onClick={() => { setAuthTab('register'); setAuthError(''); }}>注册</button></>
+              ) : (
+                <>已有账号？<button type="button" className="text-amber-600 hover:underline" onClick={() => { setAuthTab('login'); setAuthError(''); }}>登录</button></>
+              )}
+            </p>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

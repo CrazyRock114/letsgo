@@ -26,17 +26,41 @@ if [ -n "$COZE_SUPABASE_DB_URL" ]; then
   # 运行迁移 SQL
   echo "[migrate] 执行迁移 SQL..."
   MIGRATE_OUTPUT=$(psql "$COZE_SUPABASE_DB_URL" -v ON_ERROR_STOP=0 <<'SQL' 2>&1 || true
-    -- 创建 letsgo_players 表（如不存在）
+    -- 创建 letsgo_players 表（如不存在，旧兼容）
     CREATE TABLE IF NOT EXISTS letsgo_players (
       id SERIAL PRIMARY KEY,
       nickname VARCHAR(50) NOT NULL,
       created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
     );
 
+    -- 创建 letsgo_users 表（用户系统）
+    CREATE TABLE IF NOT EXISTS letsgo_users (
+      id SERIAL PRIMARY KEY,
+      nickname VARCHAR(50) NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      points INTEGER NOT NULL DEFAULT 100,
+      total_games INTEGER NOT NULL DEFAULT 0,
+      wins INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    -- 创建 letsgo_point_transactions 表（积分流水）
+    CREATE TABLE IF NOT EXISTS letsgo_point_transactions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES letsgo_users(id) ON DELETE CASCADE,
+      amount INTEGER NOT NULL,
+      type VARCHAR(50) NOT NULL,
+      description TEXT,
+      game_id INTEGER,
+      created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+    );
+
     -- 创建 letsgo_games 表（如不存在）
     CREATE TABLE IF NOT EXISTS letsgo_games (
       id SERIAL PRIMARY KEY,
-      player_id INTEGER NOT NULL REFERENCES letsgo_players(id),
+      player_id INTEGER REFERENCES letsgo_players(id),
+      user_id INTEGER REFERENCES letsgo_users(id),
       board_size INTEGER NOT NULL DEFAULT 9,
       difficulty VARCHAR(20) NOT NULL DEFAULT 'easy',
       engine TEXT DEFAULT 'local',
@@ -59,6 +83,22 @@ if [ -n "$COZE_SUPABASE_DB_URL" ]; then
       END IF;
     END $$;
 
+    -- 添加 user_id 列（如不存在）
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'letsgo_games' AND column_name = 'user_id') THEN
+        ALTER TABLE letsgo_games ADD COLUMN user_id INTEGER REFERENCES letsgo_users(id);
+      END IF;
+    END $$;
+
+    -- player_id 改为可空（新用户系统不再依赖 player_id）
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'letsgo_games' AND column_name = 'player_id' AND is_nullable = 'NO') THEN
+        ALTER TABLE letsgo_games ALTER COLUMN player_id DROP NOT NULL;
+      END IF;
+    END $$;
+
     -- 迁移旧表数据（如果存在旧 players/games 表且有数据）
     INSERT INTO letsgo_players (id, nickname, created_at)
     SELECT id, nickname, created_at FROM players
@@ -69,6 +109,11 @@ if [ -n "$COZE_SUPABASE_DB_URL" ]; then
     SELECT id, player_id, board_size, difficulty, 'local', moves, commentaries, final_board, black_score, white_score, status, title, created_at, updated_at FROM games
     WHERE NOT EXISTS (SELECT 1 FROM letsgo_games WHERE letsgo_games.id = games.id)
     LIMIT 100;
+
+    -- 为积分流水创建索引
+    CREATE INDEX IF NOT EXISTS idx_point_transactions_user_id ON letsgo_point_transactions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_point_transactions_type ON letsgo_point_transactions(type);
+    CREATE INDEX IF NOT EXISTS idx_games_user_id ON letsgo_games(user_id);
 SQL
   )
 
