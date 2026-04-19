@@ -159,6 +159,7 @@ export default function GoGamePage() {
   const [consecutivePasses, setConsecutivePasses] = useState(0);
   const gameEpochRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const commentaryAbortRef = useRef<AbortController | null>(null);
   const [gameEnded, setGameEnded] = useState(false);
   const [gameResult, setGameResult] = useState<{ winner: string; detail: string } | null>(null);
   const [showGameEndDialog, setShowGameEndDialog] = useState(false);
@@ -314,6 +315,11 @@ export default function GoGamePage() {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    // 中止正在进行的解说/教学/聊天请求
+    if (commentaryAbortRef.current) {
+      commentaryAbortRef.current.abort();
+      commentaryAbortRef.current = null;
+    }
     setIsAIThinking(false);
     setBoardSize(newSize);
     setBoard(createEmptyBoard(newSize));
@@ -327,6 +333,10 @@ export default function GoGamePage() {
     setReplayIndex(0);
     setReplayMoves([]);
     setTeachingMessage('');
+    setIsCommentaryStreaming(false);
+    setStreamingText('');
+    setIsTeachStreaming(false);
+    setIsChatStreaming(false);
     setConsecutivePasses(0);
     setGameEnded(false);
     setGameResult(null);
@@ -352,12 +362,20 @@ export default function GoGamePage() {
       setStreamingText('');
     }
 
+    // 中止之前的解说请求，创建新的AbortController
+    if (commentaryAbortRef.current) {
+      commentaryAbortRef.current.abort();
+    }
+    const thisAbortController = new AbortController();
+    commentaryAbortRef.current = thisAbortController;
+
     // 兜底解说（API失败时使用）
     const fallbackCommentary = `${moveColor === 'black' ? '黑方' : '白方'}下在${positionToCoordinate(movePos.row, movePos.col, boardSize)}`;
 
     try {
       const response = await fetch('/api/go-ai', {
         method: 'POST',
+        signal: thisAbortController.signal,
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({
           type: 'commentary',
@@ -408,6 +426,7 @@ export default function GoGamePage() {
         }
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       console.warn('[commentary] fetch error:', err);
       // epoch匹配时才保存兜底解说
       if (gameEpochRef.current === epochAtStart) {
@@ -644,6 +663,11 @@ export default function GoGamePage() {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    // 中止正在进行的解说/教学/聊天请求
+    if (commentaryAbortRef.current) {
+      commentaryAbortRef.current.abort();
+      commentaryAbortRef.current = null;
+    }
     setIsAIThinking(false);
     const emptyBoard = createEmptyBoard(boardSize);
     setBoard(emptyBoard);
@@ -871,6 +895,7 @@ export default function GoGamePage() {
       }
       const response = await fetch('/api/go-ai', {
         method: 'POST',
+        signal: commentaryAbortRef.current?.signal,
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify(teachingBody),
       });
@@ -880,7 +905,8 @@ export default function GoGamePage() {
         console.warn('[teach] API returned', response.status);
         setTeachingMessage('小围棋暂时无法思考，请稍后再试。');
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       setTeachingMessage('小围棋正在思考中...');
     } finally {
       setIsTeachStreaming(false);
@@ -897,6 +923,7 @@ export default function GoGamePage() {
     try {
       const response = await fetch('/api/go-ai', {
         method: 'POST',
+        signal: commentaryAbortRef.current?.signal,
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({
           type: 'chat',
@@ -919,7 +946,8 @@ export default function GoGamePage() {
         console.warn('[chat] API returned', response.status);
         setMessages(prev => [...prev, { role: 'assistant', content: '抱歉，小围棋暂时无法回答，请稍后再试。' }]);
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       setMessages(prev => [...prev, { role: 'assistant', content: '抱歉，遇到问题了，请再试。' }]);
     } finally {
       setIsChatStreaming(false);
@@ -1090,6 +1118,12 @@ export default function GoGamePage() {
     setConsecutivePasses(0);
     setShowHint(null);
     setCurrentPlayer(nextColor);
+
+    // 清理流式状态
+    setIsCommentaryStreaming(false);
+    setStreamingText('');
+    setIsTeachStreaming(false);
+    setIsChatStreaming(false);
 
     // 退出复盘模式
     setIsReplayMode(false);
