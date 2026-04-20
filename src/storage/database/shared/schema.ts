@@ -1,85 +1,72 @@
-import { sql } from "drizzle-orm";
-import { pgTable, serial, varchar, timestamp, integer, jsonb, text, index } from "drizzle-orm/pg-core";
+import { pgTable, serial, timestamp, index, foreignKey, pgPolicy, integer, varchar, jsonb, text, unique } from "drizzle-orm/pg-core"
+import { sql } from "drizzle-orm"
 
-// 系统表 - 禁止删除
+
+
 export const healthCheck = pgTable("health_check", {
-  id: serial().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+	id: serial().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
 });
 
-// 用户表 - 含认证和积分
-export const letsgoUsers = pgTable(
-  "letsgo_users",
-  {
-    id: serial().primaryKey(),
-    nickname: varchar("nickname", { length: 50 }).notNull().unique(),
-    password_hash: varchar("password_hash", { length: 255 }).notNull(),
-    points: integer("points").notNull().default(100),
-    total_games: integer("total_games").notNull().default(0),
-    wins: integer("wins").notNull().default(0),
-    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow(),
-  },
-  (table) => [
-    index("letsgo_users_nickname_idx").on(table.nickname),
-  ]
-);
+export const letsgoGames = pgTable("letsgo_games", {
+	id: serial().primaryKey().notNull(),
+	boardSize: integer("board_size").default(9).notNull(),
+	difficulty: varchar({ length: 20 }).default('easy').notNull(),
+	moves: jsonb().default([]).notNull(),
+	commentaries: jsonb().default([]).notNull(),
+	finalBoard: jsonb("final_board"),
+	blackScore: integer("black_score").default(0),
+	whiteScore: integer("white_score").default(0),
+	status: varchar({ length: 20 }).default('playing').notNull(),
+	title: varchar({ length: 200 }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+	engine: text().default('local'),
+	userId: integer("user_id"),
+}, (table) => [
+	index("idx_games_user_id").using("btree", table.userId.asc().nullsLast().op("int4_ops")),
+	index("letsgo_games_created_at_idx").using("btree", table.createdAt.asc().nullsLast().op("timestamptz_ops")),
+	index("letsgo_games_status_idx").using("btree", table.status.asc().nullsLast().op("text_ops")),
+	index("letsgo_games_user_id_idx").using("btree", table.userId.asc().nullsLast().op("int4_ops")),
+	foreignKey({
+				columns: [table.userId],
+				foreignColumns: [letsgoUsers.id],
+				name: "letsgo_games_user_id_fkey"
+			}),
+	pgPolicy("service_role_access", { as: "permissive", for: "all", to: ["public"], using: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)`, withCheck: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)` }),
+]);
 
-// 积分流水表
-export const letsgoPointTransactions = pgTable(
-  "letsgo_point_transactions",
-  {
-    id: serial().primaryKey(),
-    user_id: integer("user_id").notNull().references(() => letsgoUsers.id),
-    amount: integer("amount").notNull(), // 正数=获得, 负数=消耗
-    type: varchar("type", { length: 20 }).notNull(), // 'earn', 'spend'
-    description: text("description"),
-    game_id: integer("game_id"),
-    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    index("letsgo_point_transactions_user_id_idx").on(table.user_id),
-    index("letsgo_point_transactions_created_at_idx").on(table.created_at),
-  ]
-);
+export const letsgoUsers = pgTable("letsgo_users", {
+	id: serial().primaryKey().notNull(),
+	nickname: varchar({ length: 50 }).notNull(),
+	passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+	points: integer().default(1000).notNull(),
+	totalGames: integer("total_games").default(0).notNull(),
+	wins: integer().default(0).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+}, (table) => [
+	index("letsgo_users_nickname_idx").using("btree", table.nickname.asc().nullsLast().op("text_ops")),
+	unique("letsgo_users_nickname_key").on(table.nickname),
+	pgPolicy("service_role_access", { as: "permissive", for: "all", to: ["public"], using: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)`, withCheck: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)` }),
+]);
 
-// 旧玩家表（向后兼容）
-export const letsgoPlayers = pgTable(
-  "letsgo_players",
-  {
-    id: serial().primaryKey(),
-    nickname: varchar("nickname", { length: 50 }).notNull(),
-    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    index("letsgo_players_nickname_idx").on(table.nickname),
-  ]
-);
-
-// 棋局表 - 保存完整棋局信息
-export const letsgoGames = pgTable(
-  "letsgo_games",
-  {
-    id: serial().primaryKey(),
-    user_id: integer("user_id").references(() => letsgoUsers.id),
-    player_id: integer("player_id"), // 旧字段，向后兼容
-    board_size: integer("board_size").notNull().default(9),
-    difficulty: varchar("difficulty", { length: 20 }).notNull().default("easy"),
-    engine: text("engine").default("local"),
-    moves: jsonb("moves").notNull().default(sql`'[]'::jsonb`),
-    commentaries: jsonb("commentaries").notNull().default(sql`'[]'::jsonb`),
-    final_board: jsonb("final_board"),
-    black_score: integer("black_score").default(0),
-    white_score: integer("white_score").default(0),
-    status: varchar("status", { length: 20 }).notNull().default("playing"),
-    title: varchar("title", { length: 200 }),
-    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow(),
-  },
-  (table) => [
-    index("letsgo_games_user_id_idx").on(table.user_id),
-    index("letsgo_games_player_id_idx").on(table.player_id),
-    index("letsgo_games_status_idx").on(table.status),
-    index("letsgo_games_created_at_idx").on(table.created_at),
-  ]
-);
+export const letsgoPointTransactions = pgTable("letsgo_point_transactions", {
+	id: serial().primaryKey().notNull(),
+	userId: integer("user_id").notNull(),
+	amount: integer().notNull(),
+	type: varchar({ length: 20 }).notNull(),
+	description: text(),
+	gameId: integer("game_id"),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	index("idx_point_transactions_type").using("btree", table.type.asc().nullsLast().op("text_ops")),
+	index("idx_point_transactions_user_id").using("btree", table.userId.asc().nullsLast().op("int4_ops")),
+	index("letsgo_point_transactions_user_id_idx").using("btree", table.userId.asc().nullsLast().op("int4_ops")),
+	foreignKey({
+				columns: [table.userId],
+				foreignColumns: [letsgoUsers.id],
+				name: "letsgo_point_transactions_user_id_fkey"
+			}),
+	pgPolicy("service_role_access", { as: "permissive", for: "all", to: ["public"], using: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)`, withCheck: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)` }),
+]);
