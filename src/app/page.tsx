@@ -154,6 +154,16 @@ export default function GoGamePage() {
   const [history, setHistory] = useState<MoveEntry[]>([]);
   const [lastMove, setLastMove] = useState<Position | null>(null);
   const [showHint, setShowHint] = useState<Position | null>(null);
+
+  // 每次落子历史变化时，强制同步lastMove标记到最新一手（防止残留）
+  useEffect(() => {
+    if (history.length > 0) {
+      const last = history[history.length - 1];
+      setLastMove({ row: last.position.row, col: last.position.col });
+    } else {
+      setLastMove(null);
+    }
+  }, [history]);
   const [score, setScore] = useState({ black: 0, white: 0 });
   const [isAIThinking, setIsAIThinking] = useState(false);
   const [savedGameId, setSavedGameId] = useState<number | null>(null);
@@ -230,6 +240,7 @@ export default function GoGamePage() {
   const [teachingMessage, setTeachingMessage] = useState('');
   const [isTeachStreaming, setIsTeachStreaming] = useState(false);
   const [teachMoveIndex, setTeachMoveIndex] = useState<number | null>(null); // 教学针对的手数
+  const teachAbortRef = useRef<AbortController | null>(null); // 教学请求的中断控制器
 
   // ===== 聊天 =====
   const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
@@ -327,6 +338,10 @@ export default function GoGamePage() {
       commentaryAbortRef.current.abort();
     }
     commentaryAbortRef.current = new AbortController();
+    if (teachAbortRef.current) {
+      teachAbortRef.current.abort();
+      teachAbortRef.current = null;
+    }
     setIsAIThinking(false);
     setIsCommentaryStreaming(false);
     setStreamingText('');
@@ -478,6 +493,15 @@ export default function GoGamePage() {
       return;
     }
     isProcessingMoveRef.current = true;
+
+    // 用户落子时，截断正在进行的提示与教学（分析+输出+点位）
+    if (teachAbortRef.current) {
+      teachAbortRef.current.abort();
+      teachAbortRef.current = null;
+    }
+    setIsTeachStreaming(false);
+    setTeachingMessage('');
+    setShowHint(null);
 
     const { newBoard, captured } = playMove(board, row, col, currentPlayer);
     if (!newBoard) {
@@ -945,6 +969,12 @@ export default function GoGamePage() {
     setIsTeachStreaming(true);
     setTeachingMessage('');
     setTeachMoveIndex(history.length); // 记录教学针对的手数
+
+    // 创建本轮教学专用的AbortController
+    const thisAbortController = new AbortController();
+    teachAbortRef.current = thisAbortController;
+    const teachEpoch = history.length; // 记录当前手数，用于判断教学是否已过时
+
     try {
       // 第一步：请求KataGo分析，用分析结果的bestMoves作为提示点位
       let analysisData: typeof latestAnalysisRef.current = latestAnalysisRef.current;
@@ -969,6 +999,8 @@ export default function GoGamePage() {
             signal: analyzeController.signal,
           });
           clearTimeout(analyzeTimeout);
+          // 检查是否已被用户落子中断
+          if (thisAbortController.signal.aborted) return;
           if (analyzeRes.ok) {
             const analyzeData = await analyzeRes.json();
             if (analyzeData.analysis) {
@@ -980,6 +1012,9 @@ export default function GoGamePage() {
           // 分析失败/超时不影响教学，无分析数据也能给出专业解说
         }
       }
+
+      // 再次检查是否已被用户落子中断
+      if (thisAbortController.signal.aborted) return;
 
       // 第二步：确定提示点位 — 优先使用KataGo分析的bestMoves，否则本地评分
       if (analysisData?.bestMoves && analysisData.bestMoves.length > 0) {
@@ -1000,9 +1035,13 @@ export default function GoGamePage() {
       if (!hintPosition) {
         hintPosition = findBestHint(board, currentPlayer);
       }
-      if (hintPosition) {
+      // 只有未被中断时才设置提示点位
+      if (hintPosition && !thisAbortController.signal.aborted) {
         setShowHint(hintPosition);
       }
+
+      // 再次检查是否已被用户落子中断
+      if (thisAbortController.signal.aborted) return;
 
       // 第三步：用分析数据+提示点位生成教学内容
       const teachingBody: Record<string, unknown> = {
@@ -1017,20 +1056,33 @@ export default function GoGamePage() {
       }
       const response = await fetch('/api/go-ai', {
         method: 'POST',
-        signal: commentaryAbortRef.current?.signal,
+        signal: thisAbortController.signal,
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify(teachingBody),
       });
       if (response.ok) {
-        await readStream(response, text => setTeachingMessage(text));
+        await readStream(response, text => {
+          // 只有未被中断时才更新教学内容
+          if (!thisAbortController.signal.aborted) {
+            setTeachingMessage(text);
+          }
+        });
       } else {
         console.warn('[teach] API returned', response.status);
-        setTeachingMessage('小围棋暂时无法思考，请稍后再试。');
+        if (!thisAbortController.signal.aborted) {
+          setTeachingMessage('小围棋暂时无法思考，请稍后再试。');
+        }
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
-      setTeachingMessage('小围棋正在思考中...');
+      if (!thisAbortController.signal.aborted) {
+        setTeachingMessage('小围棋正在思考中...');
+      }
     } finally {
+      // 只有当前AbortController仍是最新的才重置状态
+      if (teachAbortRef.current === thisAbortController) {
+        teachAbortRef.current = null;
+      }
       setIsTeachStreaming(false);
     }
   }, [board, currentPlayer, lastMove, isTeachStreaming, boardSize, history, token]);
