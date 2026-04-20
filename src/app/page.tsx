@@ -108,7 +108,7 @@ interface MoveEntry {
 // 保存的棋局
 interface SavedGame {
   id?: number;
-  player_id?: number;
+  user_id?: number;
   board_size: number;
   difficulty: string;
   engine?: string;
@@ -1041,6 +1041,7 @@ export default function GoGamePage() {
     const userMsg = inputMessage.trim();
     setInputMessage('');
     setMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+    setMessages(prev => [...prev, { role: 'assistant', content: '🔍 正在帮你分析问题...' }]);
     setIsChatStreaming(true);
     try {
       // 先获取KataGo分析数据（有缓存则直接用）
@@ -1079,7 +1080,6 @@ export default function GoGamePage() {
         }),
       });
       if (response.ok) {
-        setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
         await readStream(response, text => {
           setMessages(prev => {
             const u = [...prev];

@@ -510,9 +510,11 @@ export async function POST(request: NextRequest) {
         { role: 'user', content: `${boardDesc}\n\n${analysisDesc}\n\n用1句话简短解说这步棋，严格依据"局面事实"和"引擎分析"数据。不要提气数，除非是打吃或提子。` }
       ];
     } else if (type === 'teach') {
-      let teachPrompt = `${boardDesc}\n\n${analysisDesc}\n\n请给这个孩子一些围棋指导。`;
+      let teachPrompt = '';
       if (hintPosition) {
-        teachPrompt = `${boardDesc}\n\n${analysisDesc}\n\n系统建议的落子位置是${hintPosition}。请结合引擎分析数据，解释为什么这个位置好（1-3句话），用简单有趣的语言告诉孩子。如果推荐落点中有更好的位置也请提及。`;
+        teachPrompt = `${boardDesc}\n\n${analysisDesc}\n\n直接解释为什么${hintPosition}是好位置（2-3句话），结合分析数据中的胜率和目数。不要开头寒暄，不要夸奖，直接讲棋理。`;
+      } else {
+        teachPrompt = `${boardDesc}\n\n${analysisDesc}\n\n直接给出当前局面最重要的围棋建议（2-3句话），结合分析数据。不要开头寒暄，不要夸奖，直接讲棋理。`;
       }
       messages = [
         { role: 'system', content: GO_TUTOR_SYSTEM },
@@ -520,7 +522,7 @@ export async function POST(request: NextRequest) {
       ];
     } else if (type === 'chat') {
       messages = [
-        { role: 'system', content: GO_TUTOR_SYSTEM + '\n\n你要结合当前棋局和引擎分析数据来回答问题，给出专业的、有针对性的回答。' },
+        { role: 'system', content: GO_TUTOR_SYSTEM + '\n\n严格基于"局面事实"和"引擎分析"数据回答问题。不要猜测，不要编造棋盘上没有的信息。如果分析数据不可用，就只根据棋盘上能看到的事实回答，并说明"暂时没有引擎分析数据"。' },
         { role: 'user', content: `${boardDesc}\n\n${analysisDesc}\n\n孩子的问题：${question}` }
       ];
     } else if (type === 'ai-move') {
