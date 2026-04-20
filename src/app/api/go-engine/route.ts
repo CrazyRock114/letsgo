@@ -642,14 +642,14 @@ async function getKataGoAnalysis(
       }
       return result;
     } else {
-      // 模式2: kata-analyze（设置analysisMaxVisits后执行搜索分析）
-      // 关键：必须设置analysisMaxVisits，否则KataGo默认值极大导致永远跑不完
-      await persistentKataGo.sendCommand(`kata-set-param analysisMaxVisits ${analysisVisits}`, 5000);
-      console.log(`[kata-analyze] 设置 analysisMaxVisits=${analysisVisits}，开始分析`);
+      // 模式2: kata-analyze（直接在命令中指定maxVisits）
+      // kata-analyze格式: kata-analyze <interval> <maxVisits>
+      // 例如: kata-analyze 10 50 = 每10次访问输出一次info，最多搜索50次
+      console.log(`[kata-analyze] 开始分析, maxVisits=${analysisVisits}`);
 
       // 超时：根据visits数量动态调整，上限120秒
       const analyzeTimeout = Math.min(120000, analysisVisits * 1500 + 10000);
-      const analyzeResponse = await persistentKataGo.sendCommand('kata-analyze 10', analyzeTimeout);
+      const analyzeResponse = await persistentKataGo.sendCommand(`kata-analyze 10 ${analysisVisits}`, analyzeTimeout);
       console.log(`[kata-analyze] 分析完成, 响应长度=${analyzeResponse.length}, 前300字=${analyzeResponse.substring(0, 300)}`);
 
       const result = parseKataAnalyze(analyzeResponse, boardSize);
