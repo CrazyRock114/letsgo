@@ -62,15 +62,18 @@ function parseKataAnalyze(output: string): KataGoAnalysis | null {
   }
 }
 
-// 防止 EPIPE 等管道错误导致进程崩溃
-process.on('uncaughtException', (err: unknown) => {
-  if (typeof err === 'object' && err !== null && 'code' in err && (err as { code: string }).code === 'EPIPE') {
-    // KataGo 进程退出后 stdin 写入会触发 EPIPE，忽略即可
-    console.warn('[go-engine] Ignored EPIPE error (KataGo process likely exited)');
-    return;
-  }
-  throw err;
-});
+// 防止 EPIPE 等管道错误导致进程崩溃（仅注册一次）
+if (!process.env._EPIPE_HANDLER_SET) {
+  process.on('uncaughtException', (err: unknown) => {
+    if (typeof err === 'object' && err !== null && 'code' in err && (err as { code: string }).code === 'EPIPE') {
+      // KataGo 进程退出后 stdin 写入会触发 EPIPE，忽略即可
+      console.warn('[go-engine] Ignored EPIPE error (KataGo process likely exited)');
+      return;
+    }
+    throw err;
+  });
+  process.env._EPIPE_HANDLER_SET = '1';
+}
 
 // 引擎路径
 const KATAGO_PATH = "/usr/local/katago/katago";
