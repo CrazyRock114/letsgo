@@ -461,28 +461,36 @@ class PersistentKataGo {
     this.commandQueue = [];
   }
 
-  /** 中断正在进行的KataGo分析（杀掉进程重启，下棋优先） */
+  /** 中断正在进行的KataGo分析（发送GTP stop命令，不杀进程） */
   async stopAnalysis(): Promise<void> {
     if (!this.proc || this.proc.killed) return;
-    console.log(`[KataGo] stopAnalysis - killing process to interrupt analysis for genmove priority`);
+    console.log(`[KataGo] stopAnalysis - sending GTP stop to interrupt analysis`);
     try {
-      // 拒绝所有等待中的命令
+      // 拒绝所有等待中的命令（分析命令的回调会被reject）
       for (const item of this.commandQueue) {
         clearTimeout(item.timeout);
         item.reject(new Error("KataGo analysis interrupted for genmove priority"));
       }
       this.commandQueue = [];
-      this.procEpoch++;  // 递增纪元，旧进程的onData会被忽略
       this.buffer = "";
-      // 杀掉进程（下次getProcess()会自动重启）
-      try { this.proc.kill('SIGKILL'); } catch { /* ignore */ }
-      this.proc = null;
+      
+      // 发送GTP stop命令（优雅中断kata-analyze，进程不重启）
+      // stop会让kata-analyze立即返回，进程回到空闲状态
+      this.proc.stdin?.write('stop\n');
+      
+      // 等待一小段时间让KataGo处理stop
+      await new Promise(r => setTimeout(r, 200));
     } catch (e) {
       console.log(`[KataGo] stopAnalysis error:`, e);
     }
   }
 
   // 完全关闭（进程退出时调用）
+  /** 清除buffer中可能残留的旧数据 */
+  clearBuffer(): void {
+    this.buffer = "";
+  }
+
   shutdown(): void {
     this.killProcess();
   }
@@ -503,7 +511,7 @@ async function getKataGoMove(
   moves: Array<{ row: number; col: number; color: string }>,
   difficulty: string,
   aiColor: 'black' | 'white' = 'white'
-): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string }> {
+): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string; engineError?: boolean }> {
   const komi = getKomi(boardSize);
   const maxVisits = getKataGoVisits(difficulty);
 
@@ -527,6 +535,9 @@ async function getKataGoMove(
   // 请求AI落子
   gtpCommands.push(`genmove ${aiColor === 'black' ? 'B' : 'W'}`);
 
+  // 清除可能残留的旧buffer数据（stop命令后可能有残余输出）
+  persistentKataGo.clearBuffer();
+  
   // 发送命令，单条超时30秒（总超时由Next.js request timeout控制）
   const responses = await persistentKataGo.sendCommands(gtpCommands, 30000);
 
@@ -536,7 +547,7 @@ async function getKataGoMove(
 
   if (!moveMatch) {
     console.warn(`[KataGo] Unexpected genmove response: "${lastResponse}"`);
-    return { move: null, pass: true, engine: "katago" };
+    return { move: null, pass: false, engineError: true, engine: "katago" };
   }
 
   const moveStr = moveMatch[1].toUpperCase();
@@ -619,7 +630,7 @@ async function getGnuGoMove(
   moves: Array<{ row: number; col: number; color: string }>,
   difficulty: string,
   aiColor: 'black' | 'white' = 'white'
-): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string }> {
+): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engineError?: boolean; engine: string }> {
   const komi = getKomi(boardSize);
   const gnugoLevel = getGnuGoLevel(difficulty);
 
@@ -665,7 +676,7 @@ async function getGnuGoMove(
     if (!moveMatch) {
       proc.stdin?.write("quit\n");
       proc.kill();
-      return { move: null, pass: true, engine: "gnugo" };
+      return { move: null, pass: false, engineError: true, engine: "gnugo" };
     }
 
     const moveStr = moveMatch[1].toUpperCase();

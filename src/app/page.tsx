@@ -568,7 +568,8 @@ export default function GoGamePage() {
               if (data.move && isValidMove(newBoard, data.move.row, data.move.col, aiColor)) {
                 aiMove = data.move;
                 usedEngine = true;
-              } else if (data.pass) {
+              } else if (data.pass && !data.engineError) {
+                // 引擎主动停手（非错误），计入连续停手
                 const newPasses = consecutivePasses + 1;
                 setConsecutivePasses(newPasses);
                 if (newPasses >= 2) {
@@ -582,8 +583,8 @@ export default function GoGamePage() {
                 isProcessingMoveRef.current = false;
                 return;
               } else {
-                // 引擎返回了但 move 无效或为 null
-                console.warn(`[engine] ${engine} returned invalid/null move, falling back to local AI. Data:`, data);
+                // 引擎错误(engineError)或move无效/null，回退到本地AI
+                console.warn(`[engine] ${engine} returned invalid/null move (engineError=${data.engineError}), falling back to local AI. Data:`, data);
               }
             } else if (res.status === 403) {
               const data = await res.json().catch(() => ({}));
@@ -938,30 +939,25 @@ export default function GoGamePage() {
     }
   }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, engine, history, requestCommentary, boardSize, playerColor, token]);
 
-  // ===== 提示 =====
-  const showHintFn = useCallback(() => {
-    if (isReplayMode || gameEnded) return null;
-    const hint = findBestHint(board, currentPlayer);
-    if (hint) setShowHint(hint);
-    return hint;
-  }, [board, currentPlayer, isReplayMode, gameEnded]);
-
-  // ===== AI教学 =====
-  const getTeaching = useCallback(async (hintPosition?: Position) => {
+  // ===== 提示与教学（一体化流程：先KataGo分析→提示点位+教学内容） =====
+  const getTeaching = useCallback(async () => {
     if (isTeachStreaming) return;
     setIsTeachStreaming(true);
     setTeachingMessage('');
     setTeachMoveIndex(history.length); // 记录教学针对的手数
     try {
-      // 按需请求KataGo分析（仅在用户点击"提示与教学"时），10秒超时
-      let analysisData = latestAnalysisRef.current;
+      // 第一步：请求KataGo分析，用分析结果的bestMoves作为提示点位
+      let analysisData: typeof latestAnalysisRef.current = latestAnalysisRef.current;
+      let hintPosition: Position | null = null;
+
       if (token && boardSize > 0 && history.length > 0) {
         try {
+          setTeachingMessage('正在请求KataGo分析...');
           const movesForAnalysis = history.map(h => ({
             row: h.position.row, col: h.position.col, color: h.color
           }));
           const analyzeController = new AbortController();
-          const analyzeTimeout = setTimeout(() => analyzeController.abort(), 10000);
+          const analyzeTimeout = setTimeout(() => analyzeController.abort(), 15000);
           const analyzeRes = await fetch('/api/go-engine', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -985,6 +981,30 @@ export default function GoGamePage() {
         }
       }
 
+      // 第二步：确定提示点位 — 优先使用KataGo分析的bestMoves，否则本地评分
+      if (analysisData?.bestMoves && analysisData.bestMoves.length > 0) {
+        const bestMove = analysisData.bestMoves[0].move;
+        // KataGo坐标格式: D4, Q16等，转换为row/col
+        const colChar = bestMove.charAt(0).toUpperCase();
+        const colNum = colChar.charCodeAt(0) - 'A'.charCodeAt(0) + (colChar >= 'I' ? 0 : 0);
+        const rowNum = parseInt(bestMove.substring(1));
+        // KataGo坐标: 列A-T(跳过I), 行从1开始(1=底行)
+        // 跳过I: A=0, B=1, ..., H=7, J=8, K=9, ...
+        let actualCol = colChar.charCodeAt(0) - 'A'.charCodeAt(0);
+        if (actualCol >= 8) actualCol -= 1; // 跳过I
+        const actualRow = boardSize - rowNum;
+        if (actualRow >= 0 && actualRow < boardSize && actualCol >= 0 && actualCol < boardSize) {
+          hintPosition = { row: actualRow, col: actualCol };
+        }
+      }
+      if (!hintPosition) {
+        hintPosition = findBestHint(board, currentPlayer);
+      }
+      if (hintPosition) {
+        setShowHint(hintPosition);
+      }
+
+      // 第三步：用分析数据+提示点位生成教学内容
       const teachingBody: Record<string, unknown> = {
         type: 'teach',
         board,
@@ -992,7 +1012,6 @@ export default function GoGamePage() {
         lastMove: lastMove ? { row: lastMove.row, col: lastMove.col } : undefined,
         analysis: analysisData,
       };
-      // 如果有提示位置，告诉AI要解释这个位置
       if (hintPosition) {
         teachingBody.hintPosition = positionToCoordinate(hintPosition.row, hintPosition.col, boardSize);
       }
@@ -1024,6 +1043,28 @@ export default function GoGamePage() {
     setMessages(prev => [...prev, { role: 'user', content: userMsg }]);
     setIsChatStreaming(true);
     try {
+      // 先获取KataGo分析数据（有缓存则直接用）
+      let chatAnalysis = latestAnalysisRef.current;
+      if (!chatAnalysis && engine !== 'local' && board && history.length > 0) {
+        try {
+          const cacheMoves = history.map(m => ({ row: m.position.row, col: m.position.col, color: m.color }));
+          const analyzeRes = await fetch('/api/go-engine', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            body: JSON.stringify({
+              action: 'analyze', boardSize, moves: cacheMoves, aiColor: currentPlayer,
+            }),
+            signal: AbortSignal.timeout(15000),
+          });
+          if (analyzeRes.ok) {
+            const analyzeData = await analyzeRes.json();
+            if (analyzeData.analysis) {
+              chatAnalysis = analyzeData.analysis;
+              latestAnalysisRef.current = analyzeData.analysis;
+            }
+          }
+        } catch { /* 分析失败不影响聊天 */ }
+      }
       const response = await fetch('/api/go-ai', {
         method: 'POST',
         signal: commentaryAbortRef.current?.signal,
@@ -1034,6 +1075,7 @@ export default function GoGamePage() {
           currentPlayer,
           lastMove: lastMove ? { row: lastMove.row, col: lastMove.col } : undefined,
           question: userMsg,
+          analysis: chatAnalysis,
         }),
       });
       if (response.ok) {
@@ -1849,8 +1891,7 @@ export default function GoGamePage() {
             <CardContent className="py-3">
               <Button
                 onClick={() => {
-                  const hint = showHintFn();
-                  if (!isTeachStreaming) getTeaching(hint || undefined);
+                  if (!isTeachStreaming) getTeaching();
                 }}
                 variant="default"
                 size="sm"
