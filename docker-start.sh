@@ -2,6 +2,8 @@
 # 数据库自动迁移脚本 - 使用 psql 直连 PostgreSQL
 # 需要设置 SUPABASE_DB_URL 或 COZE_SUPABASE_DB_URL 环境变量
 # 格式: postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres
+#
+# 迁移是一次性的，完成后可删除 SUPABASE_DB_URL / COZE_SUPABASE_DB_URL 环境变量
 
 set -e
 
@@ -33,7 +35,7 @@ if [ -n "$DB_URL" ]; then
     -- 阶段1: 创建核心表（如不存在）
     -- ============================================
 
-    -- 创建 letsgo_users 表（用户系统）
+    -- 创建 letsgo_users 表
     CREATE TABLE IF NOT EXISTS letsgo_users (
       id SERIAL PRIMARY KEY,
       nickname VARCHAR(50) NOT NULL UNIQUE,
@@ -45,7 +47,7 @@ if [ -n "$DB_URL" ]; then
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
 
-    -- 创建 letsgo_point_transactions 表（积分流水）
+    -- 创建 letsgo_point_transactions 表
     CREATE TABLE IF NOT EXISTS letsgo_point_transactions (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES letsgo_users(id) ON DELETE CASCADE,
@@ -56,10 +58,9 @@ if [ -n "$DB_URL" ]; then
       created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
     );
 
-    -- 创建 letsgo_games 表（如不存在，兼容旧 player_id 列）
+    -- 创建 letsgo_games 表（不含 player_id，新版本标准结构）
     CREATE TABLE IF NOT EXISTS letsgo_games (
       id SERIAL PRIMARY KEY,
-      player_id INTEGER,
       user_id INTEGER REFERENCES letsgo_users(id),
       board_size INTEGER NOT NULL DEFAULT 9,
       difficulty VARCHAR(20) NOT NULL DEFAULT 'easy',
@@ -75,15 +76,8 @@ if [ -n "$DB_URL" ]; then
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
 
-    -- 创建 letsgo_players 表（旧兼容，如不存在）
-    CREATE TABLE IF NOT EXISTS letsgo_players (
-      id SERIAL PRIMARY KEY,
-      nickname VARCHAR(50) NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
-    );
-
     -- ============================================
-    -- 阶段2: 增量列迁移（幂等）
+    -- 阶段2: 增量列迁移（幂等，兼容旧数据库结构）
     -- ============================================
 
     -- 添加 engine 列（如不存在）
@@ -102,30 +96,11 @@ if [ -n "$DB_URL" ]; then
       END IF;
     END $$;
 
-    -- player_id 改为可空
-    DO $$
-    BEGIN
-      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'letsgo_games' AND column_name = 'player_id' AND is_nullable = 'NO') THEN
-        ALTER TABLE letsgo_games ALTER COLUMN player_id DROP NOT NULL;
-      END IF;
-    END $$;
-
     -- ============================================
-    -- 阶段3: 索引创建（幂等）
+    -- 阶段3: 清理旧结构（幂等）
     -- ============================================
 
-    CREATE INDEX IF NOT EXISTS idx_point_transactions_user_id ON letsgo_point_transactions(user_id);
-    CREATE INDEX IF NOT EXISTS idx_point_transactions_type ON letsgo_point_transactions(type);
-    CREATE INDEX IF NOT EXISTS idx_games_user_id ON letsgo_games(user_id);
-    CREATE INDEX IF NOT EXISTS idx_games_status ON letsgo_games(status);
-    CREATE INDEX IF NOT EXISTS idx_games_created_at ON letsgo_games(created_at);
-    CREATE INDEX IF NOT EXISTS idx_users_nickname ON letsgo_users(nickname);
-
-    -- ============================================
-    -- 阶段4: 清理旧表和旧列
-    -- ============================================
-
-    -- 删除 letsgo_players 外键约束（letsgo_games.player_id 可能引用它）
+    -- 删除 letsgo_games.player_id 外键约束
     DO $$
     DECLARE
       fk_record RECORD;
@@ -141,6 +116,14 @@ if [ -n "$DB_URL" ]; then
       END LOOP;
     END $$;
 
+    -- 将 letsgo_games.player_id 设为 NULL（如还有数据）
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'letsgo_games' AND column_name = 'player_id') THEN
+        UPDATE letsgo_games SET player_id = NULL WHERE player_id IS NOT NULL;
+      END IF;
+    END $$;
+
     -- 删除 letsgo_games.player_id 列
     DO $$
     BEGIN
@@ -151,6 +134,17 @@ if [ -n "$DB_URL" ]; then
 
     -- 删除 letsgo_players 表
     DROP TABLE IF EXISTS letsgo_players CASCADE;
+
+    -- ============================================
+    -- 阶段4: 索引创建（幂等）
+    -- ============================================
+
+    CREATE INDEX IF NOT EXISTS idx_point_transactions_user_id ON letsgo_point_transactions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_point_transactions_type ON letsgo_point_transactions(type);
+    CREATE INDEX IF NOT EXISTS idx_games_user_id ON letsgo_games(user_id);
+    CREATE INDEX IF NOT EXISTS idx_games_status ON letsgo_games(status);
+    CREATE INDEX IF NOT EXISTS idx_games_created_at ON letsgo_games(created_at);
+    CREATE INDEX IF NOT EXISTS idx_users_nickname ON letsgo_users(nickname);
 
     -- ============================================
     -- 阶段5: 启用 RLS + 安全策略
@@ -184,14 +178,11 @@ if [ -n "$DB_URL" ]; then
       WITH CHECK ((SELECT auth.jwt() ->> 'role'::text) = 'service_role'::text);
 
     -- ============================================
-    -- 阶段6: 数据迁移
+    -- 阶段6: 数据修正
     -- ============================================
 
     -- 修改默认积分为1000
     ALTER TABLE letsgo_users ALTER COLUMN points SET DEFAULT 1000;
-
-    -- 历史用户积分补偿：给所有现有用户增加1000积分（仅一次）
-    UPDATE letsgo_users SET points = points + 1000 WHERE points < 2000;
 SQL
   )
 
