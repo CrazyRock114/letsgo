@@ -184,10 +184,11 @@ export default function GoGamePage() {
           const res = await fetch('/api/go-engine');
           if (res.ok) {
             const data = await res.json();
-            const qLen = data.queueLength ?? 0;
-            const isProcessing = data.isProcessing ?? false;
-            // 如果在排队中，设置排队位置；如果正在处理，设为0
-            setQueuePosition(qLen > 0 ? qLen : (isProcessing ? 0 : 0));
+            // GET端点返回 queueLength 和 isProcessing 在顶层
+            const qLen = data.queueLength ?? data.queue?.length ?? 0;
+            const isProcessing = data.isProcessing ?? data.queue?.processing ?? false;
+            // 队列中有人等待 → 显示排队位置；只有自己正在处理 → 0
+            setQueuePosition(qLen > 0 ? qLen : 0);
           }
         } catch {
           // 轮询失败不处理

@@ -437,7 +437,7 @@ class PersistentKataGo {
       this.buffer = "";
       
       // 发送GTP stop命令（优雅中断kata-analyze，进程不重启）
-      // stop会让kata-analyze立即返回，进程回到空闲状态
+      // stop会让kata-analyze立即返回当前分析结果，进程回到空闲状态
       this.proc.stdin?.write('stop\n');
       
       // 彻底清理残留数据，防止影响下一个任务
@@ -453,12 +453,30 @@ class PersistentKataGo {
     this.buffer = "";
   }
 
-  // 彻底清理：清空buffer+commandQueue，等待进程安静
+  /** 轻量级清理（仅清buffer，不发送同步命令，用于processNext预处理） */
+  async throughFlushLite(): Promise<void> {
+    this.buffer = "";
+    await new Promise(resolve => setTimeout(resolve, 50));
+    this.buffer = "";
+  }
+
+  // 彻底清理：清空buffer+commandQueue，发送轻量命令同步进程状态
   async thoroughFlush(): Promise<void> {
     this.commandQueue = [];
     this.buffer = "";
-    // 等待KataGo进程输出所有残留数据
-    await new Promise(resolve => setTimeout(resolve, 150));
+    // 等待KataGo进程输出所有残留数据（stop后的分析结果等）
+    await new Promise(resolve => setTimeout(resolve, 500));
+    this.buffer = "";
+    
+    // 用sendCommand发送轻量命令同步：收到响应说明进程已回到空闲状态
+    // 使用正常的onData handler（已在startProcess中注册），不需要额外handler
+    try {
+      if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
+        await this.sendCommand("name", 5000);
+      }
+    } catch {
+      // 同步失败不报错，下一个ensureReady会处理
+    }
     this.buffer = "";
   }
 
@@ -509,8 +527,8 @@ async function getKataGoMove(
   // 彻底清理残留数据（stop命令后可能有残余输出，等待并消耗干净）
   await persistentKataGo.thoroughFlush();
   
-  // 发送命令，单条超时30秒（总超时由Next.js request timeout控制）
-  const responses = await persistentKataGo.sendCommands(gtpCommands, 30000);
+  // 发送命令，单条超时60秒（CPU竞争时可能较慢）
+  const responses = await persistentKataGo.sendCommands(gtpCommands, 60000);
 
   // 解析genmove响应
   const lastResponse = responses[responses.length - 1];
@@ -558,11 +576,9 @@ async function getKataGoAnalysis(
   await persistentKataGo.thoroughFlush();
 
   try {
-    // 设置分析用的maxVisits（固定500，不受游戏难度影响）
-    await persistentKataGo.sendCommand('kata-set-param maxVisits 500');
-
-    // 准备棋盘并重放落子
+    // 准备所有GTP命令（一次性发送，避免单独sendCommand导致响应错位）
     const gtpCommands = [
+      'kata-set-param maxVisits 500',  // 分析用高visits
       `boardsize ${boardSize}`,
       'clear_board',
     ];
@@ -577,7 +593,7 @@ async function getKataGoAnalysis(
     // 执行分析（kata-analyze interval=10 表示每10次visit输出一次）
     gtpCommands.push('kata-analyze 10');
 
-    // 恢复游戏难度的maxVisits
+    // 恢复游戏难度的maxVisits（在同一个批次中）
     gtpCommands.push('kata-set-param maxVisits 150');
 
     const responses = await persistentKataGo.sendCommands(gtpCommands, 120000);
@@ -593,10 +609,8 @@ async function getKataGoAnalysis(
     } else {
       console.error('[kata-analyze] 分析失败:', err);
     }
-    try {
-      // 恢复maxVisits
-      await persistentKataGo.sendCommand('kata-set-param maxVisits 150');
-    } catch { /* ignore */ }
+    // 中断/失败后不再发送额外命令（进程状态不确定，可能响应错位）
+    // maxVisits 会在下一次 genmove 或分析时重新设置
     return null;
   }
 }
@@ -805,10 +819,10 @@ class EngineQueue {
       console.log(`[engine-queue] Genmove arrived while own analysis is running - sending stop`);
       await persistentKataGo.stopAnalysis();
       // stopAnalysis会拒绝当前分析的command，导致processNext结束
-      // 等待processing变false（最多3秒）
+      // thoroughFlush会发送name同步，需要更长时间等待
       const waitStart = Date.now();
-      while (this.processing && Date.now() - waitStart < 3000) {
-        await new Promise(r => setTimeout(r, 50));
+      while (this.processing && Date.now() - waitStart < 8000) {
+        await new Promise(r => setTimeout(r, 100));
       }
       if (this.processing) {
         console.warn(`[engine-queue] Own analysis still processing after stop, forcing processing=false`);
@@ -832,9 +846,9 @@ class EngineQueue {
     console.log(`[engine-queue] Processing: ${entry.id}, engine=${entry.engine}, isAnalysis=${!!entry.isAnalysis}`);
 
     try {
-      // 每次处理前先清理 KataGo 进程 buffer 残留，避免响应错位
+      // 每次处理前先彻底清理 KataGo 进程 buffer 残留，避免响应错位
       if (entry.engine === "katago" && isKataGoAvailable()) {
-        persistentKataGo.clearBuffer();
+        await persistentKataGo.throughFlushLite();
       }
       // 分析请求：只使用KataGo，不影响下棋结果
       if (entry.isAnalysis) {
@@ -1070,51 +1084,70 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// GET: 返回可用引擎列表（含诊断信息）
+// GET端点诊断缓存（避免每次轮询都spawn进程消耗CPU）
+let cachedDiagnosis: {
+  timestamp: number;
+  katagoBinExists: boolean;
+  katagoModel: string | null;
+  katagoCfgExists: boolean;
+  gnugoPath: string | null;
+  lddOutput: string;
+  katagoTestOutput: string;
+} | null = null;
+const DIAGNOSIS_TTL = 60000; // 诊断结果缓存60秒
+
+// GET: 返回可用引擎列表（含队列状态）
 export async function GET() {
-  // 详细诊断：帮助定位 Railway 上引擎不生效的原因
-  const katagoBinExists = fs.existsSync(KATAGO_PATH);
-  const katagoModel = findKataGoModel();
-  const katagoCfgExists = fs.existsSync(KATAGO_CONFIG);
-  const gnugoPath = findGnuGoPath();
+  // 队列状态（轻量读取，不消耗CPU）
+  const queueLength = engineQueue.getQueueLength();
+  const isProcessing = engineQueue.isProcessing();
 
-  // 运行时诊断：检查 KataGo 动态链接库和启动测试
-  let lddOutput = '';
-  let katagoTestOutput = '';
-  const { execSync } = await import('child_process');
-  if (katagoBinExists) {
-    try {
-      lddOutput = execSync(`ldd ${KATAGO_PATH}`, { timeout: 5000, encoding: 'utf-8' }).trim();
-    } catch (e: unknown) {
-      const err = e as { stdout?: string; stderr?: string; message?: string };
-      lddOutput = `ldd failed: ${err.stderr || err.stdout || err.message || String(e)}`;
+  // 诊断信息（缓存，避免每2秒轮询都spawn进程）
+  let diag = cachedDiagnosis;
+  if (!diag || Date.now() - diag.timestamp > DIAGNOSIS_TTL) {
+    const katagoBinExists = fs.existsSync(KATAGO_PATH);
+    const katagoModel = findKataGoModel();
+    const katagoCfgExists = fs.existsSync(KATAGO_CONFIG);
+    const gnugoPath = findGnuGoPath();
+
+    let lddOutput = '';
+    let katagoTestOutput = '';
+    if (katagoBinExists) {
+      try {
+        const { execSync } = await import('child_process');
+        lddOutput = execSync(`ldd ${KATAGO_PATH}`, { timeout: 5000, encoding: 'utf-8' }).trim();
+        katagoTestOutput = execSync(`${KATAGO_PATH} version`, { timeout: 10000, encoding: 'utf-8' }).trim();
+      } catch (e: unknown) {
+        const err = e as { stdout?: string; stderr?: string; message?: string };
+        lddOutput = lddOutput || `ldd failed: ${err.stderr || err.stdout || err.message || String(e)}`;
+        katagoTestOutput = katagoTestOutput || `version test failed: ${err.stderr || err.stdout || err.message || String(e)}`;
+      }
     }
-    try {
-      katagoTestOutput = execSync(`${KATAGO_PATH} version`, { timeout: 10000, encoding: 'utf-8' }).trim();
-    } catch (e: unknown) {
-      const err = e as { stdout?: string; stderr?: string; message?: string };
-      katagoTestOutput = `version test failed: ${err.stderr || err.stdout || err.message || String(e)}`;
-    }
+
+    console.log(`[go-engine] Diagnosis: katago_bin=${katagoBinExists}, model=${katagoModel}, cfg=${katagoCfgExists}, gnugo=${gnugoPath}, cwd=${process.cwd()}`);
+    console.log(`[go-engine] KataGo ldd:\n${lddOutput}`);
+    console.log(`[go-engine] KataGo version test:\n${katagoTestOutput}`);
+
+    diag = { timestamp: Date.now(), katagoBinExists, katagoModel, katagoCfgExists, gnugoPath, lddOutput, katagoTestOutput };
+    cachedDiagnosis = diag;
   }
-
-  console.log(`[go-engine] Diagnosis: katago_bin=${katagoBinExists}, model=${katagoModel}, cfg=${katagoCfgExists}, gnugo=${gnugoPath}, cwd=${process.cwd()}`);
-  console.log(`[go-engine] KataGo ldd:\n${lddOutput}`);
-  console.log(`[go-engine] KataGo version test:\n${katagoTestOutput}`);
 
   return NextResponse.json({
     engines: [
       {
         id: "katago", name: "KataGo", available: isKataGoAvailable(), desc: "深度学习引擎，棋力最强",
         cost: ENGINE_COSTS.katago,
-        debug: { binExists: katagoBinExists, model: katagoModel, cfgExists: katagoCfgExists, binPath: KATAGO_PATH, cfgPath: KATAGO_CONFIG, ldd: lddOutput, versionTest: katagoTestOutput },
+        debug: { binExists: diag.katagoBinExists, model: diag.katagoModel, cfgExists: diag.katagoCfgExists, binPath: KATAGO_PATH, cfgPath: KATAGO_CONFIG, ldd: diag.lddOutput, versionTest: diag.katagoTestOutput },
       },
       {
         id: "gnugo", name: "GnuGo", available: isGnuGoAvailable(), desc: "经典围棋引擎，棋力扎实",
         cost: ENGINE_COSTS.gnugo,
-        debug: { path: gnugoPath, searchedPaths: GNUGO_PATHS },
+        debug: { path: diag.gnugoPath, searchedPaths: GNUGO_PATHS },
       },
       { id: "local", name: "本地AI", available: true, desc: "内置启发式AI，随时可用", cost: ENGINE_COSTS.local },
     ],
-    queue: { length: engineQueue.getQueueLength(), processing: engineQueue.isProcessing() },
+    queueLength,     // 顶层字段，方便前端读取
+    isProcessing,    // 顶层字段，方便前端读取
+    queue: { length: queueLength, processing: isProcessing },
   });
 }
