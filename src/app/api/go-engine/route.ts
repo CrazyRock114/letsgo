@@ -19,43 +19,68 @@ interface KataGoAnalysis {
   }[];
 }
 
-// 解析kata-analyze输出
-// 格式: "info move D4 visits 500 winrate 5234 scoreMean 2.1 scoreStdev 1.5 ... info move Q16 visits 480 ..."
-function parseKataAnalyze(output: string): KataGoAnalysis | null {
+// 解析kata-raw-nn输出
+// 格式: "= whiteWin 0.5432 ... whiteLead 3.5 ... policy D4:0.123 Q16:0.045 ..."
+// kata-raw-nn 只需0.04秒，输出标准GTP格式（= ...\n\n），与dispatchResponses完全兼容
+function parseKataRawNN(output: string, boardSize: number): KataGoAnalysis | null {
   try {
-    const infos = output.split('info ').filter(s => s.trim());
-    if (infos.length === 0) return null;
-
-    const moves: KataGoAnalysis['bestMoves'] = [];
-    let overallWinRate = 50;
-    let overallScoreLead = 0;
-
-    for (const info of infos) {
-      const parts = info.trim().split(/\s+/);
-      let move = '', visits = 0, winrate = 0, scoreMean = 0;
-
-      for (let i = 0; i < parts.length; i++) {
-        if (parts[i] === 'move' && parts[i + 1]) move = parts[i + 1];
-        if (parts[i] === 'visits' && parts[i + 1]) visits = parseInt(parts[i + 1]);
-        if (parts[i] === 'winrate' && parts[i + 1]) winrate = parseFloat(parts[i + 1]) / 100; // 转为0-100
-        if (parts[i] === 'scoreMean' && parts[i + 1]) scoreMean = parseFloat(parts[i + 1]);
+    const lines = output.trim().split('\n');
+    
+    // Parse whiteWin
+    let whiteWin = 0.5;
+    const wwLine = lines.find(l => l.trim().startsWith('whiteWin '));
+    if (wwLine) {
+      whiteWin = parseFloat(wwLine.trim().split(/\s+/)[1]);
+    }
+    
+    // Parse whiteLead
+    let whiteLead = 0;
+    const wlLine = lines.find(l => l.trim().startsWith('whiteLead '));
+    if (wlLine) {
+      whiteLead = parseFloat(wlLine.trim().split(/\s+/)[1]);
+    }
+    
+    // Convert to black perspective
+    const blackWinRate = (1 - whiteWin) * 100;
+    const blackScoreLead = -whiteLead;
+    
+    // Parse policy grid
+    const policyIdx = lines.findIndex(l => l.trim() === 'policy');
+    const bestMoves: KataGoAnalysis['bestMoves'] = [];
+    
+    if (policyIdx !== -1) {
+      const policyEntries: { row: number; col: number; prob: number }[] = [];
+      
+      for (let row = 0; row < boardSize; row++) {
+        const lineIdx = policyIdx + 1 + row;
+        if (lineIdx >= lines.length) break;
+        const values = lines[lineIdx].trim().split(/\s+/);
+        for (let col = 0; col < Math.min(values.length, boardSize); col++) {
+          const prob = parseFloat(values[col]);
+          if (!isNaN(prob) && prob > 0.001) {
+            policyEntries.push({ row, col, prob });
+          }
+        }
       }
-
-      if (move && visits > 0) {
-        moves.push({ move, winrate, scoreMean });
+      
+      // Sort by probability descending, take top 3
+      policyEntries.sort((a, b) => b.prob - a.prob);
+      const GTP_LETTERS = 'ABCDEFGHJKLMNOPQRST';
+      
+      for (const entry of policyEntries.slice(0, 3)) {
+        const move = GTP_LETTERS[entry.col] + (boardSize - entry.row);
+        bestMoves.push({
+          move,
+          winrate: Math.round(blackWinRate * 10) / 10,
+          scoreMean: Math.round(blackScoreLead * 10) / 10,
+        });
       }
     }
-
-    // 取第一个（最佳）move的数据作为整体形势
-    if (moves.length > 0) {
-      overallWinRate = moves[0].winrate;
-      overallScoreLead = moves[0].scoreMean;
-    }
-
+    
     return {
-      winRate: Math.round(overallWinRate * 10) / 10,
-      scoreLead: Math.round(overallScoreLead * 10) / 10,
-      bestMoves: moves.slice(0, 3)
+      winRate: Math.round(blackWinRate * 10) / 10,
+      scoreLead: Math.round(blackScoreLead * 10) / 10,
+      bestMoves,
     };
   } catch {
     return null;
@@ -564,7 +589,8 @@ async function getKataGoMove(
 }
 
 // ============================================================
-// KataGo分析（kata-analyze命令，固定maxVisits=100）
+// KataGo分析（kata-raw-nn命令，0.04秒完成）
+// kata-raw-nn直接输出神经网络策略值，不走搜索树，极速且与GTP协议完全兼容
 // ============================================================
 async function getKataGoAnalysis(
   boardSize: number,
@@ -573,7 +599,7 @@ async function getKataGoAnalysis(
   try {
     await persistentKataGo.ensureReady();
   } catch {
-    console.log('[kata-analyze] KataGo进程未就绪，跳过分析');
+    console.log('[kata-raw-nn] KataGo进程未就绪，跳过分析');
     return null;
   }
 
@@ -581,11 +607,7 @@ async function getKataGoAnalysis(
   await persistentKataGo.thoroughFlush();
 
   try {
-    // 第零步：设置分析用maxVisits（在准备棋盘之前）
-    await persistentKataGo.sendCommand('kata-set-param maxVisits 100', 5000);
-
     // 第一步：准备棋盘（boardsize + clear_board + 重放所有落子）
-    // 这些命令用sendCommands逐条发送，每条都有简洁的=\n\n响应
     const setupCommands = [
       `boardsize ${boardSize}`,
       'clear_board',
@@ -596,30 +618,29 @@ async function getKataGoAnalysis(
       const color = m.color === "black" ? "B" : "W";
       setupCommands.push(`play ${color} ${coord}`);
     }
-    console.log(`[kata-analyze] 准备棋盘: ${moves.length}步, boardSize=${boardSize}`);
+    console.log(`[kata-raw-nn] 准备棋盘: ${moves.length}步, boardSize=${boardSize}`);
     await persistentKataGo.sendCommands(setupCommands, 30000);
-    console.log(`[kata-analyze] 棋盘准备完成，开始分析(maxVisits=100)`);
+    console.log(`[kata-raw-nn] 棋盘准备完成，开始分析`);
 
-    // 第二步：单独发送 kata-analyze（不用sendCommands）
-    // kata-analyze会输出多行info，最后以=\n\n结束
-    // 单独发送可以确保dispatchResponses正确匹配整个响应
-    const analyzeResponse = await persistentKataGo.sendCommand('kata-analyze 10', 90000);
-    console.log(`[kata-analyze] 分析完成, 响应长度=${analyzeResponse.length}, 前200字=${analyzeResponse.substring(0, 200)}`);
+    // 第二步：发送kata-raw-nn（0.04秒完成，输出标准GTP格式=\n\n）
+    // kata-raw-nn直接输出神经网络策略，不走MCTS搜索树，极速
+    const analyzeResponse = await persistentKataGo.sendCommand('kata-raw-nn all', 10000);
+    console.log(`[kata-raw-nn] 分析完成, 响应长度=${analyzeResponse.length}, 前200字=${analyzeResponse.substring(0, 200)}`);
 
-    const result = parseKataAnalyze(analyzeResponse);
+    const result = parseKataRawNN(analyzeResponse, boardSize);
     if (result) {
-      console.log(`[kata-analyze] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
+      console.log(`[kata-raw-nn] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
     } else {
-      console.log(`[kata-analyze] 解析返回null, 原始响应前300字=${analyzeResponse.substring(0, 300)}`);
+      console.log(`[kata-raw-nn] 解析返回null, 原始响应前300字=${analyzeResponse.substring(0, 300)}`);
     }
 
     return result;
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     if (errMsg.includes('interrupted')) {
-      console.log('[kata-analyze] 分析被中断（genmove优先）');
+      console.log('[kata-raw-nn] 分析被中断（同一用户落子优先）');
     } else {
-      console.error('[kata-analyze] 分析失败:', err);
+      console.error('[kata-raw-nn] 分析失败:', err);
     }
     return null;
   }
@@ -823,19 +844,14 @@ class EngineQueue {
     // 下棋请求优先：取消该用户排队中的分析请求
     this.cancelPendingAnalysis(userId);
 
-    // 下棋请求优先级高于分析：如果当前正在运行的是分析请求（任何用户的），用GTP stop中断
-    // 分析是辅助功能，不能阻塞对弈
-    if (this.processing && this.currentEntry?.isAnalysis) {
-      if (this.currentEntry.userId === userId) {
-        console.log(`[engine-queue] Genmove arrived while own analysis is running - sending stop`);
-      } else {
-        console.log(`[engine-queue] Genmove interrupting user ${this.currentEntry.userId}'s analysis - sending stop (gameplay priority)`);
-      }
+    // 只有同一用户的genmove可以中断自己的分析（用户隔离原则）
+    // 其他用户的genmove需要等待分析完成，按队列排队
+    if (this.processing && this.currentEntry?.isAnalysis && this.currentEntry.userId === userId) {
+      console.log(`[engine-queue] Genmove arrived while own analysis is running - sending stop`);
       await persistentKataGo.stopAnalysis();
       // stopAnalysis会拒绝当前分析的command，导致processNext结束
-      // thoroughFlush会发送name同步，需要更长时间等待
       const waitStart = Date.now();
-      while (this.processing && Date.now() - waitStart < 8000) {
+      while (this.processing && Date.now() - waitStart < 5000) {
         await new Promise(r => setTimeout(r, 100));
       }
       if (this.processing) {
@@ -867,14 +883,14 @@ class EngineQueue {
         let analysisResult: KataGoAnalysis | null = null;
         if (isKataGoAvailable()) {
           try {
-            // 分析请求60秒超时（maxVisits=100，正常应在30秒内完成）
+            // 分析请求30秒超时（kata-raw-nn极快，正常应在1秒内完成）
             analysisResult = await Promise.race([
               getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>),
               new Promise<null>(resolve => setTimeout(() => {
-                console.warn(`[engine-queue] Analysis timeout (60s) for ${entry.id}`);
+                console.warn(`[engine-queue] Analysis timeout (30s) for ${entry.id}`);
                 persistentKataGo.stopAnalysis();
                 resolve(null);
-              }, 60000)),
+              }, 30000)),
             ]);
           } catch (err) {
             console.warn(`[engine-queue] Analysis failed:`, err instanceof Error ? err.message : String(err));
