@@ -75,7 +75,7 @@ src/
 ### 2. 每步AI解说
 - 每步棋后自动获取AI简短解说（1句）
 - 真正的LLM流式输出（打字机效果）
-- **KataGo分析数据驱动**：所有引擎（包括GnuGo/本地AI）的解说都基于KataGo kata-analyze(maxVisits=500)的专业分析数据
+- **KataGo分析数据驱动**：所有引擎（包括GnuGo/本地AI）的解说都基于KataGo kata-analyze(maxVisits=100)的专业分析数据
 - 解说包含落子位置、作用、鼓励、形势判断
 - **专业术语嵌入**：解说中自然融入围棋术语并在括号中解释
 - **智能气数提及**：只在打吃(1气)或提子时提及气数，3气以上不提
@@ -181,7 +181,7 @@ KataGo/GnuGo AI引擎桥接（GTP协议+排队+积分扣除）
 - `pointsUsed`: number（本次扣除积分数）
 - `remainingPoints`: number（剩余积分）
 - `insufficientPoints`: boolean（积分不足，仅403响应时）
-- `analysis`: KataGo分析数据（maxVisits=500）`{ winRate, scoreLead, bestMoves: [{move, winrate, scoreMean}] }` 或 null
+- `analysis`: KataGo分析数据（maxVisits=100）`{ winRate, scoreLead, bestMoves: [{move, winrate, scoreMean}] }` 或 null
 
 **错误响应：**
 - 401: `{ error, needLogin: true }` — 未登录使用收费引擎

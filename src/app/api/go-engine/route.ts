@@ -351,6 +351,8 @@ class PersistentKataGo {
   }
 
   // 从buffer中提取完整的GTP响应并分发到等待的Promise
+  // GTP协议：响应以"= "或"? "开头，以"\n\n"结束
+  // kata-analyze特殊：多行info后跟"= "行，整体以"\n\n"结束
   private dispatchResponses(): void {
     while (this.commandQueue.length > 0) {
       const endIdx = this.buffer.indexOf("\n\n");
@@ -562,7 +564,7 @@ async function getKataGoMove(
 }
 
 // ============================================================
-// KataGo分析（kata-analyze命令，固定maxVisits=500）
+// KataGo分析（kata-analyze命令，固定maxVisits=100）
 // ============================================================
 async function getKataGoAnalysis(
   boardSize: number,
@@ -579,41 +581,46 @@ async function getKataGoAnalysis(
   await persistentKataGo.thoroughFlush();
 
   try {
-    // 准备所有GTP命令（一次性发送，避免单独sendCommand导致响应错位）
-    const gtpCommands = [
-      'kata-set-param maxVisits 200',  // 分析用中高visits（500在CPU受限服务器太慢）
+    // 第零步：设置分析用maxVisits（在准备棋盘之前）
+    await persistentKataGo.sendCommand('kata-set-param maxVisits 100', 5000);
+
+    // 第一步：准备棋盘（boardsize + clear_board + 重放所有落子）
+    // 这些命令用sendCommands逐条发送，每条都有简洁的=\n\n响应
+    const setupCommands = [
       `boardsize ${boardSize}`,
       'clear_board',
     ];
-
     for (const m of moves) {
       const colChar = String.fromCharCode(65 + (m.col >= 8 ? m.col + 1 : m.col));
       const coord = `${colChar}${boardSize - m.row}`;
       const color = m.color === "black" ? "B" : "W";
-      gtpCommands.push(`play ${color} ${coord}`);
+      setupCommands.push(`play ${color} ${coord}`);
+    }
+    console.log(`[kata-analyze] 准备棋盘: ${moves.length}步, boardSize=${boardSize}`);
+    await persistentKataGo.sendCommands(setupCommands, 30000);
+    console.log(`[kata-analyze] 棋盘准备完成，开始分析(maxVisits=100)`);
+
+    // 第二步：单独发送 kata-analyze（不用sendCommands）
+    // kata-analyze会输出多行info，最后以=\n\n结束
+    // 单独发送可以确保dispatchResponses正确匹配整个响应
+    const analyzeResponse = await persistentKataGo.sendCommand('kata-analyze 10', 90000);
+    console.log(`[kata-analyze] 分析完成, 响应长度=${analyzeResponse.length}, 前200字=${analyzeResponse.substring(0, 200)}`);
+
+    const result = parseKataAnalyze(analyzeResponse);
+    if (result) {
+      console.log(`[kata-analyze] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
+    } else {
+      console.log(`[kata-analyze] 解析返回null, 原始响应前300字=${analyzeResponse.substring(0, 300)}`);
     }
 
-    // 执行分析（kata-analyze interval=10 表示每10次visit输出一次）
-    gtpCommands.push('kata-analyze 10');
-
-    // 恢复游戏难度的maxVisits（在同一个批次中）
-    gtpCommands.push('kata-set-param maxVisits 150');
-
-    const responses = await persistentKataGo.sendCommands(gtpCommands, 90000);
-
-    // kata-analyze的响应是倒数第二个（最后一个是我们恢复maxVisits的响应）
-    const analyzeResponse = responses[responses.length - 2] || '';
-
-    return parseKataAnalyze(analyzeResponse);
+    return result;
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     if (errMsg.includes('interrupted')) {
-      console.log('[kata-analyze] 分析被中断（同一用户落子优先）');
+      console.log('[kata-analyze] 分析被中断（genmove优先）');
     } else {
       console.error('[kata-analyze] 分析失败:', err);
     }
-    // 中断/失败后不再发送额外命令（进程状态不确定，可能响应错位）
-    // maxVisits 会在下一次 genmove 或分析时重新设置
     return null;
   }
 }
@@ -860,14 +867,14 @@ class EngineQueue {
         let analysisResult: KataGoAnalysis | null = null;
         if (isKataGoAvailable()) {
           try {
-            // 分析请求90秒超时（防止长期阻塞队列）
+            // 分析请求60秒超时（maxVisits=100，正常应在30秒内完成）
             analysisResult = await Promise.race([
               getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>),
               new Promise<null>(resolve => setTimeout(() => {
-                console.warn(`[engine-queue] Analysis timeout (90s) for ${entry.id}`);
+                console.warn(`[engine-queue] Analysis timeout (60s) for ${entry.id}`);
                 persistentKataGo.stopAnalysis();
                 resolve(null);
-              }, 90000)),
+              }, 60000)),
             ]);
           } catch (err) {
             console.warn(`[engine-queue] Analysis failed:`, err instanceof Error ? err.message : String(err));
