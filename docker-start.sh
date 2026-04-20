@@ -1,7 +1,7 @@
 #!/bin/bash
 # 数据库自动迁移脚本 - 使用 psql 直连 PostgreSQL
 # 需要设置 SUPABASE_DB_URL 或 COZE_SUPABASE_DB_URL 环境变量
-# 格式: postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres
+# 格式: postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres (Session模式)
 #
 # 迁移是一次性的，完成后可删除 SUPABASE_DB_URL / COZE_SUPABASE_DB_URL 环境变量
 
