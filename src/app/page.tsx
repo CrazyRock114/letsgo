@@ -1891,7 +1891,7 @@ export default function GoGamePage() {
                   </Badge>
                 ) : (
                   <Badge variant={currentPlayer === playerColor ? 'default' : 'secondary'} className={`text-xs px-3 ${isAIThinking ? 'animate-pulse bg-amber-500 text-white' : ''}`}>
-                    {gameEnded ? '棋局结束' : isAIThinking ? (queuePosition > 0 ? `排队中，前方${queuePosition}个任务...` : 'AI思考中，请等待...') : currentPlayer === playerColor ? `轮到你落子（已下${history.length}手）` : 'AI回合'}
+                    {gameEnded ? '棋局结束' : isAIThinking ? (queuePosition > 0 ? `AI排队中，你在第${queuePosition}位` : 'AI思考中，请等待...') : currentPlayer === playerColor ? `轮到你落子（已下${history.length}手）` : 'AI回合'}
                     {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
                   </Badge>
                 )}

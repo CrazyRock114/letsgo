@@ -1141,8 +1141,9 @@ class EngineQueue {
     if (userId && userPosition === -1) {
       for (let i = 0; i < this.queue.length; i++) {
         if (this.queue[i].userId === userId) {
-          // 前方任务数 = 当前正在处理的1个 + 队列中排在前面的i个
-          userPosition = i + 1 + (this.processing ? 1 : 0);
+          // 前方任务数 = 队列中排在前面的i个 + 正在处理的1个
+          // 用户位置编号 = 前方任务数（"你在第x位"，从1开始）
+          userPosition = i + (this.processing ? 1 : 0);
           break;
         }
         if (this.queue[i].isAnalysis) hasAnalysis = true;
