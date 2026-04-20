@@ -1030,8 +1030,10 @@ export default function GoGamePage() {
 
     try {
       // 第一步：请求KataGo分析，用分析结果的bestMoves作为提示点位
-      let analysisData: typeof latestAnalysisRef.current = latestAnalysisRef.current;
+      let analysisData: typeof latestAnalysisRef.current = null;
       let hintPosition: Position | null = null;
+      // 清除旧分析数据，防止使用上一步的残留数据
+      latestAnalysisRef.current = null;
 
       if (token && boardSize > 0 && history.length > 0) {
         try {
@@ -1040,7 +1042,6 @@ export default function GoGamePage() {
             row: h.position.row, col: h.position.col, color: h.color
           }));
           const analyzeController = new AbortController();
-          // kata-analyze maxVisits=200 + 90秒后端超时，前端给95秒
           const analyzeTimeout = setTimeout(() => analyzeController.abort(), 95000);
           const analyzeRes = await fetch('/api/go-engine', {
             method: 'POST',
@@ -1052,10 +1053,9 @@ export default function GoGamePage() {
             }),
             signal: AbortSignal.any
               ? AbortSignal.any([analyzeController.signal, thisAbortController.signal])
-              : analyzeController.signal, // 用户落子时也会中断分析
+              : analyzeController.signal,
           });
           clearTimeout(analyzeTimeout);
-          // 检查是否已被用户落子中断
           if (thisAbortController.signal.aborted) return;
           if (analyzeRes.ok) {
             const analyzeData = await analyzeRes.json();
@@ -1152,9 +1152,9 @@ export default function GoGamePage() {
     setMessages(prev => [...prev, { role: 'assistant', content: '🔍 正在帮你分析问题...' }]);
     setIsChatStreaming(true);
     try {
-      // 先获取KataGo分析数据（有缓存则直接用）
-      let chatAnalysis = latestAnalysisRef.current;
-      if (!chatAnalysis && engine !== 'local' && board && history.length > 0) {
+      // 先获取KataGo分析数据（每次都重新分析，避免使用旧数据）
+      let chatAnalysis: typeof latestAnalysisRef.current = null;
+      if (engine !== 'local' && board && history.length > 0) {
         try {
           const cacheMoves = history.map(m => ({ row: m.position.row, col: m.position.col, color: m.color }));
           const analyzeRes = await fetch('/api/go-engine', {
