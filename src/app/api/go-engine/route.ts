@@ -129,6 +129,10 @@ interface ActiveSession {
 }
 const activeSessions: Map<string, ActiveSession> = new Map();
 
+// 分析引擎配置（可在monitor页面动态调整）
+// 0 = kata-raw-nn（瞬时，0 visits质量）, >0 = kata-analyze（N次搜索访问）
+let analysisVisits = 0;
+
 // KataGo分析结果缓存（后台异步分析完成后存储，go-ai API可直接读取）
 const analysisCache: Map<string, { data: KataGoAnalysis; timestamp: number }> = new Map();
 
@@ -157,6 +161,8 @@ export function getEngineMonitorData() {
       queueLength: engineQueue.getQueueLength(),
       processing: engineQueue.isProcessing(),
       currentTask: currentInfo ? { id: currentInfo.id, userId: currentInfo.userId, isAnalysis: currentInfo.isAnalysis, engine: currentInfo.engine } : null,
+      analysisVisits,  // 当前分析配置
+      queueEntries: engineQueue.getQueueEntries(),  // 队列中每个任务的详情
     },
     gnugo: { queueLength: 0, processing: false },
     activeSessions: Array.from(activeSessions.values()).map(s => ({
@@ -589,8 +595,9 @@ async function getKataGoMove(
 }
 
 // ============================================================
-// KataGo分析（kata-raw-nn命令，0.04秒完成）
-// kata-raw-nn直接输出神经网络策略值，不走搜索树，极速且与GTP协议完全兼容
+// KataGo分析（支持两种模式）
+// analysisVisits=0: kata-raw-nn（0.04秒，纯神经网络直出，0 visits质量）
+// analysisVisits>0: kata-analyze（搜索N次访问，质量随visits提升）
 // ============================================================
 async function getKataGoAnalysis(
   boardSize: number,
@@ -599,7 +606,7 @@ async function getKataGoAnalysis(
   try {
     await persistentKataGo.ensureReady();
   } catch {
-    console.log('[kata-raw-nn] KataGo进程未就绪，跳过分析');
+    console.log('[kata-analysis] KataGo进程未就绪，跳过分析');
     return null;
   }
 
@@ -607,7 +614,7 @@ async function getKataGoAnalysis(
   await persistentKataGo.thoroughFlush();
 
   try {
-    // 第一步：准备棋盘（boardsize + clear_board + 重放所有落子）
+    // 准备棋盘（boardsize + clear_board + 重放所有落子）
     const setupCommands = [
       `boardsize ${boardSize}`,
       'clear_board',
@@ -618,30 +625,109 @@ async function getKataGoAnalysis(
       const color = m.color === "black" ? "B" : "W";
       setupCommands.push(`play ${color} ${coord}`);
     }
-    console.log(`[kata-raw-nn] 准备棋盘: ${moves.length}步, boardSize=${boardSize}`);
+    console.log(`[kata-analysis] 准备棋盘: ${moves.length}步, boardSize=${boardSize}, mode=${analysisVisits === 0 ? 'raw-nn' : `analyze(${analysisVisits}visits)`}`);
     await persistentKataGo.sendCommands(setupCommands, 30000);
-    console.log(`[kata-raw-nn] 棋盘准备完成，开始分析`);
 
-    // 第二步：发送kata-raw-nn（0.04秒完成，输出标准GTP格式=\n\n）
-    // kata-raw-nn直接输出神经网络策略，不走MCTS搜索树，极速
-    const analyzeResponse = await persistentKataGo.sendCommand('kata-raw-nn all', 10000);
-    console.log(`[kata-raw-nn] 分析完成, 响应长度=${analyzeResponse.length}, 前200字=${analyzeResponse.substring(0, 200)}`);
+    if (analysisVisits === 0) {
+      // 模式1: kata-raw-nn all（0.04秒完成，输出标准GTP格式=\n\n）
+      // 直接输出神经网络策略，不走MCTS搜索树，极速
+      const analyzeResponse = await persistentKataGo.sendCommand('kata-raw-nn all', 10000);
+      console.log(`[kata-raw-nn] 分析完成, 响应长度=${analyzeResponse.length}, 前200字=${analyzeResponse.substring(0, 200)}`);
 
-    const result = parseKataRawNN(analyzeResponse, boardSize);
-    if (result) {
-      console.log(`[kata-raw-nn] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
+      const result = parseKataRawNN(analyzeResponse, boardSize);
+      if (result) {
+        console.log(`[kata-raw-nn] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
+      } else {
+        console.log(`[kata-raw-nn] 解析返回null, 原始响应前300字=${analyzeResponse.substring(0, 300)}`);
+      }
+      return result;
     } else {
-      console.log(`[kata-raw-nn] 解析返回null, 原始响应前300字=${analyzeResponse.substring(0, 300)}`);
-    }
+      // 模式2: kata-analyze（设置analysisMaxVisits后执行搜索分析）
+      // 关键：必须设置analysisMaxVisits，否则KataGo默认值极大导致永远跑不完
+      await persistentKataGo.sendCommand(`kata-set-param analysisMaxVisits ${analysisVisits}`, 5000);
+      console.log(`[kata-analyze] 设置 analysisMaxVisits=${analysisVisits}，开始分析`);
 
-    return result;
+      // 超时：根据visits数量动态调整，上限120秒
+      const analyzeTimeout = Math.min(120000, analysisVisits * 1500 + 10000);
+      const analyzeResponse = await persistentKataGo.sendCommand('kata-analyze 10', analyzeTimeout);
+      console.log(`[kata-analyze] 分析完成, 响应长度=${analyzeResponse.length}, 前300字=${analyzeResponse.substring(0, 300)}`);
+
+      const result = parseKataAnalyze(analyzeResponse, boardSize);
+      if (result) {
+        console.log(`[kata-analyze] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
+      } else {
+        console.log(`[kata-analyze] 解析返回null, 原始响应前500字=${analyzeResponse.substring(0, 500)}`);
+      }
+      return result;
+    }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     if (errMsg.includes('interrupted')) {
-      console.log('[kata-raw-nn] 分析被中断（同一用户落子优先）');
+      console.log('[kata-analysis] 分析被中断（同一用户落子优先）');
     } else {
-      console.error('[kata-raw-nn] 分析失败:', err);
+      console.error('[kata-analysis] 分析失败:', err);
     }
+    return null;
+  }
+}
+
+// 解析kata-analyze输出
+// 格式: 多行info + "= \n\n"结束
+// 每行: "info move D4 visits 50 winrate 5234 scoreMean 3.5 scoreStdev 1.2 prior 0.08 order 0 pv D4 Q16 C3 ..."
+// winrate范围: 0-10000（代表0%-100%的黑方胜率）
+// scoreMean: 黑方领先目数
+function parseKataAnalyze(output: string, boardSize: number): KataGoAnalysis | null {
+  try {
+    // 提取所有info行（以"info move"开头）
+    const lines = output.split('\n');
+    const infoLines = lines.filter(l => l.trim().startsWith('info move'));
+    
+    if (infoLines.length === 0) {
+      console.log('[kata-analyze] 无info行，原始输出:', output.substring(0, 200));
+      return null;
+    }
+
+    // 从第一个info行提取全局胜率和领先目数
+    const firstParts = infoLines[0].trim().split(/\s+/);
+    const firstMoveIdx = firstParts.indexOf('move') + 1;
+    const firstWinrateIdx = firstParts.indexOf('winrate') + 1;
+    const firstScoreIdx = firstParts.indexOf('scoreMean') + 1;
+
+    if (firstWinrateIdx === 0 || firstScoreIdx === 0) {
+      console.log('[kata-analyze] 无法解析全局胜率/目数，第一行:', infoLines[0].substring(0, 200));
+      return null;
+    }
+
+    const globalWinRate = parseFloat(firstParts[firstWinrateIdx]) / 100; // 0-10000 → 0-100
+    const globalScoreLead = parseFloat(firstParts[firstScoreIdx]);
+
+    // 提取前3个推荐落点
+    const GTP_LETTERS = 'ABCDEFGHJKLMNOPQRST';
+    const bestMoves: KataGoAnalysis['bestMoves'] = [];
+    
+    for (const line of infoLines.slice(0, 3)) {
+      const parts = line.trim().split(/\s+/);
+      const moveIdx = parts.indexOf('move') + 1;
+      const winrateIdx = parts.indexOf('winrate') + 1;
+      const scoreIdx = parts.indexOf('scoreMean') + 1;
+
+      if (moveIdx > 0 && parts[moveIdx]) {
+        const moveStr = parts[moveIdx];
+        bestMoves.push({
+          move: moveStr,
+          winrate: winrateIdx > 0 ? parseFloat(parts[winrateIdx]) / 100 : globalWinRate,
+          scoreMean: scoreIdx > 0 ? parseFloat(parts[scoreIdx]) : globalScoreLead,
+        });
+      }
+    }
+
+    return {
+      winRate: Math.round(globalWinRate * 10) / 10,
+      scoreLead: Math.round(globalScoreLead * 10) / 10,
+      bestMoves,
+    };
+  } catch {
+    console.error('[kata-analyze] 解析异常');
     return null;
   }
 }
@@ -883,14 +969,17 @@ class EngineQueue {
         let analysisResult: KataGoAnalysis | null = null;
         if (isKataGoAvailable()) {
           try {
-            // 分析请求30秒超时（kata-raw-nn极快，正常应在1秒内完成）
+            // 分析超时根据visits动态调整：raw-nn=30s, analyze=N*1.5s+10s(上限120s)
+            const analysisTimeout = analysisVisits === 0
+              ? 30000
+              : Math.min(120000, analysisVisits * 1500 + 10000);
             analysisResult = await Promise.race([
               getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>),
               new Promise<null>(resolve => setTimeout(() => {
-                console.warn(`[engine-queue] Analysis timeout (30s) for ${entry.id}`);
+                console.warn(`[engine-queue] Analysis timeout (${Math.round(analysisTimeout/1000)}s) for ${entry.id}`);
                 persistentKataGo.stopAnalysis();
                 resolve(null);
-              }, 30000)),
+              }, analysisTimeout)),
             ]);
           } catch (err) {
             console.warn(`[engine-queue] Analysis failed:`, err instanceof Error ? err.message : String(err));
@@ -1009,6 +1098,18 @@ class EngineQueue {
 
     return { queueLength: this.queue.length, userPosition, hasAnalysis };
   }
+
+  /** 获取队列中每个任务的详情（用于监控面板展示） */
+  getQueueEntries(): Array<{ id: string; userId: number; type: string; engine: string; boardSize: number; difficulty: string }> {
+    return this.queue.map(e => ({
+      id: e.id,
+      userId: e.userId,
+      type: e.isAnalysis ? 'analysis' : 'genmove',
+      engine: e.engine,
+      boardSize: e.boardSize,
+      difficulty: e.difficulty,
+    }));
+  }
 }
 
 const engineQueue = new EngineQueue();
@@ -1018,8 +1119,20 @@ const engineQueue = new EngineQueue();
 // ============================================================
 export async function POST(request: NextRequest) {
   try {
-    const { boardSize, moves, difficulty, engine: requestedEngine, aiColor: rawAiColor, action } = await request.json();
+    const body = await request.json();
+    const { boardSize, moves, difficulty, engine: requestedEngine, aiColor: rawAiColor, action, analysisVisits: newVisits } = body;
     const aiColor: 'black' | 'white' = (rawAiColor === 'black' || rawAiColor === 'white') ? rawAiColor : 'white';
+
+    // 配置更新请求：修改分析visits
+    if (action === 'setConfig') {
+      if (typeof newVisits === 'number' && newVisits >= 0 && newVisits <= 200) {
+        const oldVisits = analysisVisits;
+        analysisVisits = newVisits;
+        console.log(`[go-engine] analysisVisits updated: ${oldVisits} → ${analysisVisits}`);
+        return NextResponse.json({ success: true, analysisVisits });
+      }
+      return NextResponse.json({ error: 'Invalid analysisVisits (0-200)' }, { status: 400 });
+    }
 
     // 按需分析请求：仅当用户点击"提示与教学"时触发
     if (action === 'analyze') {
@@ -1198,6 +1311,7 @@ export async function GET(request: NextRequest) {
     ],
     queueLength,              // 顶层字段，队列中等待的任务数
     isProcessing,             // 顶层字段，是否有任务正在处理
+    analysisVisits,           // 当前分析配置（0=raw-nn, >0=kata-analyze visits数）
     userQueuePosition: userQueueInfo.userPosition,  // 该用户在队列中的位置（1-based，-1=不在队列中）
     queue: { length: queueLength, processing: isProcessing },
   });

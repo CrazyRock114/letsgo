@@ -24,7 +24,13 @@ interface MonitorData {
   engineQueue: {
     total: number;
     isProcessing: boolean;
-    katago: { queueLength: number; processing: boolean };
+    katago: {
+      queueLength: number;
+      processing: boolean;
+      analysisVisits: number;
+      currentTask: { id: string; userId: number; isAnalysis: boolean; engine: string } | null;
+      queueEntries: Array<{ id: string; userId: number; type: string; engine: string; boardSize: number; difficulty: string }>;
+    };
     gnugo: { queueLength: number; processing: boolean };
   };
   usage: { pointsUsedLastHour: number; engineCallsLastHour: number };
@@ -51,6 +57,9 @@ export default function MonitorPage() {
   const [data, setData] = useState<MonitorData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<Array<{ time: string; mem: number; cpu: number; active: number }>>([]);
+  const [selectedVisits, setSelectedVisits] = useState<number>(0);
+  const [configSaving, setConfigSaving] = useState(false);
+  const [configMsg, setConfigMsg] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -58,6 +67,10 @@ export default function MonitorPage() {
       if (!res.ok) throw new Error("获取失败");
       const d = await res.json();
       setData(d);
+      // 同步当前analysisVisits到选择器
+      if (d?.engineQueue?.katago?.analysisVisits !== undefined) {
+        setSelectedVisits(d.engineQueue.katago.analysisVisits);
+      }
       setError(null);
       // 记录历史数据（最多60个点=5分钟）
       setHistory(prev => {
@@ -73,6 +86,31 @@ export default function MonitorPage() {
       setError("连接失败");
     }
   }, []);
+
+  const handleSaveConfig = useCallback(async () => {
+    setConfigSaving(true);
+    setConfigMsg(null);
+    try {
+      const res = await fetch("/api/go-engine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "setConfig", analysisVisits: selectedVisits }),
+      });
+      const result = await res.json();
+      if (res.ok && result.success) {
+        setConfigMsg(`已更新: ${result.analysisVisits} visits`);
+        // 立即刷新数据
+        fetchData();
+      } else {
+        setConfigMsg(`失败: ${result.error || "未知错误"}`);
+      }
+    } catch {
+      setConfigMsg("网络错误");
+    } finally {
+      setConfigSaving(false);
+      setTimeout(() => setConfigMsg(null), 3000);
+    }
+  }, [selectedVisits, fetchData]);
 
   useEffect(() => {
     fetchData();
@@ -120,6 +158,130 @@ export default function MonitorPage() {
         <div className="grid grid-cols-2 gap-3 mb-6">
           <StatCard label="1h引擎调用" value={fmt(data?.usage.engineCallsLastHour ?? 0)} sub={`消耗 ${fmt(data?.usage.pointsUsedLastHour ?? 0)} 积分`} color="purple" />
           <StatCard label="1h完成棋局" value={fmt(data?.games.finishedLastHour ?? 0)} sub={`活跃 ${fmt(data?.games.active ?? 0)} 局`} color="green" />
+        </div>
+
+        {/* KataGo 分析配置 + 队列详情 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          {/* 分析配置面板 */}
+          <div className="bg-gray-900 rounded-xl p-4">
+            <h2 className="text-sm font-semibold text-gray-400 mb-3">KataGo 分析配置</h2>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">分析深度 (visits)</label>
+                <select
+                  value={selectedVisits}
+                  onChange={e => setSelectedVisits(Number(e.target.value))}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value={0}>0 - raw-nn (瞬时, 无搜索)</option>
+                  <option value={5}>5 - 极速探索</option>
+                  <option value={10}>10 - 快速分析</option>
+                  <option value={15}>15 - 初级分析</option>
+                  <option value={25}>25 - 轻度分析</option>
+                  <option value={50}>50 - 中等分析</option>
+                  <option value={100}>100 - 深度分析</option>
+                  <option value={150}>150 - 高深度分析</option>
+                  <option value={200}>200 - 最深度分析</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleSaveConfig}
+                  disabled={configSaving || selectedVisits === (data?.engineQueue?.katago?.analysisVisits ?? 0)}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                    configSaving || selectedVisits === (data?.engineQueue?.katago?.analysisVisits ?? 0)
+                      ? "bg-gray-700 text-gray-500 cursor-not-allowed"
+                      : "bg-purple-600 hover:bg-purple-500 text-white"
+                  }`}
+                >
+                  {configSaving ? "保存中..." : "应用"}
+                </button>
+                {configMsg && (
+                  <span className={`text-xs ${configMsg.startsWith("已") ? "text-green-400" : "text-red-400"}`}>
+                    {configMsg}
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-gray-600 space-y-0.5 pt-2 border-t border-gray-800">
+                <div>当前值: <span className="text-gray-400">{data?.engineQueue?.katago?.analysisVisits ?? 0}</span> visits</div>
+                <div>
+                  {data?.engineQueue?.katago?.analysisVisits === 0
+                    ? "模式: 神经网络直出 (kata-raw-nn), ~0.04秒, 无搜索树"
+                    : `模式: MCTS搜索 (kata-analyze), 预估${Math.min(120, Math.round(((data?.engineQueue?.katago?.analysisVisits ?? 0) * 1.5 + 10)))}秒内完成`
+                  }
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* KataGo 队列详情面板 */}
+          <div className="bg-gray-900 rounded-xl p-4">
+            <h2 className="text-sm font-semibold text-gray-400 mb-3">KataGo 队列详情</h2>
+            <div className="space-y-2">
+              {/* 状态行 */}
+              <div className="flex items-center gap-2 text-sm">
+                {data?.engineQueue?.katago?.processing ? (
+                  <>
+                    <span className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse" />
+                    <span className="text-yellow-400">处理中</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="w-2 h-2 bg-green-500 rounded-full" />
+                    <span className="text-green-400">空闲</span>
+                  </>
+                )}
+                <span className="text-gray-500 ml-2">
+                  排队: {data?.engineQueue?.katago?.queueLength ?? 0} 个任务
+                </span>
+              </div>
+
+              {/* 当前任务 */}
+              {data?.engineQueue?.katago?.currentTask && (
+                <div className="bg-gray-800/50 rounded-lg p-2 text-xs">
+                  <div className="text-gray-400 mb-1">当前任务:</div>
+                  <div className="flex items-center gap-2">
+                    <span className={`px-1.5 py-0.5 rounded ${
+                      data.engineQueue.katago.currentTask.isAnalysis
+                        ? "bg-amber-500/20 text-amber-300"
+                        : "bg-purple-500/20 text-purple-300"
+                    }`}>
+                      {data.engineQueue.katago.currentTask.isAnalysis ? "分析" : "落子"}
+                    </span>
+                    <span className="text-gray-300">{data.engineQueue.katago.currentTask.id}</span>
+                    <span className="text-gray-500">用户#{data.engineQueue.katago.currentTask.userId}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* 队列列表 */}
+              {data?.engineQueue?.katago?.queueEntries && data.engineQueue.katago.queueEntries.length > 0 ? (
+                <div className="space-y-1">
+                  <div className="text-gray-400 text-xs">排队中 ({data.engineQueue.katago.queueEntries.length}):</div>
+                  {data.engineQueue.katago.queueEntries.map((entry, i) => (
+                    <div key={entry.id} className="bg-gray-800/30 rounded px-2 py-1.5 text-xs flex items-center gap-2">
+                      <span className="text-gray-500 w-4">#{i + 1}</span>
+                      <span className={`px-1.5 py-0.5 rounded ${
+                        entry.type === "analysis"
+                          ? "bg-amber-500/20 text-amber-300"
+                          : "bg-purple-500/20 text-purple-300"
+                      }`}>
+                        {entry.type === "analysis" ? "分析" : "落子"}
+                      </span>
+                      <span className="text-gray-400">{entry.id}</span>
+                      <span className="text-gray-500">用户#{entry.userId}</span>
+                      {entry.boardSize > 0 && <span className="text-gray-500">{entry.boardSize}路</span>}
+                      {entry.difficulty && <span className="text-gray-500">{entry.difficulty}</span>}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                !data?.engineQueue?.katago?.currentTask && (
+                  <p className="text-gray-600 text-xs">队列为空，无任务处理中</p>
+                )
+              )}
+            </div>
+          </div>
         </div>
 
         {/* 系统资源 + 历史图表 */}
