@@ -574,8 +574,13 @@ async function getKataGoAnalysis(
     const analyzeResponse = responses[responses.length - 2] || '';
 
     return parseKataAnalyze(analyzeResponse);
-  } catch (err) {
-    console.error('[kata-analyze] 分析失败:', err);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (errMsg.includes('interrupted')) {
+      console.log('[kata-analyze] 分析被中断（同一用户落子优先）');
+    } else {
+      console.error('[kata-analyze] 分析失败:', err);
+    }
     try {
       // 恢复maxVisits
       await persistentKataGo.sendCommand('kata-set-param maxVisits 150');
@@ -915,6 +920,20 @@ class EngineQueue {
       this.processNext();
     });
   }
+  /** 获取排队位置（不含当前正在处理的） */
+  getQueuePosition(userId?: number): { queueLength: number; userPosition: number; hasAnalysis: boolean } {
+    let userPosition = -1;
+    let hasAnalysis = false;
+    if (userId) {
+      for (let i = 0; i < this.queue.length; i++) {
+        if (this.queue[i].userId === userId && userPosition === -1) {
+          userPosition = i + 1; // 1-based
+        }
+        if (this.queue[i].isAnalysis) hasAnalysis = true;
+      }
+    }
+    return { queueLength: this.queue.length, userPosition, hasAnalysis };
+  }
 }
 
 const engineQueue = new EngineQueue();
@@ -1012,6 +1031,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 加入引擎队列（串行处理，支持多人排队）
+    const queueInfo = engineQueue.getQueuePosition(user.userId);
     const result = await engineQueue.enqueue(
       user.userId, requestedEngine, boardSize, moves, difficulty, aiColor
     );
@@ -1027,7 +1047,7 @@ export async function POST(request: NextRequest) {
       remainingPoints = latestUser?.points;
     }
 
-    return NextResponse.json({ ...result, pointsUsed: cost, remainingPoints });
+    return NextResponse.json({ ...result, pointsUsed: cost, remainingPoints, queueInfo });
   } catch (error) {
     console.error("Go engine API error:", error);
     return NextResponse.json({ error: "引擎错误" }, { status: 500 });

@@ -166,6 +166,7 @@ export default function GoGamePage() {
   }, [history]);
   const [score, setScore] = useState({ black: 0, white: 0 });
   const [isAIThinking, setIsAIThinking] = useState(false);
+  const [queuePosition, setQueuePosition] = useState(0); // 0=无排队，>0=排队位置
   const [savedGameId, setSavedGameId] = useState<number | null>(null);
   const [consecutivePasses, setConsecutivePasses] = useState(0);
   const gameEpochRef = useRef(0);
@@ -343,6 +344,7 @@ export default function GoGamePage() {
       teachAbortRef.current = null;
     }
     setIsAIThinking(false);
+    setQueuePosition(0);
     setIsCommentaryStreaming(false);
     setStreamingText('');
     setIsTeachStreaming(false);
@@ -540,6 +542,7 @@ export default function GoGamePage() {
     if (currentPlayer === playerColor) {
       const epochAtStart = gameEpochRef.current;
       setIsAIThinking(true);
+      setQueuePosition(0);
 
       // 等待玩家落子解说完成，避免解说流式输出被打断
       if (commentaryPromiseRef.current) {
@@ -587,7 +590,7 @@ export default function GoGamePage() {
                 deductPoints(data.pointsUsed);
               }
               if (data.queuePosition !== undefined && data.queuePosition > 0) {
-                console.log(`[engine] Queue position: ${data.queuePosition}`);
+                setQueuePosition(data.queuePosition);
               }
               if (data.move && isValidMove(newBoard, data.move.row, data.move.col, aiColor)) {
                 aiMove = data.move;
@@ -689,6 +692,7 @@ export default function GoGamePage() {
       setCurrentPlayer(playerColor);
       if (gameEpochRef.current === epochAtStart) {
         setIsAIThinking(false);
+    setQueuePosition(0);
       }
     }
     isProcessingMoveRef.current = false;
@@ -744,6 +748,7 @@ export default function GoGamePage() {
     }
     commentaryAbortRef.current = new AbortController();
     setIsAIThinking(false);
+    setQueuePosition(0);
     setIsCommentaryStreaming(false);
     setStreamingText('');
     setIsTeachStreaming(false);
@@ -811,6 +816,7 @@ export default function GoGamePage() {
           } finally {
             if (gameEpochRef.current === epoch) {
               setIsAIThinking(false);
+    setQueuePosition(0);
             }
           }
         })();
@@ -960,6 +966,7 @@ export default function GoGamePage() {
     setCurrentPlayer(playerColor);
     if (gameEpochRef.current === epochAtStart) {
       setIsAIThinking(false);
+    setQueuePosition(0);
     }
   }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, engine, history, requestCommentary, boardSize, playerColor, token]);
 
@@ -987,7 +994,8 @@ export default function GoGamePage() {
             row: h.position.row, col: h.position.col, color: h.color
           }));
           const analyzeController = new AbortController();
-          const analyzeTimeout = setTimeout(() => analyzeController.abort(), 15000);
+          // kata-analyze maxVisits=500 在19路棋盘可能需要30-60秒，给120秒超时
+          const analyzeTimeout = setTimeout(() => analyzeController.abort(), 120000);
           const analyzeRes = await fetch('/api/go-engine', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -996,7 +1004,9 @@ export default function GoGamePage() {
               boardSize,
               moves: movesForAnalysis,
             }),
-            signal: analyzeController.signal,
+            signal: AbortSignal.any
+              ? AbortSignal.any([analyzeController.signal, thisAbortController.signal])
+              : analyzeController.signal, // 用户落子时也会中断分析
           });
           clearTimeout(analyzeTimeout);
           // 检查是否已被用户落子中断
@@ -1369,6 +1379,7 @@ export default function GoGamePage() {
                   });
                   setCurrentPlayer(playerColor);
                   setIsAIThinking(false);
+    setQueuePosition(0);
                   return;
                 }
               } catch {
@@ -1391,6 +1402,7 @@ export default function GoGamePage() {
                 });
                 setCurrentPlayer(playerColor);
                 setIsAIThinking(false);
+    setQueuePosition(0);
                 return;
               }
               if (difficulty === 'hard') {
@@ -1818,7 +1830,7 @@ export default function GoGamePage() {
                   </Badge>
                 ) : (
                   <Badge variant={currentPlayer === playerColor ? 'default' : 'secondary'} className={`text-xs px-3 ${isAIThinking ? 'animate-pulse bg-amber-500 text-white' : ''}`}>
-                    {gameEnded ? '棋局结束' : isAIThinking ? 'AI思考中，请等待...' : currentPlayer === playerColor ? `轮到你落子（已下${history.length}手）` : 'AI回合'}
+                    {gameEnded ? '棋局结束' : isAIThinking ? (queuePosition > 0 ? `AI排队中，前方${queuePosition}人...` : 'AI思考中，请等待...') : currentPlayer === playerColor ? `轮到你落子（已下${history.length}手）` : 'AI回合'}
                     {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
                   </Badge>
                 )}
