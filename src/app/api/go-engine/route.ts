@@ -642,24 +642,45 @@ async function getKataGoAnalysis(
       }
       return result;
     } else {
-      // 模式2: kata-analyze（通过kata-set-param maxVisits控制搜索深度）
-      // kata-analyze本身只接受interval参数，maxVisits需通过kata-set-param设置
-      // genmove每次执行前都会重新设置maxVisits，所以这里修改不影响下棋
-      setupCommands.push(`kata-set-param maxVisits ${analysisVisits}`);
-      console.log(`[kata-analyze] 设置 maxVisits=${analysisVisits}，开始分析`);
+      // 模式2: kata-analyze + GTP stop（定时中断方式）
+      // 关键发现：kata-analyze无视maxVisits/maxTime/maxPlayouts，会无限搜索
+      // 唯一控制方式：发送GTP stop命令中断，获取当前分析结果
+      // analysisVisits控制分析时长：visits * 300ms + 1000ms基础时间
+      const durationMs = Math.min(60000, analysisVisits * 300 + 1000);
+      console.log(`[kata-analyze] 开始分析, ${analysisVisits}visits → ${(durationMs/1000).toFixed(1)}秒后stop`);
 
-      // 超时：根据visits数量动态调整，上限120秒
-      const analyzeTimeout = Math.min(120000, analysisVisits * 1500 + 10000);
-      const analyzeResponse = await persistentKataGo.sendCommand('kata-analyze 10', analyzeTimeout);
-      console.log(`[kata-analyze] 分析完成, 响应长度=${analyzeResponse.length}, 前300字=${analyzeResponse.substring(0, 300)}`);
+      // 发送kata-analyze命令（超时设长，实际由stop控制终止）
+      const analyzePromise = persistentKataGo.sendCommand('kata-analyze 10', durationMs + 30000);
 
-      const result = parseKataAnalyze(analyzeResponse, boardSize);
-      if (result) {
-        console.log(`[kata-analyze] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
-      } else {
-        console.log(`[kata-analyze] 解析返回null, 原始响应前500字=${analyzeResponse.substring(0, 500)}`);
+      // 定时发送stop中断分析
+      const stopTimer = setTimeout(() => {
+        try {
+          const proc = persistentKataGo.getProcess();
+          if (proc && !proc.killed && proc.stdin?.writable) {
+            proc.stdin.write('stop\n');
+            console.log(`[kata-analyze] 已发送stop（${(durationMs/1000).toFixed(1)}秒后）`);
+          }
+        } catch (e) {
+          console.log('[kata-analyze] 发送stop失败:', e);
+        }
+      }, durationMs);
+
+      try {
+        const analyzeResponse = await analyzePromise;
+        clearTimeout(stopTimer);
+        console.log(`[kata-analyze] 分析完成, 响应长度=${analyzeResponse.length}, 前300字=${analyzeResponse.substring(0, 300)}`);
+
+        const result = parseKataAnalyze(analyzeResponse, boardSize);
+        if (result) {
+          console.log(`[kata-analyze] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
+        } else {
+          console.log(`[kata-analyze] 解析返回null, 原始响应前500字=${analyzeResponse.substring(0, 500)}`);
+        }
+        return result;
+      } catch (err: unknown) {
+        clearTimeout(stopTimer);
+        throw err;
       }
-      return result;
     }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -672,10 +693,12 @@ async function getKataGoAnalysis(
   }
 }
 
-// 解析kata-analyze输出
-// 格式: 多行info + "= \n\n"结束
+// 解析kata-analyze输出（stop后的完整响应）
+// 格式: 多轮info行 + "= \n\n"结束
 // 每行: "info move D4 visits 50 winrate 5234 scoreMean 3.5 scoreStdev 1.2 prior 0.08 order 0 pv D4 Q16 C3 ..."
-// winrate范围: 0-10000（代表0%-100%的黑方胜率）
+// kata-analyze会持续输出中间结果，每轮info行代表一个搜索深度
+// 同一move会出现多次（不同visits），取最后一次（visits最高）
+// winrate范围: 0-1（0=黑必输, 1=黑必赢）
 // scoreMean: 黑方领先目数
 function parseKataAnalyze(output: string, boardSize: number): KataGoAnalysis | null {
   try {
@@ -688,43 +711,51 @@ function parseKataAnalyze(output: string, boardSize: number): KataGoAnalysis | n
       return null;
     }
 
-    // 从第一个info行提取全局胜率和领先目数
-    const firstParts = infoLines[0].trim().split(/\s+/);
-    const firstMoveIdx = firstParts.indexOf('move') + 1;
-    const firstWinrateIdx = firstParts.indexOf('winrate') + 1;
-    const firstScoreIdx = firstParts.indexOf('scoreMean') + 1;
+    // kata-analyze每轮搜索都输出所有候选手的info行
+    // 同一move会出现多次，后面的visits更高，取最后一次
+    const latestMoveInfo = new Map<string, { winrate: number; scoreMean: number; visits: number }>();
+    let globalWinRate = 0;
+    let globalScoreLead = 0;
 
-    if (firstWinrateIdx === 0 || firstScoreIdx === 0) {
-      console.log('[kata-analyze] 无法解析全局胜率/目数，第一行:', infoLines[0].substring(0, 200));
-      return null;
-    }
-
-    const globalWinRate = parseFloat(firstParts[firstWinrateIdx]) / 100; // 0-10000 → 0-100
-    const globalScoreLead = parseFloat(firstParts[firstScoreIdx]);
-
-    // 提取前3个推荐落点
-    const GTP_LETTERS = 'ABCDEFGHJKLMNOPQRST';
-    const bestMoves: KataGoAnalysis['bestMoves'] = [];
-    
-    for (const line of infoLines.slice(0, 3)) {
+    for (const line of infoLines) {
       const parts = line.trim().split(/\s+/);
       const moveIdx = parts.indexOf('move') + 1;
       const winrateIdx = parts.indexOf('winrate') + 1;
       const scoreIdx = parts.indexOf('scoreMean') + 1;
+      const visitsIdx = parts.indexOf('visits') + 1;
 
-      if (moveIdx > 0 && parts[moveIdx]) {
-        const moveStr = parts[moveIdx];
-        bestMoves.push({
-          move: moveStr,
-          winrate: winrateIdx > 0 ? parseFloat(parts[winrateIdx]) / 100 : globalWinRate,
-          scoreMean: scoreIdx > 0 ? parseFloat(parts[scoreIdx]) : globalScoreLead,
-        });
-      }
+      if (moveIdx === 0 || !parts[moveIdx]) continue;
+
+      const moveStr = parts[moveIdx];
+      const winrate = winrateIdx > 0 ? parseFloat(parts[winrateIdx]) : 0;
+      const scoreMean = scoreIdx > 0 ? parseFloat(parts[scoreIdx]) : 0;
+      const visits = visitsIdx > 0 ? parseInt(parts[visitsIdx]) : 0;
+
+      // 保留每个move的最新数据（后出现的visits更高）
+      latestMoveInfo.set(moveStr, { winrate, scoreMean, visits });
+
+      // 全局胜率/目数取最后一条info行（搜索最深的）
+      globalWinRate = winrate;
+      globalScoreLead = scoreMean;
     }
 
+    // 按visits降序排列，取前3个推荐落点
+    const sortedMoves = [...latestMoveInfo.entries()]
+      .sort((a, b) => b[1].visits - a[1].visits);
+
+    const bestMoves: KataGoAnalysis['bestMoves'] = sortedMoves.slice(0, 3).map(([move, data]) => ({
+      move,
+      winrate: Math.round(data.winrate * 1000) / 10, // 0-1 → 0-100
+      scoreMean: Math.round(data.scoreMean * 10) / 10,
+    }));
+
+    // winrate: KataGo v1.15.3输出0-1范围（0=黑必输, 1=黑必赢）
+    // 转为白方视角百分比（前端需要）
+    const whiteWinRate = Math.round((1 - globalWinRate) * 1000) / 10;
+
     return {
-      winRate: Math.round(globalWinRate * 10) / 10,
-      scoreLead: Math.round(globalScoreLead * 10) / 10,
+      winRate: whiteWinRate,
+      scoreLead: Math.round(-globalScoreLead * 10) / 10, // 取反为白方领先
       bestMoves,
     };
   } catch {
@@ -970,10 +1001,9 @@ class EngineQueue {
         let analysisResult: KataGoAnalysis | null = null;
         if (isKataGoAvailable()) {
           try {
-            // 分析超时根据visits动态调整：raw-nn=30s, analyze=N*1.5s+10s(上限120s)
-            const analysisTimeout = analysisVisits === 0
-              ? 30000
-              : Math.min(120000, analysisVisits * 1500 + 10000);
+            // 分析超时：durationMs(stop时间) + 30s缓冲
+            const durationMs = Math.min(60000, analysisVisits * 300 + 1000);
+            const analysisTimeout = durationMs + 30000;
             analysisResult = await Promise.race([
               getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>),
               new Promise<null>(resolve => setTimeout(() => {
