@@ -10,12 +10,14 @@ import { getUserFromAuthHeader } from "@/lib/auth";
 
 // KataGo分析结果类型
 interface KataGoAnalysis {
-  winRate: number;       // 黑方胜率 0-100
-  scoreLead: number;     // 黑方领先目数（负数=白方领先）
+  winRate: number;       // 白方胜率 0-100
+  scoreLead: number;     // 白方领先目数（负数=黑方领先）
+  actualVisits: number;  // 实际完成的搜索次数（kata-analyze时有效）
   bestMoves: {           // 推荐落点（前3）
     move: string;        // GTP坐标 如 "D4"
-    winrate: number;     // 该点黑方胜率
+    winrate: number;     // 该点胜率
     scoreMean: number;   // 该点目数领先
+    visits: number;      // 该点搜索次数
   }[];
 }
 
@@ -73,6 +75,7 @@ function parseKataRawNN(output: string, boardSize: number): KataGoAnalysis | nul
           move,
           winrate: Math.round(blackWinRate * 10) / 10,
           scoreMean: Math.round(blackScoreLead * 10) / 10,
+          visits: 0,
         });
       }
     }
@@ -80,6 +83,7 @@ function parseKataRawNN(output: string, boardSize: number): KataGoAnalysis | nul
     return {
       winRate: Math.round(blackWinRate * 10) / 10,
       scoreLead: Math.round(blackScoreLead * 10) / 10,
+      actualVisits: 0,
       bestMoves,
     };
   } catch {
@@ -130,8 +134,9 @@ interface ActiveSession {
 const activeSessions: Map<string, ActiveSession> = new Map();
 
 // 分析引擎配置（可在monitor页面动态调整）
-// 0 = kata-raw-nn（瞬时，0 visits质量）, >0 = kata-analyze（N次搜索访问）
-let analysisVisits = 0;
+// 0 = kata-raw-nn（瞬时，纯神经网络直出）
+// >0 = kata-analyze（MCTS搜索N秒后用GTP stop中断）
+let analysisSeconds = 0;
 
 // KataGo分析结果缓存（后台异步分析完成后存储，go-ai API可直接读取）
 const analysisCache: Map<string, { data: KataGoAnalysis; timestamp: number }> = new Map();
@@ -161,7 +166,7 @@ export function getEngineMonitorData() {
       queueLength: engineQueue.getQueueLength(),
       processing: engineQueue.isProcessing(),
       currentTask: currentInfo ? { id: currentInfo.id, userId: currentInfo.userId, isAnalysis: currentInfo.isAnalysis, engine: currentInfo.engine } : null,
-      analysisVisits,  // 当前分析配置
+      analysisSeconds,  // 当前分析配置
       queueEntries: engineQueue.getQueueEntries(),  // 队列中每个任务的详情
     },
     gnugo: { queueLength: 0, processing: false },
@@ -596,8 +601,8 @@ async function getKataGoMove(
 
 // ============================================================
 // KataGo分析（支持两种模式）
-// analysisVisits=0: kata-raw-nn（0.04秒，纯神经网络直出，0 visits质量）
-// analysisVisits>0: kata-analyze（搜索N次访问，质量随visits提升）
+// analysisSeconds=0: kata-raw-nn（0.04秒，纯神经网络直出）
+// analysisSeconds>0: kata-analyze（MCTS搜索N秒后用GTP stop中断）
 // ============================================================
 async function getKataGoAnalysis(
   boardSize: number,
@@ -625,10 +630,10 @@ async function getKataGoAnalysis(
       const color = m.color === "black" ? "B" : "W";
       setupCommands.push(`play ${color} ${coord}`);
     }
-    console.log(`[kata-analysis] 准备棋盘: ${moves.length}步, boardSize=${boardSize}, mode=${analysisVisits === 0 ? 'raw-nn' : `analyze(${analysisVisits}visits)`}`);
+    console.log(`[kata-analysis] 准备棋盘: ${moves.length}步, boardSize=${boardSize}, mode=${analysisSeconds === 0 ? 'raw-nn' : `analyze(${analysisSeconds}s)`}`);
     await persistentKataGo.sendCommands(setupCommands, 30000);
 
-    if (analysisVisits === 0) {
+    if (analysisSeconds === 0) {
       // 模式1: kata-raw-nn all（0.04秒完成，输出标准GTP格式=\n\n）
       // 直接输出神经网络策略，不走MCTS搜索树，极速
       const analyzeResponse = await persistentKataGo.sendCommand('kata-raw-nn all', 10000);
@@ -645,9 +650,9 @@ async function getKataGoAnalysis(
       // 模式2: kata-analyze + GTP stop（定时中断方式）
       // 关键发现：kata-analyze无视maxVisits/maxTime/maxPlayouts，会无限搜索
       // 唯一控制方式：发送GTP stop命令中断，获取当前分析结果
-      // analysisVisits控制分析时长：visits * 300ms + 1000ms基础时间
-      const durationMs = Math.min(60000, analysisVisits * 300 + 1000);
-      console.log(`[kata-analyze] 开始分析, ${analysisVisits}visits → ${(durationMs/1000).toFixed(1)}秒后stop`);
+      // analysisSeconds直接控制搜索时长（秒）
+      const durationMs = analysisSeconds * 1000;
+      console.log(`[kata-analyze] 开始分析, ${analysisSeconds}秒后stop`);
 
       // 发送kata-analyze命令（超时设长，实际由stop控制终止）
       const analyzePromise = persistentKataGo.sendCommand('kata-analyze 10', durationMs + 30000);
@@ -658,7 +663,7 @@ async function getKataGoAnalysis(
           const proc = persistentKataGo.getProcess();
           if (proc && !proc.killed && proc.stdin?.writable) {
             proc.stdin.write('stop\n');
-            console.log(`[kata-analyze] 已发送stop（${(durationMs/1000).toFixed(1)}秒后）`);
+            console.log(`[kata-analyze] 已发送stop（${analysisSeconds}秒后）`);
           }
         } catch (e) {
           console.log('[kata-analyze] 发送stop失败:', e);
@@ -672,7 +677,7 @@ async function getKataGoAnalysis(
 
         const result = parseKataAnalyze(analyzeResponse, boardSize);
         if (result) {
-          console.log(`[kata-analyze] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
+          console.log(`[kata-analyze] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, actualVisits=${result.actualVisits}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
         } else {
           console.log(`[kata-analyze] 解析返回null, 原始响应前500字=${analyzeResponse.substring(0, 500)}`);
         }
@@ -695,7 +700,7 @@ async function getKataGoAnalysis(
 
 // 解析kata-analyze输出（stop后的完整响应）
 // 格式: 多轮info行 + "= \n\n"结束
-// 每行: "info move D4 visits 50 winrate 5234 scoreMean 3.5 scoreStdev 1.2 prior 0.08 order 0 pv D4 Q16 C3 ..."
+// 每行: "info move D4 visits 50 winrate 0.52 scoreMean 3.5 scoreStdev 1.2 prior 0.08 order 0 pv D4 Q16 C3 ..."
 // kata-analyze会持续输出中间结果，每轮info行代表一个搜索深度
 // 同一move会出现多次（不同visits），取最后一次（visits最高）
 // winrate范围: 0-1（0=黑必输, 1=黑必赢）
@@ -716,6 +721,7 @@ function parseKataAnalyze(output: string, boardSize: number): KataGoAnalysis | n
     const latestMoveInfo = new Map<string, { winrate: number; scoreMean: number; visits: number }>();
     let globalWinRate = 0;
     let globalScoreLead = 0;
+    let topMoveVisits = 0;
 
     for (const line of infoLines) {
       const parts = line.trim().split(/\s+/);
@@ -737,6 +743,7 @@ function parseKataAnalyze(output: string, boardSize: number): KataGoAnalysis | n
       // 全局胜率/目数取最后一条info行（搜索最深的）
       globalWinRate = winrate;
       globalScoreLead = scoreMean;
+      topMoveVisits = visits; // 最后一条info的visits就是搜索最深的
     }
 
     // 按visits降序排列，取前3个推荐落点
@@ -747,15 +754,25 @@ function parseKataAnalyze(output: string, boardSize: number): KataGoAnalysis | n
       move,
       winrate: Math.round(data.winrate * 1000) / 10, // 0-1 → 0-100
       scoreMean: Math.round(data.scoreMean * 10) / 10,
+      visits: data.visits,
     }));
 
     // winrate: KataGo v1.15.3输出0-1范围（0=黑必输, 1=黑必赢）
     // 转为白方视角百分比（前端需要）
     const whiteWinRate = Math.round((1 - globalWinRate) * 1000) / 10;
 
+    // scoreLead: scoreMean为黑方视角，取反为白方领先
+    // 当scoreMean为-0（极小值截断）时，用winRate估算近似目数差
+    let whiteScoreLead = Math.round(-globalScoreLead * 10) / 10;
+    if (whiteScoreLead === 0 && whiteWinRate !== 50) {
+      // 粗略估算：胜率偏离50%的幅度 × 0.3 作为目数差
+      whiteScoreLead = Math.round((whiteWinRate - 50) * 0.3 * 10) / 10;
+    }
+
     return {
       winRate: whiteWinRate,
-      scoreLead: Math.round(-globalScoreLead * 10) / 10, // 取反为白方领先
+      scoreLead: whiteScoreLead,
+      actualVisits: topMoveVisits,
       bestMoves,
     };
   } catch {
@@ -1001,17 +1018,21 @@ class EngineQueue {
         let analysisResult: KataGoAnalysis | null = null;
         if (isKataGoAvailable()) {
           try {
-            // 分析超时：durationMs(stop时间) + 30s缓冲
-            const durationMs = Math.min(60000, analysisVisits * 300 + 1000);
-            const analysisTimeout = durationMs + 30000;
+            // 安全超时：analysisSeconds秒 + 30s缓冲（防止getKataGoAnalysis内部stop失败时无限等待）
+            const analysisTimeout = (analysisSeconds || 0) * 1000 + 30000;
+            let queueTimeoutId: ReturnType<typeof setTimeout> | null = null;
             analysisResult = await Promise.race([
               getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>),
-              new Promise<null>(resolve => setTimeout(() => {
-                console.warn(`[engine-queue] Analysis timeout (${Math.round(analysisTimeout/1000)}s) for ${entry.id}`);
-                persistentKataGo.stopAnalysis();
-                resolve(null);
-              }, analysisTimeout)),
+              new Promise<null>(resolve => {
+                queueTimeoutId = setTimeout(() => {
+                  console.warn(`[engine-queue] Analysis safety timeout (${Math.round(analysisTimeout/1000)}s) for ${entry.id}`);
+                  persistentKataGo.stopAnalysis();
+                  resolve(null);
+                }, analysisTimeout);
+              }),
             ]);
+            // 关键：分析完成后立即清除队列超时计时器，防止双重stop
+            if (queueTimeoutId !== null) clearTimeout(queueTimeoutId);
           } catch (err) {
             console.warn(`[engine-queue] Analysis failed:`, err instanceof Error ? err.message : String(err));
             persistentKataGo.resetCrashState();
@@ -1151,18 +1172,18 @@ const engineQueue = new EngineQueue();
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { boardSize, moves, difficulty, engine: requestedEngine, aiColor: rawAiColor, action, analysisVisits: newVisits } = body;
+    const { boardSize, moves, difficulty, engine: requestedEngine, aiColor: rawAiColor, action, analysisSeconds: newSeconds } = body;
     const aiColor: 'black' | 'white' = (rawAiColor === 'black' || rawAiColor === 'white') ? rawAiColor : 'white';
 
-    // 配置更新请求：修改分析visits
+    // 配置更新请求：修改分析时长（秒）
     if (action === 'setConfig') {
-      if (typeof newVisits === 'number' && newVisits >= 0 && newVisits <= 200) {
-        const oldVisits = analysisVisits;
-        analysisVisits = newVisits;
-        console.log(`[go-engine] analysisVisits updated: ${oldVisits} → ${analysisVisits}`);
-        return NextResponse.json({ success: true, analysisVisits });
+      if (typeof newSeconds === 'number' && newSeconds >= 0 && newSeconds <= 60) {
+        const oldSeconds = analysisSeconds;
+        analysisSeconds = newSeconds;
+        console.log(`[go-engine] analysisSeconds updated: ${oldSeconds}s → ${analysisSeconds}s`);
+        return NextResponse.json({ success: true, analysisSeconds });
       }
-      return NextResponse.json({ error: 'Invalid analysisVisits (0-200)' }, { status: 400 });
+      return NextResponse.json({ error: 'Invalid analysisSeconds (0-60)' }, { status: 400 });
     }
 
     // 按需分析请求：仅当用户点击"提示与教学"时触发
@@ -1342,7 +1363,7 @@ export async function GET(request: NextRequest) {
     ],
     queueLength,              // 顶层字段，队列中等待的任务数
     isProcessing,             // 顶层字段，是否有任务正在处理
-    analysisVisits,           // 当前分析配置（0=raw-nn, >0=kata-analyze visits数）
+    analysisSeconds,           // 当前分析配置（0=raw-nn, >0=kata-analyze搜索N秒）
     userQueuePosition: userQueueInfo.userPosition,  // 该用户在队列中的位置（1-based，-1=不在队列中）
     queue: { length: queueLength, processing: isProcessing },
   });

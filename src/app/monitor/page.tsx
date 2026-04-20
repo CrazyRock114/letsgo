@@ -27,7 +27,7 @@ interface MonitorData {
     katago: {
       queueLength: number;
       processing: boolean;
-      analysisVisits: number;
+      analysisSeconds: number;
       currentTask: { id: string; userId: number; isAnalysis: boolean; engine: string } | null;
       queueEntries: Array<{ id: string; userId: number; type: string; engine: string; boardSize: number; difficulty: string }>;
     };
@@ -57,7 +57,7 @@ export default function MonitorPage() {
   const [data, setData] = useState<MonitorData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<Array<{ time: string; mem: number; cpu: number; active: number }>>([]);
-  const [selectedVisits, setSelectedVisits] = useState<number>(0);
+  const [selectedSeconds, setSelectedSeconds] = useState<number>(0);
   const [configSaving, setConfigSaving] = useState(false);
   const [configMsg, setConfigMsg] = useState<string | null>(null);
 
@@ -67,9 +67,9 @@ export default function MonitorPage() {
       if (!res.ok) throw new Error("获取失败");
       const d = await res.json();
       setData(d);
-      // 同步当前analysisVisits到选择器
-      if (d?.engineQueue?.katago?.analysisVisits !== undefined) {
-        setSelectedVisits(d.engineQueue.katago.analysisVisits);
+      // 同步当前analysisSeconds到选择器
+      if (d?.engineQueue?.katago?.analysisSeconds !== undefined) {
+        setSelectedSeconds(d.engineQueue.katago.analysisSeconds);
       }
       setError(null);
       // 记录历史数据（最多60个点=5分钟）
@@ -94,11 +94,11 @@ export default function MonitorPage() {
       const res = await fetch("/api/go-engine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "setConfig", analysisVisits: selectedVisits }),
+        body: JSON.stringify({ action: "setConfig", analysisSeconds: selectedSeconds }),
       });
       const result = await res.json();
       if (res.ok && result.success) {
-        setConfigMsg(`已更新: ${result.analysisVisits} visits`);
+        setConfigMsg(`已更新: ${result.analysisSeconds}s`);
         // 立即刷新数据
         fetchData();
       } else {
@@ -110,7 +110,7 @@ export default function MonitorPage() {
       setConfigSaving(false);
       setTimeout(() => setConfigMsg(null), 3000);
     }
-  }, [selectedVisits, fetchData]);
+  }, [selectedSeconds, fetchData]);
 
   useEffect(() => {
     fetchData();
@@ -167,29 +167,29 @@ export default function MonitorPage() {
             <h2 className="text-sm font-semibold text-gray-400 mb-3">KataGo 分析配置</h2>
             <div className="space-y-3">
               <div>
-                <label className="text-xs text-gray-500 block mb-1">分析深度 (visits)</label>
+                <label className="text-xs text-gray-500 block mb-1">分析时长 (秒)</label>
                 <select
-                  value={selectedVisits}
-                  onChange={e => setSelectedVisits(Number(e.target.value))}
+                  value={selectedSeconds}
+                  onChange={e => setSelectedSeconds(Number(e.target.value))}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
                 >
                   <option value={0}>0 - raw-nn (瞬时, 无搜索)</option>
-                  <option value={5}>5 - 极速探索</option>
-                  <option value={10}>10 - 快速分析</option>
-                  <option value={15}>15 - 初级分析</option>
-                  <option value={25}>25 - 轻度分析</option>
-                  <option value={50}>50 - 中等分析</option>
-                  <option value={100}>100 - 深度分析</option>
-                  <option value={150}>150 - 高深度分析</option>
-                  <option value={200}>200 - 最深度分析</option>
+                  <option value={1}>1秒 - 极速</option>
+                  <option value={2}>2秒 - 快速</option>
+                  <option value={3}>3秒 - 轻度</option>
+                  <option value={5}>5秒 - 中等</option>
+                  <option value={10}>10秒 - 深度</option>
+                  <option value={20}>20秒 - 高深度</option>
+                  <option value={30}>30秒 - 最深度</option>
+                  <option value={60}>60秒 - 极限深度</option>
                 </select>
               </div>
               <div className="flex items-center gap-3">
                 <button
                   onClick={handleSaveConfig}
-                  disabled={configSaving || selectedVisits === (data?.engineQueue?.katago?.analysisVisits ?? 0)}
+                  disabled={configSaving || selectedSeconds === (data?.engineQueue?.katago?.analysisSeconds ?? 0)}
                   className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                    configSaving || selectedVisits === (data?.engineQueue?.katago?.analysisVisits ?? 0)
+                    configSaving || selectedSeconds === (data?.engineQueue?.katago?.analysisSeconds ?? 0)
                       ? "bg-gray-700 text-gray-500 cursor-not-allowed"
                       : "bg-purple-600 hover:bg-purple-500 text-white"
                   }`}
@@ -203,11 +203,11 @@ export default function MonitorPage() {
                 )}
               </div>
               <div className="text-xs text-gray-600 space-y-0.5 pt-2 border-t border-gray-800">
-                <div>当前值: <span className="text-gray-400">{data?.engineQueue?.katago?.analysisVisits ?? 0}</span> visits</div>
+                <div>当前值: <span className="text-gray-400">{data?.engineQueue?.katago?.analysisSeconds ?? 0}s</span></div>
                 <div>
-                  {data?.engineQueue?.katago?.analysisVisits === 0
+                  {data?.engineQueue?.katago?.analysisSeconds === 0
                     ? "模式: 神经网络直出 (kata-raw-nn), ~0.04秒, 无搜索树"
-                    : `模式: MCTS搜索 (kata-analyze), 预估${Math.min(120, Math.round(((data?.engineQueue?.katago?.analysisVisits ?? 0) * 1.5 + 10)))}秒内完成`
+                    : `模式: MCTS搜索 (kata-analyze), ${data?.engineQueue?.katago?.analysisSeconds}秒后stop`
                   }
                 </div>
               </div>

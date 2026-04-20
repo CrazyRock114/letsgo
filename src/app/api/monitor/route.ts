@@ -126,7 +126,7 @@ export async function GET() {
         katago: {
           queueLength: engineData.kataGo.queueLength,
           processing: engineData.kataGo.processing,
-          analysisVisits: engineData.kataGo.analysisVisits,
+          analysisSeconds: engineData.kataGo.analysisSeconds,
           currentTask: engineData.kataGo.currentTask,
           queueEntries: engineData.kataGo.queueEntries,
         },
