@@ -167,6 +167,7 @@ export default function GoGamePage() {
   const [score, setScore] = useState({ black: 0, white: 0 });
   const [isAIThinking, setIsAIThinking] = useState(false);
   const [queuePosition, setQueuePosition] = useState(0); // 0=无排队，>0=排队位置
+  const queuePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [savedGameId, setSavedGameId] = useState<number | null>(null);
   const [consecutivePasses, setConsecutivePasses] = useState(0);
   const gameEpochRef = useRef(0);
@@ -174,6 +175,42 @@ export default function GoGamePage() {
   const commentaryAbortRef = useRef<AbortController | null>(null);
   // 防止handleMove重入（快速点击时闭包值可能过期）
   const isProcessingMoveRef = useRef(false);
+
+  // AI思考时轮询队列位置
+  useEffect(() => {
+    if (isAIThinking) {
+      const pollQueue = async () => {
+        try {
+          const res = await fetch('/api/go-engine');
+          if (res.ok) {
+            const data = await res.json();
+            const qLen = data.queueLength ?? 0;
+            const isProcessing = data.isProcessing ?? false;
+            // 如果在排队中，设置排队位置；如果正在处理，设为0
+            setQueuePosition(qLen > 0 ? qLen : (isProcessing ? 0 : 0));
+          }
+        } catch {
+          // 轮询失败不处理
+        }
+      };
+      // 立即查一次
+      pollQueue();
+      // 每2秒轮询
+      queuePollRef.current = setInterval(pollQueue, 2000);
+    } else {
+      setQueuePosition(0);
+      if (queuePollRef.current) {
+        clearInterval(queuePollRef.current);
+        queuePollRef.current = null;
+      }
+    }
+    return () => {
+      if (queuePollRef.current) {
+        clearInterval(queuePollRef.current);
+        queuePollRef.current = null;
+      }
+    };
+  }, [isAIThinking]);
   // KataGo分析数据（来自引擎响应，传给解说/教学API）
   const latestAnalysisRef = useRef<{winRate: number; scoreLead: number; bestMoves: {move: string; winrate: number; scoreMean: number}[]} | null>(null);
   const [gameEnded, setGameEnded] = useState(false);
@@ -589,9 +626,7 @@ export default function GoGamePage() {
               if (data.pointsUsed > 0) {
                 deductPoints(data.pointsUsed);
               }
-              if (data.queuePosition !== undefined && data.queuePosition > 0) {
-                setQueuePosition(data.queuePosition);
-              }
+              // queuePosition 由轮询机制实时更新，不再从响应中读取
               if (data.move && isValidMove(newBoard, data.move.row, data.move.col, aiColor)) {
                 aiMove = data.move;
                 usedEngine = true;

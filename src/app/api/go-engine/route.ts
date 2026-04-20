@@ -440,8 +440,8 @@ class PersistentKataGo {
       // stop会让kata-analyze立即返回，进程回到空闲状态
       this.proc.stdin?.write('stop\n');
       
-      // 等待一小段时间让KataGo处理stop
-      await new Promise(r => setTimeout(r, 200));
+      // 彻底清理残留数据，防止影响下一个任务
+      await this.thoroughFlush();
     } catch (e) {
       console.log(`[KataGo] stopAnalysis error:`, e);
     }
@@ -450,6 +450,15 @@ class PersistentKataGo {
   // 完全关闭（进程退出时调用）
   /** 清除buffer中可能残留的旧数据 */
   clearBuffer(): void {
+    this.buffer = "";
+  }
+
+  // 彻底清理：清空buffer+commandQueue，等待进程安静
+  async thoroughFlush(): Promise<void> {
+    this.commandQueue = [];
+    this.buffer = "";
+    // 等待KataGo进程输出所有残留数据
+    await new Promise(resolve => setTimeout(resolve, 150));
     this.buffer = "";
   }
 
@@ -497,8 +506,8 @@ async function getKataGoMove(
   // 请求AI落子
   gtpCommands.push(`genmove ${aiColor === 'black' ? 'B' : 'W'}`);
 
-  // 清除可能残留的旧buffer数据（stop命令后可能有残余输出）
-  persistentKataGo.clearBuffer();
+  // 彻底清理残留数据（stop命令后可能有残余输出，等待并消耗干净）
+  await persistentKataGo.thoroughFlush();
   
   // 发送命令，单条超时30秒（总超时由Next.js request timeout控制）
   const responses = await persistentKataGo.sendCommands(gtpCommands, 30000);
@@ -544,6 +553,9 @@ async function getKataGoAnalysis(
     console.log('[kata-analyze] KataGo进程未就绪，跳过分析');
     return null;
   }
+
+  // 彻底清理残留数据（前一个任务完成后buffer中可能有残余输出）
+  await persistentKataGo.thoroughFlush();
 
   try {
     // 设置分析用的maxVisits（固定500，不受游戏难度影响）
@@ -820,6 +832,10 @@ class EngineQueue {
     console.log(`[engine-queue] Processing: ${entry.id}, engine=${entry.engine}, isAnalysis=${!!entry.isAnalysis}`);
 
     try {
+      // 每次处理前先清理 KataGo 进程 buffer 残留，避免响应错位
+      if (entry.engine === "katago" && isKataGoAvailable()) {
+        persistentKataGo.clearBuffer();
+      }
       // 分析请求：只使用KataGo，不影响下棋结果
       if (entry.isAnalysis) {
         let analysisResult: KataGoAnalysis | null = null;
