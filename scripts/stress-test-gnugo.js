@@ -122,6 +122,9 @@ function applyMove(board, row, col, color, size) {
   return newBoard;
 }
 
+// 全局唯一标识，避免重复注册冲突（短后缀确保昵称不超20字符）
+const RUN_ID = (Date.now() % 100000).toString(36);
+
 // API 调用
 async function registerUser(nickname, password) {
   const res = await fetch(`${BASE_URL}/api/auth/register`, {
@@ -143,6 +146,7 @@ async function loginUser(nickname, password) {
     body: JSON.stringify({ nickname, password }),
   });
   if (!res.ok) {
+    // 登录也失败，放弃此用户
     const data = await res.json();
     throw new Error(`Login failed: ${data.error}`);
   }
@@ -165,6 +169,54 @@ async function getAIMove(token, moves, boardSize, difficulty, engine) {
   return res.json();
 }
 
+// 创建棋局记录
+async function createGame(token, boardSize, difficulty, engine) {
+  const res = await fetch(`${BASE_URL}/api/games`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      board_size: boardSize,
+      difficulty,
+      engine,
+      moves: [],
+      status: 'playing',
+      title: `${boardSize}路 ${difficulty} ${engine} 压力测试`,
+    }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    console.log(`  创建棋局记录失败: ${data.error || res.status}（不影响对弈）`);
+    return null;
+  }
+  const data = await res.json();
+  return data.game?.id || null;
+}
+
+// 更新棋局记录
+async function updateGame(token, gameId, moves, board, status) {
+  if (!gameId) return;
+  const res = await fetch(`${BASE_URL}/api/games`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      id: gameId,
+      moves,
+      final_board: board,
+      status,
+    }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    console.log(`  更新棋局记录失败: ${data.error || res.status}（不影响对弈）`);
+  }
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -180,7 +232,7 @@ const stats = {
 
 // 单个用户对弈流程
 async function runUser(userId) {
-  const nickname = `stresstest_${userId}`;
+  const nickname = `st_${userId}_${RUN_ID}`;
   const password = 'stress123';
   const userLog = (msg) => console.log(`[User${userId}] ${msg}`);
 
@@ -195,6 +247,12 @@ async function runUser(userId) {
     let step = 0;
     let playerColor = 1; // black
     let aiColor = 2; // white
+
+    // 创建棋局记录（让Monitor页面能看到活跃对弈）
+    const gameId = await createGame(token, BOARD_SIZE, DIFFICULTY, ENGINE);
+    if (gameId) {
+      userLog(`棋局已创建 (id:${gameId})`);
+    }
 
     while (step < STEPS) {
       step++;
@@ -241,11 +299,19 @@ async function runUser(userId) {
         userLog(`  AI请求失败: ${err.message} (${aiDuration}ms)`);
       }
 
+      // 每步更新棋局记录（让Monitor看到活跃对弈）
+      if (gameId && step % 3 === 0) {
+        await updateGame(token, gameId, moves, board, 'playing');
+      }
+
       // 等待间隔
       if (step < STEPS) {
         await sleep(INTERVAL_MS);
       }
     }
+
+    // 标记棋局结束
+    await updateGame(token, gameId, moves, board, 'finished');
 
     userLog(`完成! 共${step}步`);
     stats.userResults.push({ userId, steps: step, success: true });
