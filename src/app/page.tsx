@@ -192,12 +192,11 @@ export default function GoGamePage() {
               // 正在处理自己的任务，不需要显示排队
               setQueuePosition(0);
             } else if (userPos > 0) {
-              // 在队列中，显示前方有几个任务
+              // 在队列中，userPos=前方任务数（含正在处理的任务）
               setQueuePosition(userPos);
             } else {
-              // 不在队列中但队列有人（可能是其他用户的任务在排队）
-              const qLen = data.queueLength ?? data.queue?.length ?? 0;
-              setQueuePosition(qLen > 0 ? qLen : 0);
+              // 不在队列中，不显示排队
+              setQueuePosition(0);
             }
           }
         } catch {
@@ -645,7 +644,8 @@ export default function GoGamePage() {
                 // 引擎主动停手（非错误），计入连续停手
                 const newPasses = consecutivePasses + 1;
                 setConsecutivePasses(newPasses);
-                if (newPasses >= 2) {
+                const endCheck = checkGameEnd(newBoard, newPasses, history.length + 1);
+                if (endCheck.ended) {
                   const result = calculateFinalScore(newBoard);
                   setGameEnded(true);
     setShowGameEndDialog(true);
@@ -727,7 +727,8 @@ export default function GoGamePage() {
         // AI无合法落子，自动停手
         const newPasses = consecutivePasses + 1;
         setConsecutivePasses(newPasses);
-        if (newPasses >= 2) {
+        const endCheck = checkGameEnd(newBoard, newPasses, history.length + 1);
+        if (endCheck.ended) {
           const result = calculateFinalScore(newBoard);
           setGameEnded(true);
     setShowGameEndDialog(true);
@@ -882,8 +883,9 @@ export default function GoGamePage() {
     const newPasses = consecutivePasses + 1;
     setConsecutivePasses(newPasses);
 
-    if (newPasses >= 2) {
-      // 双方连续停手，游戏结束
+    const endCheck = checkGameEnd(board, newPasses, history.length);
+    if (endCheck.ended) {
+      // 满足严格结束条件
       const result = calculateFinalScore(board);
       setGameEnded(true);
     setShowGameEndDialog(true);
@@ -949,10 +951,16 @@ export default function GoGamePage() {
             aiMove = data.move;
             usedEngine = true;
           } else if (data.pass) {
-            const result = calculateFinalScore(board);
-            setGameEnded(true);
+            // 引擎也停手，计入连续停手
+            const newPasses2 = consecutivePasses + 2; // 玩家+AI都停手
+            setConsecutivePasses(newPasses2);
+            const endCheck = checkGameEnd(board, newPasses2, history.length + 1);
+            if (endCheck.ended) {
+              const result = calculateFinalScore(board);
+              setGameEnded(true);
     setShowGameEndDialog(true);
-            setGameResult(result);
+              setGameResult(result);
+            }
             if (gameEpochRef.current === epochAtStart) setIsAIThinking(false);
             return;
           } else {
@@ -1000,8 +1008,8 @@ export default function GoGamePage() {
     requestCommentary(finalBoard, aiMove, aiColor, aiCaptured, moveIdx, historyWithAIMove);
 
     // 检查游戏结束
-    const endCheck = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
-    if (endCheck.ended) {
+    const passEndCheck = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
+    if (passEndCheck.ended) {
       const result = calculateFinalScore(finalBoard);
       setGameEnded(true);
     setShowGameEndDialog(true);
@@ -1242,6 +1250,7 @@ export default function GoGamePage() {
       if (data.game) {
         setSavedGameId(data.game.id);
         setSaveMessage('保存成功！');
+        toast.success('棋局已保存', { description: '可在历史棋局中查看' });
         setTimeout(() => {
           setShowSaveDialog(false);
           setSaveTitle('');
@@ -1249,10 +1258,12 @@ export default function GoGamePage() {
         }, 800);
       } else if (data.error) {
         setSaveMessage(`保存失败：${data.error}`);
+        toast.error('保存失败', { description: data.error });
       }
     } catch (err) {
       console.error('保存棋局失败:', err);
       setSaveMessage('保存失败，请重试');
+      toast.error('保存失败', { description: '网络错误，请重试' });
     }
     setIsSaving(false);
   }, [user, token, savedGameId, boardSize, difficulty, engine, history, commentaries, board, score, saveTitle, isSaving]);
@@ -1415,13 +1426,15 @@ export default function GoGamePage() {
                 } else if (data.pass) {
                   // AI停手
                   setConsecutivePasses(prev => {
-                    if (prev + 1 >= 2) {
+                    const newPasses = prev + 1;
+                    const endCheck = checkGameEnd(newBoard, newPasses, replayIndex + 2);
+                    if (endCheck.ended) {
                       const result = calculateFinalScore(newBoard);
                       setGameEnded(true);
                       setShowGameEndDialog(true);
                       setGameResult(result);
                     }
-                    return prev + 1;
+                    return newPasses;
                   });
                   setCurrentPlayer(playerColor);
                   setIsAIThinking(false);
@@ -1438,13 +1451,15 @@ export default function GoGamePage() {
               if (validMoves.length === 0) {
                 // AI无合法落子
                 setConsecutivePasses(prev => {
-                  if (prev + 1 >= 2) {
+                  const newPasses = prev + 1;
+                  const endCheck = checkGameEnd(newBoard, newPasses, replayIndex + 2);
+                  if (endCheck.ended) {
                     const result = calculateFinalScore(newBoard);
                     setGameEnded(true);
                     setShowGameEndDialog(true);
                     setGameResult(result);
                   }
-                  return prev + 1;
+                  return newPasses;
                 });
                 setCurrentPlayer(playerColor);
                 setIsAIThinking(false);

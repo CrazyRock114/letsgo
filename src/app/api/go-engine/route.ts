@@ -10,13 +10,13 @@ import { getUserFromAuthHeader } from "@/lib/auth";
 
 // KataGo分析结果类型
 interface KataGoAnalysis {
-  winRate: number;       // 白方胜率 0-100
-  scoreLead: number;     // 白方领先目数（负数=黑方领先）
+  winRate: number;       // 黑方胜率 0-100
+  scoreLead: number;     // 黑方领先目数（负数=白方领先）
   actualVisits: number;  // 实际完成的搜索次数（kata-analyze时有效）
   bestMoves: {           // 推荐落点（前3）
     move: string;        // GTP坐标 如 "D4"
-    winrate: number;     // 该点胜率
-    scoreMean: number;   // 该点目数领先
+    winrate: number;     // 该点黑方胜率 0-100
+    scoreMean: number;   // 该点目数领先（黑方视角）
     visits: number;      // 该点搜索次数
   }[];
 }
@@ -169,7 +169,7 @@ export function getEngineMonitorData() {
       analysisSeconds,  // 当前分析配置
       queueEntries: engineQueue.getQueueEntries(),  // 队列中每个任务的详情
     },
-    gnugo: { queueLength: 0, processing: false },
+    gnugo: { queueLength: 0, processing: false, note: '独立并行，不走EngineQueue' },
     activeSessions: Array.from(activeSessions.values()).map(s => ({
       player: s.nickname,
       engine: s.engine,
@@ -752,26 +752,26 @@ function parseKataAnalyze(output: string, boardSize: number): KataGoAnalysis | n
 
     const bestMoves: KataGoAnalysis['bestMoves'] = sortedMoves.slice(0, 3).map(([move, data]) => ({
       move,
-      winrate: Math.round(data.winrate * 1000) / 10, // 0-1 → 0-100
-      scoreMean: Math.round(data.scoreMean * 10) / 10,
+      winrate: Math.round(data.winrate * 1000) / 10, // 0-1 → 0-100（黑方胜率）
+      scoreMean: Math.round(data.scoreMean * 10) / 10, // 黑方视角
       visits: data.visits,
     }));
 
     // winrate: KataGo v1.15.3输出0-1范围（0=黑必输, 1=黑必赢）
-    // 转为白方视角百分比（前端需要）
-    const whiteWinRate = Math.round((1 - globalWinRate) * 1000) / 10;
+    // 统一为黑方胜率百分比，与parseKataRawNN保持一致
+    const blackWinRate = Math.round(globalWinRate * 1000) / 10;
 
-    // scoreLead: scoreMean为黑方视角，取反为白方领先
+    // scoreLead: scoreMean为黑方视角（正值=黑方领先）
     // 当scoreMean为-0（极小值截断）时，用winRate估算近似目数差
-    let whiteScoreLead = Math.round(-globalScoreLead * 10) / 10;
-    if (whiteScoreLead === 0 && whiteWinRate !== 50) {
+    let blackScoreLead = Math.round(globalScoreLead * 10) / 10;
+    if (blackScoreLead === 0 && blackWinRate !== 50) {
       // 粗略估算：胜率偏离50%的幅度 × 0.3 作为目数差
-      whiteScoreLead = Math.round((whiteWinRate - 50) * 0.3 * 10) / 10;
+      blackScoreLead = Math.round((blackWinRate - 50) * 0.3 * 10) / 10;
     }
 
     return {
-      winRate: whiteWinRate,
-      scoreLead: whiteScoreLead,
+      winRate: blackWinRate,
+      scoreLead: blackScoreLead,
       actualVisits: topMoveVisits,
       bestMoves,
     };
@@ -1138,13 +1138,21 @@ class EngineQueue {
     }
 
     // 在队列中查找该用户的位置
-    if (userId) {
+    if (userId && userPosition === -1) {
       for (let i = 0; i < this.queue.length; i++) {
-        if (this.queue[i].userId === userId && userPosition === -1) {
-          // 当前处理中不是自己的，所以位置=1-based queue index + 1(正在处理的任务)
-          userPosition = i + 2; // +1 for queue index, +1 for current processing task
+        if (this.queue[i].userId === userId) {
+          // 前方任务数 = 当前正在处理的1个 + 队列中排在前面的i个
+          userPosition = i + 1 + (this.processing ? 1 : 0);
+          break;
         }
         if (this.queue[i].isAnalysis) hasAnalysis = true;
+      }
+    }
+
+    // 扫描全部队列是否有分析任务
+    if (!hasAnalysis) {
+      for (const entry of this.queue) {
+        if (entry.isAnalysis) { hasAnalysis = true; break; }
       }
     }
 
@@ -1218,7 +1226,88 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '请先登录后再使用AI引擎', needLogin: true }, { status: 401 });
     }
 
-    // 积分检查和扣除
+    // 追踪活跃对弈
+    trackActiveSession(user.userId, user.nickname, requestedEngine, boardSize, difficulty, moves?.length || 0);
+
+    // ============================================================
+    // GnuGo引擎：直接spawn进程执行，不走EngineQueue
+    // （GnuGo每次spawn新进程，天然可并行，不阻塞KataGo队列）
+    // ============================================================
+    if (requestedEngine === 'gnugo') {
+      // GnuGo积分检查和扣除
+      const gnugoCost = ENGINE_POINT_COSTS.gnugo;
+      const gnugoSupabase = getSupabaseClient();
+      if (gnugoCost > 0) {
+        const { data: gnugoUserData, error: gnugoUserError } = await gnugoSupabase
+          .from('letsgo_users')
+          .select('points')
+          .eq('id', user.userId)
+          .single();
+        if (gnugoUserError || !gnugoUserData) {
+          return NextResponse.json({ error: '用户信息获取失败' }, { status: 500 });
+        }
+        if (gnugoUserData.points < gnugoCost) {
+          return NextResponse.json({
+            error: `积分不足（需要${gnugoCost}积分，当前${gnugoUserData.points}积分）`,
+            insufficientPoints: true,
+            required: gnugoCost,
+            current: gnugoUserData.points,
+          }, { status: 403 });
+        }
+        const { error: gnugoUpdateError } = await gnugoSupabase
+          .from('letsgo_users')
+          .update({ points: gnugoUserData.points - gnugoCost, updated_at: new Date().toISOString() })
+          .eq('id', user.userId)
+          .gte('points', gnugoCost);
+        if (gnugoUpdateError) {
+          console.error('[go-engine] GnuGo: Failed to deduct points:', gnugoUpdateError);
+          return NextResponse.json({ error: '积分扣除失败' }, { status: 500 });
+        }
+        await gnugoSupabase.from('letsgo_point_transactions').insert({
+          user_id: user.userId,
+          amount: -gnugoCost,
+          type: 'engine_use',
+          description: `gnugo引擎对弈（${difficulty}难度）`,
+        });
+        console.log(`[go-engine] GnuGo: Deducted ${gnugoCost} points from user ${user.userId}`);
+      }
+      // 直接执行GnuGo（并行，不阻塞KataGo队列）
+      try {
+        const gnugoResult = await getGnuGoMove(boardSize, moves, difficulty, aiColor);
+        // 获取KataGo分析（通过KataGo队列，不阻塞GnuGo落子）
+        let gnugoAnalysis: KataGoAnalysis | null = null;
+        if (isKataGoAvailable() && analysisSeconds > 0) {
+          try {
+            gnugoAnalysis = await engineQueue.enqueueAnalysis(user.userId, moves, boardSize);
+          } catch { /* 分析失败不影响落子 */ }
+        }
+        // 获取最新积分余额
+        let gnugoRemainingPoints: number | undefined;
+        if (gnugoCost > 0) {
+          const { data: gnugoLatestUser } = await gnugoSupabase
+            .from('letsgo_users')
+            .select('points')
+            .eq('id', user.userId)
+            .single();
+          gnugoRemainingPoints = gnugoLatestUser?.points;
+        }
+        return NextResponse.json({
+          ...gnugoResult,
+          pointsUsed: gnugoCost,
+          remainingPoints: gnugoRemainingPoints,
+          analysis: gnugoAnalysis,
+        });
+      } catch (gnugoError) {
+        return NextResponse.json({
+          move: null, engine: "gnugo", engineError: true,
+          errorDetail: gnugoError instanceof Error ? gnugoError.message : String(gnugoError),
+        });
+      }
+    }
+
+    // ============================================================
+    // KataGo/Local引擎：积分扣除 + EngineQueue串行处理
+    // ============================================================
     const cost = getEngineCost(requestedEngine);
     const supabase = getSupabaseClient();
     if (cost > 0) {
@@ -1265,12 +1354,7 @@ export async function POST(request: NextRequest) {
       console.log(`[go-engine] Deducted ${cost} points from user ${user.userId} for ${requestedEngine}`);
     }
 
-    // 追踪活跃对弈
-    if (user) {
-      trackActiveSession(user.userId, user.nickname, requestedEngine, boardSize, difficulty, moves.length);
-    }
-
-    // 加入引擎队列（串行处理，支持多人排队）
+    // 加入引擎队列（KataGo串行处理，支持多人排队；local也走队列保持一致）
     const queueInfo = engineQueue.getQueuePosition(user.userId);
     const result = await engineQueue.enqueue(
       user.userId, requestedEngine, boardSize, moves, difficulty, aiColor
@@ -1278,7 +1362,7 @@ export async function POST(request: NextRequest) {
     
     // 获取最新积分余额并附加到响应中
     let remainingPoints: number | undefined;
-    if (cost > 0 && user) {
+    if (cost > 0) {
       const { data: latestUser } = await supabase
         .from('letsgo_users')
         .select('points')

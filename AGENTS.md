@@ -70,12 +70,12 @@ src/
   - 高级：KataGo maxVisits=150 / GnuGo Level 10 / 本地1步前瞻
 - 停手(Pass)功能：双方连续停手结束棋局
 - 贴目规则：9路2.5目、13路3.5目、19路6.5目（白方补偿）
-- 自动结束：步数上限（9路60步/13路100步/19路200步）
+- 自动结束：步数上限（9路150步/13路300步/19路500步）+ 最低步数门槛 + 领地优势绝对判定
 
 ### 2. 每步AI解说
 - 每步棋后自动获取AI简短解说（1句）
 - 真正的LLM流式输出（打字机效果）
-- **KataGo分析数据驱动**：所有引擎（包括GnuGo/本地AI）的解说都基于KataGo kata-analyze(maxVisits=100)的专业分析数据
+- **KataGo分析数据驱动**：所有引擎的解说都基于KataGo分析数据（winRate=黑方胜率0-100，scoreLead=黑方领先目数）
 - 解说包含落子位置、作用、鼓励、形势判断
 - **专业术语嵌入**：解说中自然融入围棋术语并在括号中解释
 - **智能气数提及**：只在打吃(1气)或提子时提及气数，3气以上不提
@@ -97,7 +97,7 @@ src/
   - GnuGo: 2积分/步（经典引擎）
   - 本地AI: 0积分/步（免费，无需登录）
 - **积分扣除**：引擎API先扣积分再返回落子，积分不足回退本地AI
-- **引擎排队**：EngineQueue类（FIFO队列），KataGo串行处理，支持多人排队
+- **引擎排队**：EngineQueue类（FIFO队列），仅KataGo串行处理；GnuGo独立并行spawn进程，不走队列
 - **棋局关联**：保存棋局关联user_id，登录用户只看自己的棋局
 - **前端体验**：用户面板显示昵称/积分/局数/胜场，积分不足时toast提示
 - **未登录**：可使用本地AI对弈，不可保存棋局或使用KataGo/GnuGo
@@ -108,7 +108,7 @@ src/
 - 停手功能（双方连续停手结束棋局）
 - 重新开始（支持切换棋盘大小）
 - 比分实时计算（白方含动态贴目）
-- 游戏结束判定（停手/步数上限/棋盘满）
+- 游戏结束判定（严格条件：停手+最低步数门槛/领地优势绝对判定/步数上限/棋盘满）
 - 引擎/难度无缝切换：难度切换不重开棋局（toast提示），引擎切换需确认
 - 保存棋局命名含引擎信息（如"9路 初级 KataGo 2026/4/19"）
 - 复盘从任意步继续对弈：复盘模式下可"从第N步继续对弈"，截取历史继续游戏
@@ -158,10 +158,12 @@ LLM流式响应，Content-Type: text/event-stream
 **通用参数：**
 - `board`: 棋盘状态数组
 - `currentPlayer`: "black" | "white"
-- `analysis`: KataGo分析数据（可选）`{ winRate, scoreLead, bestMoves: [{move, winrate, scoreMean}] }`
+- `analysis`: KataGo分析数据（可选）`{ winRate(黑方胜率0-100), scoreLead(黑方领先目数), bestMoves: [{move, winrate(黑方胜率), scoreMean(黑方视角)}] }`
 
 ### POST /api/go-engine
 KataGo/GnuGo AI引擎桥接（GTP协议+排队+积分扣除）
+- **GnuGo**：直接spawn进程并行执行，不走EngineQueue，不阻塞KataGo
+- **KataGo**：通过EngineQueue串行排队处理
 
 **请求头：**
 - `Authorization: Bearer <token>`（KataGo/GnuGo必须登录，local无需登录）
@@ -181,7 +183,7 @@ KataGo/GnuGo AI引擎桥接（GTP协议+排队+积分扣除）
 - `pointsUsed`: number（本次扣除积分数）
 - `remainingPoints`: number（剩余积分）
 - `insufficientPoints`: boolean（积分不足，仅403响应时）
-- `analysis`: KataGo分析数据（maxVisits=100）`{ winRate, scoreLead, bestMoves: [{move, winrate, scoreMean}] }` 或 null
+- `analysis`: KataGo分析数据 `{ winRate(黑方胜率0-100), scoreLead(黑方领先目数), bestMoves }` 或 null
 
 **错误响应：**
 - 401: `{ error, needLogin: true }` — 未登录使用收费引擎

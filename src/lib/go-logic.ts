@@ -769,33 +769,52 @@ export function findBestHint(board: Board, color: Stone): Position | null {
   return scored[0].position;
 }
 
-// 判断游戏是否应该结束（双方连续停手、或大比分差距）
+// 判断游戏是否应该结束（严格条件：宁愿晚结束也不要早结束）
 export function checkGameEnd(
   board: Board,
   consecutivePasses: number,
   moveCount: number
 ): { ended: boolean; reason: string } {
-  // 双方连续停手
-  if (consecutivePasses >= 2) {
-    return { ended: true, reason: '双方连续停手，棋局结束' };
-  }
-
-  // 棋盘下满
   const size = board.length;
+  
+  // 统计空位和棋子
   let emptyCount = 0;
   for (let r = 0; r < size; r++) {
     for (let c = 0; c < size; c++) {
       if (board[r][c] === null) emptyCount++;
     }
   }
+  
+  // 棋盘下满
   if (emptyCount === 0) {
     return { ended: true, reason: '棋盘已满，棋局结束' };
   }
 
-  // 步数过多自动结束（9路60步、13路100步、19路200步）
-  const maxMoves = size <= 9 ? 60 : size <= 13 ? 100 : 200;
+  // 步数上限（大幅提高，避免过早结束）
+  // 9路81个交叉点→150步, 13路169→300步, 19路361→500步
+  const maxMoves = size <= 9 ? 150 : size <= 13 ? 300 : 500;
   if (moveCount >= maxMoves) {
     return { ended: true, reason: `已下${moveCount}手，棋局结束` };
+  }
+
+  // 最低步数门槛：总步数少于上限的30%时，不允许连续停手结束游戏
+  // 这防止AI在中局停手导致过早结束
+  const minMovesForPass = Math.floor(maxMoves * 0.3);
+  if (consecutivePasses >= 2 && moveCount >= minMovesForPass) {
+    return { ended: true, reason: '双方连续停手，棋局结束' };
+  }
+
+  // 领地优势绝对判定：即使劣势方占满所有剩余空地也无法翻盘
+  // 只在棋局中后期（步数 >= 最低门槛）才启用此判断
+  if (moveCount >= minMovesForPass && emptyCount > 0) {
+    const evaluation = evaluateBoard(board);
+    const komi = getKomi(size);
+    const whiteWithKomi = evaluation.white + komi;
+    const blackLead = evaluation.black - whiteWithKomi;
+    // 优势方领先目数 > 剩余空交叉点数 → 劣势方即使占满所有空地也追不上
+    if (Math.abs(blackLead) > emptyCount) {
+      return { ended: true, reason: `领地差距悬殊（${Math.abs(blackLead).toFixed(1)}目 vs ${emptyCount}空位），棋局结束` };
+    }
   }
 
   return { ended: false, reason: '' };

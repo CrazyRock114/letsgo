@@ -133,6 +133,7 @@ export async function GET() {
         gnugo: {
           queueLength: engineData.gnugo.queueLength,
           processing: engineData.gnugo.processing,
+          note: engineData.gnugo.note,
         },
       },
       usage: {
