@@ -642,14 +642,15 @@ async function getKataGoAnalysis(
       }
       return result;
     } else {
-      // 模式2: kata-analyze（直接在命令中指定maxVisits）
-      // kata-analyze格式: kata-analyze <interval> <maxVisits>
-      // 例如: kata-analyze 10 50 = 每10次访问输出一次info，最多搜索50次
-      console.log(`[kata-analyze] 开始分析, maxVisits=${analysisVisits}`);
+      // 模式2: kata-analyze（通过kata-set-param maxVisits控制搜索深度）
+      // kata-analyze本身只接受interval参数，maxVisits需通过kata-set-param设置
+      // genmove每次执行前都会重新设置maxVisits，所以这里修改不影响下棋
+      setupCommands.push(`kata-set-param maxVisits ${analysisVisits}`);
+      console.log(`[kata-analyze] 设置 maxVisits=${analysisVisits}，开始分析`);
 
       // 超时：根据visits数量动态调整，上限120秒
       const analyzeTimeout = Math.min(120000, analysisVisits * 1500 + 10000);
-      const analyzeResponse = await persistentKataGo.sendCommand(`kata-analyze 10 ${analysisVisits}`, analyzeTimeout);
+      const analyzeResponse = await persistentKataGo.sendCommand('kata-analyze 10', analyzeTimeout);
       console.log(`[kata-analyze] 分析完成, 响应长度=${analyzeResponse.length}, 前300字=${analyzeResponse.substring(0, 300)}`);
 
       const result = parseKataAnalyze(analyzeResponse, boardSize);
