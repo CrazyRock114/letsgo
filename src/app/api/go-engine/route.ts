@@ -1274,13 +1274,6 @@ export async function POST(request: NextRequest) {
       // 直接执行GnuGo（并行，不阻塞KataGo队列）
       try {
         const gnugoResult = await getGnuGoMove(boardSize, moves, difficulty, aiColor);
-        // 获取KataGo分析（通过KataGo队列，不阻塞GnuGo落子）
-        let gnugoAnalysis: KataGoAnalysis | null = null;
-        if (isKataGoAvailable() && analysisSeconds > 0) {
-          try {
-            gnugoAnalysis = await engineQueue.enqueueAnalysis(user.userId, moves, boardSize);
-          } catch { /* 分析失败不影响落子 */ }
-        }
         // 获取最新积分余额
         let gnugoRemainingPoints: number | undefined;
         if (gnugoCost > 0) {
@@ -1295,7 +1288,6 @@ export async function POST(request: NextRequest) {
           ...gnugoResult,
           pointsUsed: gnugoCost,
           remainingPoints: gnugoRemainingPoints,
-          analysis: gnugoAnalysis,
         });
       } catch (gnugoError) {
         return NextResponse.json({
