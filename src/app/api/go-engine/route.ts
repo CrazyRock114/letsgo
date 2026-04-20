@@ -578,7 +578,7 @@ async function getKataGoAnalysis(
   try {
     // 准备所有GTP命令（一次性发送，避免单独sendCommand导致响应错位）
     const gtpCommands = [
-      'kata-set-param maxVisits 500',  // 分析用高visits
+      'kata-set-param maxVisits 200',  // 分析用中高visits（500在CPU受限服务器太慢）
       `boardsize ${boardSize}`,
       'clear_board',
     ];
@@ -596,7 +596,7 @@ async function getKataGoAnalysis(
     // 恢复游戏难度的maxVisits（在同一个批次中）
     gtpCommands.push('kata-set-param maxVisits 150');
 
-    const responses = await persistentKataGo.sendCommands(gtpCommands, 120000);
+    const responses = await persistentKataGo.sendCommands(gtpCommands, 90000);
 
     // kata-analyze的响应是倒数第二个（最后一个是我们恢复maxVisits的响应）
     const analyzeResponse = responses[responses.length - 2] || '';
@@ -813,10 +813,14 @@ class EngineQueue {
     // 下棋请求优先：取消该用户排队中的分析请求
     this.cancelPendingAnalysis(userId);
 
-    // 下棋请求优先：如果当前正在运行的是该用户自己的分析，用GTP stop中断
-    // 其他用户的分析不能被中断，必须等其完成
-    if (this.processing && this.currentEntry?.isAnalysis && this.currentEntry?.userId === userId) {
-      console.log(`[engine-queue] Genmove arrived while own analysis is running - sending stop`);
+    // 下棋请求优先级高于分析：如果当前正在运行的是分析请求（任何用户的），用GTP stop中断
+    // 分析是辅助功能，不能阻塞对弈
+    if (this.processing && this.currentEntry?.isAnalysis) {
+      if (this.currentEntry.userId === userId) {
+        console.log(`[engine-queue] Genmove arrived while own analysis is running - sending stop`);
+      } else {
+        console.log(`[engine-queue] Genmove interrupting user ${this.currentEntry.userId}'s analysis - sending stop (gameplay priority)`);
+      }
       await persistentKataGo.stopAnalysis();
       // stopAnalysis会拒绝当前分析的command，导致processNext结束
       // thoroughFlush会发送name同步，需要更长时间等待
@@ -825,11 +829,9 @@ class EngineQueue {
         await new Promise(r => setTimeout(r, 100));
       }
       if (this.processing) {
-        console.warn(`[engine-queue] Own analysis still processing after stop, forcing processing=false`);
+        console.warn(`[engine-queue] Analysis still processing after stop, forcing processing=false`);
         this.processing = false;
       }
-    } else if (this.processing && this.currentEntry?.isAnalysis && this.currentEntry?.userId !== userId) {
-      console.log(`[engine-queue] Genmove waiting - another user's analysis (user ${this.currentEntry.userId}) is running`);
     }
 
     return new Promise<EngineQueueResult>((resolve, reject) => {
@@ -855,7 +857,15 @@ class EngineQueue {
         let analysisResult: KataGoAnalysis | null = null;
         if (isKataGoAvailable()) {
           try {
-            analysisResult = await getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>);
+            // 分析请求90秒超时（防止长期阻塞队列）
+            analysisResult = await Promise.race([
+              getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>),
+              new Promise<null>(resolve => setTimeout(() => {
+                console.warn(`[engine-queue] Analysis timeout (90s) for ${entry.id}`);
+                persistentKataGo.stopAnalysis();
+                resolve(null);
+              }, 90000)),
+            ]);
           } catch (err) {
             console.warn(`[engine-queue] Analysis failed:`, err instanceof Error ? err.message : String(err));
             persistentKataGo.resetCrashState();
@@ -950,18 +960,27 @@ class EngineQueue {
       this.processNext();
     });
   }
-  /** 获取排队位置（不含当前正在处理的） */
+  /** 获取排队位置（含当前正在处理的任务） */
   getQueuePosition(userId?: number): { queueLength: number; userPosition: number; hasAnalysis: boolean } {
     let userPosition = -1;
     let hasAnalysis = false;
+
+    // 如果当前正在处理的任务是自己的，position=0（正在处理，不需要排队）
+    if (userId && this.currentEntry && this.currentEntry.userId === userId) {
+      userPosition = 0; // 0 = 正在处理中
+    }
+
+    // 在队列中查找该用户的位置
     if (userId) {
       for (let i = 0; i < this.queue.length; i++) {
         if (this.queue[i].userId === userId && userPosition === -1) {
-          userPosition = i + 1; // 1-based
+          // 当前处理中不是自己的，所以位置=1-based queue index + 1(正在处理的任务)
+          userPosition = i + 2; // +1 for queue index, +1 for current processing task
         }
         if (this.queue[i].isAnalysis) hasAnalysis = true;
       }
     }
+
     return { queueLength: this.queue.length, userPosition, hasAnalysis };
   }
 }
@@ -1097,10 +1116,15 @@ let cachedDiagnosis: {
 const DIAGNOSIS_TTL = 60000; // 诊断结果缓存60秒
 
 // GET: 返回可用引擎列表（含队列状态）
-export async function GET() {
+export async function GET(request: NextRequest) {
   // 队列状态（轻量读取，不消耗CPU）
   const queueLength = engineQueue.getQueueLength();
   const isProcessing = engineQueue.isProcessing();
+
+  // 计算用户的排队位置（通过userId查询参数）
+  const userIdParam = request.nextUrl.searchParams.get('userId');
+  const userId = userIdParam ? parseInt(userIdParam, 10) : 0;
+  const userQueueInfo = engineQueue.getQueuePosition(userId > 0 ? userId : undefined);
 
   // 诊断信息（缓存，避免每2秒轮询都spawn进程）
   let diag = cachedDiagnosis;
@@ -1146,8 +1170,9 @@ export async function GET() {
       },
       { id: "local", name: "本地AI", available: true, desc: "内置启发式AI，随时可用", cost: ENGINE_COSTS.local },
     ],
-    queueLength,     // 顶层字段，方便前端读取
-    isProcessing,    // 顶层字段，方便前端读取
+    queueLength,              // 顶层字段，队列中等待的任务数
+    isProcessing,             // 顶层字段，是否有任务正在处理
+    userQueuePosition: userQueueInfo.userPosition,  // 该用户在队列中的位置（1-based，-1=不在队列中）
     queue: { length: queueLength, processing: isProcessing },
   });
 }

@@ -181,14 +181,24 @@ export default function GoGamePage() {
     if (isAIThinking) {
       const pollQueue = async () => {
         try {
-          const res = await fetch('/api/go-engine');
+          const userId = user?.userId;
+          const url = userId ? `/api/go-engine?userId=${userId}` : '/api/go-engine';
+          const res = await fetch(url);
           if (res.ok) {
             const data = await res.json();
-            // GET端点返回 queueLength 和 isProcessing 在顶层
-            const qLen = data.queueLength ?? data.queue?.length ?? 0;
-            const isProcessing = data.isProcessing ?? data.queue?.processing ?? false;
-            // 队列中有人等待 → 显示排队位置；只有自己正在处理 → 0
-            setQueuePosition(qLen > 0 ? qLen : 0);
+            // 优先使用用户自己的排队位置
+            const userPos = data.userQueuePosition ?? -1;
+            if (userPos === 0) {
+              // 正在处理自己的任务，不需要显示排队
+              setQueuePosition(0);
+            } else if (userPos > 0) {
+              // 在队列中，显示前方有几个任务
+              setQueuePosition(userPos);
+            } else {
+              // 不在队列中但队列有人（可能是其他用户的任务在排队）
+              const qLen = data.queueLength ?? data.queue?.length ?? 0;
+              setQueuePosition(qLen > 0 ? qLen : 0);
+            }
           }
         } catch {
           // 轮询失败不处理
@@ -211,7 +221,7 @@ export default function GoGamePage() {
         queuePollRef.current = null;
       }
     };
-  }, [isAIThinking]);
+  }, [isAIThinking, user?.userId]);
   // KataGo分析数据（来自引擎响应，传给解说/教学API）
   const latestAnalysisRef = useRef<{winRate: number; scoreLead: number; bestMoves: {move: string; winrate: number; scoreMean: number}[]} | null>(null);
   const [gameEnded, setGameEnded] = useState(false);
@@ -761,10 +771,10 @@ export default function GoGamePage() {
     }
     const controller = new AbortController();
     abortControllerRef.current = controller;
-    // 30秒超时，避免引擎响应过慢导致卡死
+    // 120秒超时（排队时可能等待其他用户的分析完成，30秒太短）
     setTimeout(() => {
       try { controller.abort(); } catch {}
-    }, 30000);
+    }, 120000);
     return controller.signal;
   }, []);
 
@@ -1030,8 +1040,8 @@ export default function GoGamePage() {
             row: h.position.row, col: h.position.col, color: h.color
           }));
           const analyzeController = new AbortController();
-          // kata-analyze maxVisits=500 在19路棋盘可能需要30-60秒，给120秒超时
-          const analyzeTimeout = setTimeout(() => analyzeController.abort(), 120000);
+          // kata-analyze maxVisits=200 + 90秒后端超时，前端给95秒
+          const analyzeTimeout = setTimeout(() => analyzeController.abort(), 95000);
           const analyzeRes = await fetch('/api/go-engine', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -1866,7 +1876,7 @@ export default function GoGamePage() {
                   </Badge>
                 ) : (
                   <Badge variant={currentPlayer === playerColor ? 'default' : 'secondary'} className={`text-xs px-3 ${isAIThinking ? 'animate-pulse bg-amber-500 text-white' : ''}`}>
-                    {gameEnded ? '棋局结束' : isAIThinking ? (queuePosition > 0 ? `AI排队中，前方${queuePosition}人...` : 'AI思考中，请等待...') : currentPlayer === playerColor ? `轮到你落子（已下${history.length}手）` : 'AI回合'}
+                    {gameEnded ? '棋局结束' : isAIThinking ? (queuePosition > 0 ? `排队中，前方${queuePosition}个任务...` : 'AI思考中，请等待...') : currentPlayer === playerColor ? `轮到你落子（已下${history.length}手）` : 'AI回合'}
                     {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
                   </Badge>
                 )}
