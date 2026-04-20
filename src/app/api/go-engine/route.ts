@@ -89,16 +89,6 @@ const ENGINE_POINT_COSTS: Record<string, number> = {
   local: 0,     // 本地AI免费
 };
 
-// KataGo排队系统：串行处理请求，避免并发冲突
-interface QueueItem {
-  resolve: (result: unknown) => void;
-  reject: (error: Error) => void;
-  task: () => Promise<unknown>;
-  enqueuedAt: number;
-}
-const kataGoQueue: QueueItem[] = [];
-let isKataGoBusy = false;
-
 // 活跃对弈追踪
 interface ActiveSession {
   userId: number;
@@ -133,8 +123,13 @@ function trackActiveSession(userId: number, nickname: string, engine: string, bo
 
 // 引擎监控数据导出
 export function getEngineMonitorData() {
+  const currentInfo = engineQueue.getCurrentEntryInfo();
   return {
-    kataGo: { queueLength: kataGoQueue.length, processing: isKataGoBusy },
+    kataGo: {
+      queueLength: engineQueue.getQueueLength(),
+      processing: engineQueue.isProcessing(),
+      currentTask: currentInfo ? { id: currentInfo.id, userId: currentInfo.userId, isAnalysis: currentInfo.isAnalysis, engine: currentInfo.engine } : null,
+    },
     gnugo: { queueLength: 0, processing: false },
     activeSessions: Array.from(activeSessions.values()).map(s => ({
       player: s.nickname,
@@ -146,39 +141,6 @@ export function getEngineMonitorData() {
     })),
     activeCount: activeSessions.size,
   };
-}
-
-function enqueueKataGoTask<T>(task: () => Promise<T>): Promise<{ result: T; waitMs: number }> {
-  const enqueuedAt = Date.now();
-  return new Promise((resolve, reject) => {
-    kataGoQueue.push({
-      resolve: (r: unknown) => resolve(r as { result: T; waitMs: number }),
-      reject,
-      task: async () => {
-        const result = await task();
-        return { result, waitMs: Date.now() - enqueuedAt };
-      },
-      enqueuedAt,
-    });
-    processKataGoQueue();
-  });
-}
-
-async function processKataGoQueue() {
-  if (isKataGoBusy || kataGoQueue.length === 0) return;
-  isKataGoBusy = true;
-
-  while (kataGoQueue.length > 0) {
-    const item = kataGoQueue.shift()!;
-    try {
-      const result = await item.task();
-      item.resolve(result);
-    } catch (err) {
-      item.reject(err instanceof Error ? err : new Error(String(err)));
-    }
-  }
-
-  isKataGoBusy = false;
 }
 
 // 自动查找KataGo可用的神经网络模型
@@ -788,11 +750,11 @@ class EngineQueue {
   private entryId = 0;
   private currentEntry: QueueEntry | null = null; // 当前正在处理的条目
 
-  /** 取消所有排队中的分析请求（下棋请求优先） */
-  cancelPendingAnalysis(): number {
+  /** 取消指定用户排队中的分析请求（下棋请求优先，只影响同一用户的分析） */
+  cancelPendingAnalysis(userId: number): number {
     const before = this.queue.length;
     this.queue = this.queue.filter(entry => {
-      if (entry.isAnalysis) {
+      if (entry.isAnalysis && entry.userId === userId) {
         // 通知等待者分析已被取消
         if (entry.analysisResolve) entry.analysisResolve(null);
         return false;
@@ -801,7 +763,7 @@ class EngineQueue {
     });
     const cancelled = before - this.queue.length;
     if (cancelled > 0) {
-      console.log(`[engine-queue] Cancelled ${cancelled} pending analysis request(s)`);
+      console.log(`[engine-queue] Cancelled ${cancelled} pending analysis request(s) for user ${userId}`);
     }
     return cancelled;
   }
@@ -817,12 +779,13 @@ class EngineQueue {
     const id = `qe-${++this.entryId}-u${userId}`;
     console.log(`[engine-queue] Enqueued: ${id}, engine=${engine}, aiColor=${aiColor}, queueLen=${this.queue.length}`);
 
-    // 下棋请求优先：取消排队中的分析请求
-    this.cancelPendingAnalysis();
+    // 下棋请求优先：取消该用户排队中的分析请求
+    this.cancelPendingAnalysis(userId);
 
-    // 下棋请求优先：如果当前正在运行分析，用GTP stop中断
-    if (this.processing && this.currentEntry?.isAnalysis) {
-      console.log(`[engine-queue] Genmove arrived while analysis is running - sending stop`);
+    // 下棋请求优先：如果当前正在运行的是该用户自己的分析，用GTP stop中断
+    // 其他用户的分析不能被中断，必须等其完成
+    if (this.processing && this.currentEntry?.isAnalysis && this.currentEntry?.userId === userId) {
+      console.log(`[engine-queue] Genmove arrived while own analysis is running - sending stop`);
       await persistentKataGo.stopAnalysis();
       // stopAnalysis会拒绝当前分析的command，导致processNext结束
       // 等待processing变false（最多3秒）
@@ -831,9 +794,11 @@ class EngineQueue {
         await new Promise(r => setTimeout(r, 50));
       }
       if (this.processing) {
-        console.warn(`[engine-queue] Analysis still processing after stop, forcing processing=false`);
+        console.warn(`[engine-queue] Own analysis still processing after stop, forcing processing=false`);
         this.processing = false;
       }
+    } else if (this.processing && this.currentEntry?.isAnalysis && this.currentEntry?.userId !== userId) {
+      console.log(`[engine-queue] Genmove waiting - another user's analysis (user ${this.currentEntry.userId}) is running`);
     }
 
     return new Promise<EngineQueueResult>((resolve, reject) => {
@@ -920,18 +885,23 @@ class EngineQueue {
     return this.processing;
   }
 
+  getCurrentEntryInfo(): { id: string; userId: number; isAnalysis: boolean; engine: string } | null {
+    if (!this.currentEntry) return null;
+    return { id: this.currentEntry.id, userId: this.currentEntry.userId, isAnalysis: !!this.currentEntry.isAnalysis, engine: this.currentEntry.engine };
+  }
+
   /** 获取KataGo局面分析（通过主队列串行执行，避免与genmove命令冲突） */
-  async enqueueAnalysis(moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number): Promise<KataGoAnalysis | null> {
+  async enqueueAnalysis(userId: number, moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number): Promise<KataGoAnalysis | null> {
     // 检查KataGo是否可用
     if (!isKataGoAvailable()) {
       return null;
     }
     const id = `qe-${++this.entryId}-analysis`;
-    console.log(`[engine-queue] Enqueued analysis: ${id}, queueLen=${this.queue.length}`);
+    console.log(`[engine-queue] Enqueued analysis: ${id}, user=${userId}, queueLen=${this.queue.length}`);
     return new Promise((resolve) => {
       this.queue.push({
         id,
-        userId: 0,
+        userId,
         resolve: () => {}, // 分析请求不走正常resolve
         reject: () => {},
         boardSize,
@@ -966,6 +936,7 @@ export async function POST(request: NextRequest) {
       }
       try {
         const analysisResult = await engineQueue.enqueueAnalysis(
+          user?.userId || 0,
           moves as Array<{row: number, col: number, color: 'black' | 'white'}>,
           boardSize
         );
