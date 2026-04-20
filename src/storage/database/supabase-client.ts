@@ -8,24 +8,18 @@ interface SupabaseCredentials {
 }
 
 function loadEnv(): void {
-  if (envLoaded || (process.env.COZE_SUPABASE_URL && process.env.COZE_SUPABASE_ANON_KEY)) {
-    return;
-  }
+  if (envLoaded) return;
 
   try {
     try {
 // eslint-disable-next-line @typescript-eslint/no-require-imports
       require('dotenv').config();
-      if (process.env.COZE_SUPABASE_URL && process.env.COZE_SUPABASE_ANON_KEY) {
-        envLoaded = true;
-        return;
-      }
     } catch {
       // dotenv not available
     }
 
     // 尝试从coze_workload_identity获取环境变量（仅Coze平台可用）
-    // Vercel等平台应通过环境变量面板直接配置
+    // Vercel/Railway等平台应通过环境变量面板直接配置
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { execSync } = require('child_process') as typeof import('child_process');
@@ -75,17 +69,25 @@ except Exception as e:
   }
 }
 
+/**
+ * 获取Supabase连接凭证
+ * 
+ * 优先级：SUPABASE_URL > COZE_SUPABASE_URL
+ * - SUPABASE_URL: 用户自建Supabase（Railway部署使用）
+ * - COZE_SUPABASE_URL: Coze平台内置Supabase（沙箱开发使用）
+ */
 function getSupabaseCredentials(): SupabaseCredentials {
   loadEnv();
 
-  const url = process.env.COZE_SUPABASE_URL;
-  const anonKey = process.env.COZE_SUPABASE_ANON_KEY;
+  // 优先使用用户自建Supabase配置
+  const url = process.env.SUPABASE_URL || process.env.COZE_SUPABASE_URL;
+  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.COZE_SUPABASE_ANON_KEY;
 
   if (!url) {
-    throw new Error('COZE_SUPABASE_URL is not set');
+    throw new Error('SUPABASE_URL or COZE_SUPABASE_URL is not set');
   }
   if (!anonKey) {
-    throw new Error('COZE_SUPABASE_ANON_KEY is not set');
+    throw new Error('SUPABASE_ANON_KEY or COZE_SUPABASE_ANON_KEY is not set');
   }
 
   return { url, anonKey };
@@ -93,7 +95,7 @@ function getSupabaseCredentials(): SupabaseCredentials {
 
 function getSupabaseServiceRoleKey(): string | undefined {
   loadEnv();
-  return process.env.COZE_SUPABASE_SERVICE_ROLE_KEY;
+  return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.COZE_SUPABASE_SERVICE_ROLE_KEY;
 }
 
 function getSupabaseClient(token?: string): SupabaseClient {
