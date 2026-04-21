@@ -303,7 +303,7 @@ export default function AITestPage() {
         setCurrentStep(stepCount);
         setLastMove(startingMoves[startingMoves.length - 1]);
       } else {
-        addLog('info', `===== 第${gameCount}局开始 ${boardSize}路 ${difficulty} ${engine} (上限${maxSteps}步, 胜率结束>${winRateEndCondition / 10}%) =====`);
+        addLog('info', `===== 第${gameCount}局开始 ${boardSize}路 ${difficulty} ${engine} (上限${maxSteps}步, 胜率结束>${winRateEndCondition}%) =====`);
         setBoard([...currentBoard.map(r => [...r])]);
         setLastMove(null);
       }
@@ -503,7 +503,7 @@ export default function AITestPage() {
         let winRateReason = '';
         if (!endCheck.ended && currentAnalysis && stepCount >= 10) {
           const wr = currentAnalysis.winRate;
-          const threshold = winRateEndCondition / 10; // 95→9.5, 99→9.9, 995→99.5, 999→99.9
+          const threshold = winRateEndCondition; // e.g. 95, 99, 99.5, 99.9
           if (wr >= threshold || wr <= (100 - threshold)) {
             winRateEnded = true;
             const winner = wr >= threshold ? '黑方' : '白方';
