@@ -20,32 +20,49 @@ interface LogEntry {
   message: string;
 }
 
+interface SavedGame {
+  id?: number;
+  board_size: number;
+  difficulty: string;
+  engine: string;
+  moves: Array<{ row: number; col: number; color: number }>;
+  commentaries: Array<{ moveIndex: number; text: string }>;
+  title: string;
+  status: string;
+}
+
 const AI_TEST_USER = 'AItest';
 const AI_TEST_PASS = 'AItest2026';
 const MAX_STEPS = 200;
 
-function stoneToColor(stone: Stone): 'black' | 'white' | null {
-  return stone;
-}
+// Column labels (skip I)
+const COL_LABELS = 'ABCDEFGHJKLMNOPQRST';
 
 export default function AITestPage() {
   const [token, setToken] = useState<string | null>(null);
   const [userId, setUserId] = useState<number | null>(null);
   const [points, setPoints] = useState(0);
   const [loggedIn, setLoggedIn] = useState(false);
+  const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
   const [boardSize, setBoardSize] = useState<9 | 13 | 19>(9);
   const [difficulty, setDifficulty] = useState<Difficulty>('easy');
   const [engine, setEngine] = useState<EngineId>('gnugo');
   const [playerColor, setPlayerColor] = useState<'black' | 'white'>('black');
   const [running, setRunning] = useState(false);
   const [paused, setPaused] = useState(false);
-  const [stepInterval, setStepInterval] = useState(5000);
+  const [stepInterval, setStepInterval] = useState(15000);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [currentStep, setCurrentStep] = useState(0);
   const [totalGames, setTotalGames] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   const [lastAnalysis, setLastAnalysis] = useState<AnalysisData | null>(null);
   const [board, setBoard] = useState<Board>(createEmptyBoard(9));
+  const [lastMove, setLastMove] = useState<{ row: number; col: number } | null>(null);
+  const [currentGameId, setCurrentGameId] = useState<number | null>(null);
+  const [hintPosition, setHintPosition] = useState<{ row: number; col: number } | null>(null);
+  const [usedHintCount, setUsedHintCount] = useState(0);
+  const [missedHintCount, setMissedHintCount] = useState(0);
 
   const runningRef = useRef(false);
   const pausedRef = useRef(false);
@@ -63,18 +80,23 @@ export default function AITestPage() {
 
   // Login
   const handleLogin = useCallback(async () => {
+    if (!password) {
+      setLoginError('请输入密码');
+      return;
+    }
+    setLoginError('');
     try {
       let res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nickname: AI_TEST_USER, password: AI_TEST_PASS }),
+        body: JSON.stringify({ nickname: AI_TEST_USER, password }),
       });
       let data = await res.json();
       if (!res.ok && data.error?.includes('已存在')) {
         res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ nickname: AI_TEST_USER, password: AI_TEST_PASS }),
+          body: JSON.stringify({ nickname: AI_TEST_USER, password }),
         });
         data = await res.json();
       }
@@ -85,20 +107,59 @@ export default function AITestPage() {
         setLoggedIn(true);
         addLog('success', `登录成功，积分: ${data.user.points}`);
       } else {
+        setLoginError(data.error || '登录失败');
         addLog('error', `登录失败: ${data.error}`);
       }
     } catch (err) {
+      setLoginError('登录异常');
       addLog('error', `登录异常: ${err}`);
     }
-  }, [addLog]);
+  }, [addLog, password]);
 
-  // Convert moves to API format (color number: 1=black, 2=white)
+  // Convert moves to API format
   const movesToApi = useCallback((moves: Array<{ row: number; col: number; color: Stone }>) => {
     return moves.map(m => ({
       row: m.row,
       col: m.col,
       color: m.color === 'black' ? 1 : 2,
     }));
+  }, []);
+
+  // Save or update game
+  const saveGameToDB = useCallback(async (
+    tok: string,
+    bSize: number,
+    diff: Difficulty,
+    eng: EngineId,
+    moves: Array<{ row: number; col: number; color: Stone }>,
+    commentaries: Array<{ moveIndex: number; text: string }>,
+    gameId: number | null,
+    status: string = 'playing'
+  ): Promise<number | null> => {
+    try {
+      const body: SavedGame = {
+        board_size: bSize,
+        difficulty: diff,
+        engine: eng,
+        moves: moves.map(m => ({ row: m.row, col: m.col, color: m.color === 'black' ? 1 : 2 })),
+        commentaries,
+        title: `${bSize}路 ${diff === 'easy' ? '初级' : diff === 'medium' ? '中级' : '高级'} ${eng} AI测试 ${new Date().toLocaleDateString('zh-CN')}`,
+        status,
+      };
+      if (gameId) {
+        body.id = gameId;
+      }
+      const res = await fetch('/api/games', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.game?.id) return data.game.id;
+      return null;
+    } catch {
+      return null;
+    }
   }, []);
 
   // Get AI move from engine
@@ -142,8 +203,12 @@ export default function AITestPage() {
       if (data.queueBusy) {
         addLog('warn', `分析排队拒绝: 队列${data.queueLength}人`);
       }
+      if (data.insufficientPoints) {
+        addLog('warn', `积分不足，无法获取分析`);
+      }
       return null;
-    } catch {
+    } catch (err) {
+      addLog('warn', `分析请求异常: ${err}`);
       return null;
     }
   }, [addLog, movesToApi]);
@@ -169,7 +234,6 @@ export default function AITestPage() {
   const findFallbackMove = useCallback((b: Board, color: Stone): { row: number; col: number } | null => {
     const hint = findBestHint(b, color);
     if (hint) return hint;
-    // Random valid move
     const bSize = b.length;
     const validMoves: Array<{ row: number; col: number }> = [];
     for (let r = 0; r < bSize; r++) {
@@ -190,6 +254,8 @@ export default function AITestPage() {
     pausedRef.current = false;
     setRunning(true);
     setPaused(false);
+    setUsedHintCount(0);
+    setMissedHintCount(0);
 
     const abortController = new AbortController();
     abortRef.current = abortController;
@@ -205,10 +271,15 @@ export default function AITestPage() {
       let currentBoard = createEmptyBoard(boardSize);
       setBoard([...currentBoard.map(r => [...r])]);
       const moves: Array<{ row: number; col: number; color: Stone }> = [];
+      const gameCommentaries: Array<{ moveIndex: number; text: string }> = [];
       let currentPlayer: Stone = 'black';
       let consecutivePasses = 0;
       let stepCount = 0;
+      let gameId: number | null = null;
       const aiColor: Stone = playerColor === 'black' ? 'white' : 'black';
+
+      setLastMove(null);
+      setHintPosition(null);
 
       // If player is white, AI (black) goes first
       if (playerColor === 'white') {
@@ -220,6 +291,7 @@ export default function AITestPage() {
           const result = playMove(currentBoard, aiResult.move.row, aiResult.move.col, 'black');
           currentBoard = result.newBoard;
           setBoard([...currentBoard.map(r => [...r])]);
+          setLastMove(aiResult.move);
           consecutivePasses = 0;
           stepCount++;
           setCurrentStep(stepCount);
@@ -248,12 +320,18 @@ export default function AITestPage() {
             setLastAnalysis(analysis);
             hint = getHintFromAnalysis(analysis, boardSize);
             if (hint) {
-              addLog('success', `  KataGo建议: (${hint.row},${hint.col}) 胜率=${analysis.winRate.toFixed(1)} 领先=${analysis.scoreLead.toFixed(1)}`);
+              setHintPosition(hint);
+              addLog('success', `  KataGo建议: ${COL_LABELS[hint.col]}${boardSize - hint.row} 胜率=${analysis.winRate.toFixed(1)}% 领先=${analysis.scoreLead.toFixed(1)}目 visits=${analysis.actualVisits || '?'}`);
+            } else {
+              addLog('warn', `  KataGo分析完成但无法解析建议位置, bestMoves=${JSON.stringify(analysis.bestMoves?.slice(0, 3))}`);
             }
+          } else {
+            addLog('warn', `  KataGo分析未返回数据，使用本地提示`);
           }
 
           // Use hint or fallback
           let move = hint;
+          const usedKataGoHint = !!hint;
           if (!move) {
             move = findFallbackMove(currentBoard, playerColor);
           }
@@ -263,15 +341,26 @@ export default function AITestPage() {
             const result = playMove(currentBoard, move.row, move.col, playerColor);
             currentBoard = result.newBoard;
             setBoard([...currentBoard.map(r => [...r])]);
+            setLastMove(move);
             consecutivePasses = 0;
             stepCount++;
             totalStepCount++;
             setCurrentStep(stepCount);
             setTotalSteps(totalStepCount);
-            addLog('info', `  落子: (${move.row},${move.col})`);
+            const moveLabel = `${COL_LABELS[move.col]}${boardSize - move.row}`;
+            if (usedKataGoHint) {
+              setUsedHintCount(prev => prev + 1);
+              addLog('success', `  落子: ${moveLabel} (使用KataGo建议)`);
+              gameCommentaries.push({ moveIndex: stepCount - 1, text: `[KataGo建议] ${moveLabel} 胜率${analysis?.winRate.toFixed(1)}% 领先${analysis?.scoreLead.toFixed(1)}目` });
+            } else {
+              setMissedHintCount(prev => prev + 1);
+              addLog('warn', `  落子: ${moveLabel} (本地提示，KataGo建议未使用)`);
+              gameCommentaries.push({ moveIndex: stepCount - 1, text: `[本地提示] ${moveLabel}` });
+            }
           } else {
             addLog('warn', `  无合法落子，停手`);
             consecutivePasses++;
+            gameCommentaries.push({ moveIndex: stepCount, text: '[停手]' });
           }
         } else {
           addLog('info', `第${stepCount + 1}步: AI(${aiColor === 'black' ? '黑' : '白'})思考中...`);
@@ -289,18 +378,22 @@ export default function AITestPage() {
             const result = playMove(currentBoard, aiResult.move.row, aiResult.move.col, aiColor);
             currentBoard = result.newBoard;
             setBoard([...currentBoard.map(r => [...r])]);
+            setLastMove(aiResult.move);
             consecutivePasses = 0;
             stepCount++;
             totalStepCount++;
             setCurrentStep(stepCount);
             setTotalSteps(totalStepCount);
-            addLog('info', `  AI落子: (${aiResult.move.row},${aiResult.move.col})`);
+            const moveLabel = `${COL_LABELS[aiResult.move.col]}${boardSize - aiResult.move.row}`;
+            addLog('info', `  AI落子: ${moveLabel}`);
             if (aiResult.analysis) {
               setLastAnalysis(aiResult.analysis);
             }
+            gameCommentaries.push({ moveIndex: stepCount - 1, text: `[AI] ${moveLabel}` });
           } else if (aiResult.pass) {
             consecutivePasses++;
             addLog('info', `  AI停手`);
+            gameCommentaries.push({ moveIndex: stepCount, text: '[AI停手]' });
           }
         }
 
@@ -310,7 +403,20 @@ export default function AITestPage() {
           const eval_ = evaluateBoard(currentBoard);
           addLog('info', `===== 第${gameCount}局结束: ${endCheck.reason} =====`);
           addLog('info', `  黑${eval_.black}目 vs 白${eval_.white}目`);
+
+          // Save finished game
+          gameId = await saveGameToDB(token, boardSize, difficulty, engine, moves, gameCommentaries, gameId, 'finished');
+          if (gameId) {
+            setCurrentGameId(gameId);
+            addLog('success', `  棋局已保存 (ID:${gameId})`);
+          }
           break;
+        }
+
+        // Auto-save every 10 steps
+        if (stepCount > 0 && stepCount % 10 === 0 && moves.length > 0) {
+          gameId = await saveGameToDB(token, boardSize, difficulty, engine, moves, gameCommentaries, gameId, 'playing');
+          if (gameId) setCurrentGameId(gameId);
         }
 
         // Switch player
@@ -324,6 +430,9 @@ export default function AITestPage() {
 
       if (stepCount >= MAX_STEPS) {
         addLog('warn', `步数上限${MAX_STEPS}，本局结束`);
+        // Save game at max steps
+        gameId = await saveGameToDB(token, boardSize, difficulty, engine, moves, gameCommentaries, gameId, 'finished');
+        if (gameId) setCurrentGameId(gameId);
       }
 
       // Refresh points
@@ -342,7 +451,7 @@ export default function AITestPage() {
 
     setRunning(false);
     addLog('info', `测试已停止，共${gameCount}局${totalStepCount}步`);
-  }, [token, userId, boardSize, difficulty, engine, playerColor, stepInterval, addLog, getAIMove, getAnalysis, getHintFromAnalysis, findFallbackMove]);
+  }, [token, userId, boardSize, difficulty, engine, playerColor, stepInterval, addLog, getAIMove, getAnalysis, getHintFromAnalysis, findFallbackMove, saveGameToDB]);
 
   const stopGame = useCallback(() => {
     runningRef.current = false;
@@ -359,64 +468,66 @@ export default function AITestPage() {
     addLog('info', newPaused ? '已暂停' : '继续运行');
   }, [addLog]);
 
-  // Render mini board
-  const renderMiniBoard = () => {
-    const cellSize = boardSize <= 9 ? 28 : boardSize <= 13 ? 22 : 16;
-    const padding = cellSize;
-    const boardPx = cellSize * (boardSize - 1) + padding * 2;
+  // Export logs as text file
+  const exportLogs = useCallback(() => {
+    const text = logs.map(l => `[${l.time}] [${l.type.toUpperCase()}] ${l.message}`).join('\n');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ai-test-log-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-')}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [logs]);
 
-    return (
-      <svg width={boardPx} height={boardPx} className="border border-amber-300 rounded">
-        <defs>
-          <linearGradient id="aiBoardBg" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#dcb35c" />
-            <stop offset="100%" stopColor="#c49a2f" />
-          </linearGradient>
-          <radialGradient id="aiBlackStone" cx="35%" cy="35%">
-            <stop offset="0%" stopColor="#555" />
-            <stop offset="100%" stopColor="#111" />
-          </radialGradient>
-          <radialGradient id="aiWhiteStone" cx="35%" cy="35%">
-            <stop offset="0%" stopColor="#fff" />
-            <stop offset="100%" stopColor="#ccc" />
-          </radialGradient>
-        </defs>
-        <rect width={boardPx} height={boardPx} fill="url(#aiBoardBg)" />
-        {Array.from({ length: boardSize }, (_, i) => (
-          <g key={i}>
-            <line x1={padding + i * cellSize} y1={padding} x2={padding + i * cellSize} y2={padding + (boardSize - 1) * cellSize} stroke="#8b6914" strokeWidth="0.5" />
-            <line x1={padding} y1={padding + i * cellSize} x2={padding + (boardSize - 1) * cellSize} y2={padding + i * cellSize} stroke="#8b6914" strokeWidth="0.5" />
-          </g>
-        ))}
-        {board.map((row: Board[number], r: number) => row.map((cell: Stone, c: number) => cell !== null && (
-          <circle
-            key={`s-${r}-${c}`}
-            cx={padding + c * cellSize}
-            cy={padding + r * cellSize}
-            r={cellSize * 0.43}
-            fill={cell === 'black' ? 'url(#aiBlackStone)' : 'url(#aiWhiteStone)'}
-            stroke={cell === 'white' ? '#999' : '#000'}
-            strokeWidth="0.5"
-          />
-        )))}
-      </svg>
-    );
-  };
+  // Render board with coordinates (reusing main game style)
+  const cellSize = boardSize <= 9 ? 44 : boardSize <= 13 ? 34 : 26;
+  const padding = cellSize;
+  const boardPx = cellSize * (boardSize - 1) + padding * 2;
+
+  const starPoints9 = [[2,2],[2,6],[4,4],[6,2],[6,6]];
+  const starPoints13 = [[3,3],[3,9],[6,6],[9,3],[9,9],[3,6],[6,3],[6,9],[9,6]];
+  const starPoints19 = [[3,3],[3,9],[3,15],[9,3],[9,9],[9,15],[15,3],[15,9],[15,15]];
+  const starPoints = boardSize === 9 ? starPoints9 : boardSize === 13 ? starPoints13 : starPoints19;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50 p-4">
-      <div className="max-w-6xl mx-auto">
+      <div className="max-w-7xl mx-auto">
         <h1 className="text-2xl font-bold text-amber-800 mb-4">AI模拟实战测试</h1>
 
         {!loggedIn ? (
-          <div className="bg-white rounded-lg shadow p-6 text-center">
-            <p className="text-gray-600 mb-4">请先登录AI测试账号</p>
-            <button
-              onClick={handleLogin}
-              className="px-6 py-2 bg-amber-700 text-white rounded-lg hover:bg-amber-800"
-            >
-              登录 AItest
-            </button>
+          <div className="bg-white rounded-lg shadow p-6 max-w-sm mx-auto">
+            <p className="text-gray-600 mb-4 text-center">请登录AI测试账号</p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm text-gray-500 mb-1">用户名</label>
+                <input
+                  type="text"
+                  value={AI_TEST_USER}
+                  readOnly
+                  className="w-full border rounded px-3 py-2 bg-gray-50 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-500 mb-1">密码</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={e => { setPassword(e.target.value); setLoginError(''); }}
+                  onKeyDown={e => e.key === 'Enter' && handleLogin()}
+                  placeholder="请输入密码"
+                  className="w-full border rounded px-3 py-2 text-sm"
+                  autoFocus
+                />
+              </div>
+              {loginError && <p className="text-red-500 text-sm">{loginError}</p>}
+              <button
+                onClick={handleLogin}
+                className="w-full px-4 py-2 bg-amber-700 text-white rounded-lg hover:bg-amber-800"
+              >
+                登录
+              </button>
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -483,10 +594,12 @@ export default function AITestPage() {
                       onChange={e => setStepInterval(Number(e.target.value))}
                       className="border rounded px-2 py-1 text-sm"
                     >
-                      <option value={2000}>2秒</option>
-                      <option value={3000}>3秒</option>
                       <option value={5000}>5秒</option>
                       <option value={10000}>10秒</option>
+                      <option value={15000}>15秒</option>
+                      <option value={20000}>20秒</option>
+                      <option value={30000}>30秒</option>
+                      <option value={60000}>60秒</option>
                     </select>
                   </div>
                 </div>
@@ -540,8 +653,23 @@ export default function AITestPage() {
                     <span className="text-gray-600">总落子数</span>
                     <span className="font-mono">{totalSteps}</span>
                   </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">KataGo建议使用</span>
+                    <span className="font-mono text-green-600">{usedHintCount}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">KataGo建议未用</span>
+                    <span className="font-mono text-orange-500">{missedHintCount}</span>
+                  </div>
+                  {currentGameId && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">棋局ID</span>
+                      <span className="font-mono">{currentGameId}</span>
+                    </div>
+                  )}
                   {lastAnalysis && (
                     <>
+                      <div className="border-t my-1" />
                       <div className="flex justify-between">
                         <span className="text-gray-600">黑方胜率</span>
                         <span className="font-mono">{lastAnalysis.winRate.toFixed(1)}%</span>
@@ -550,6 +678,22 @@ export default function AITestPage() {
                         <span className="text-gray-600">黑方领先</span>
                         <span className="font-mono">{lastAnalysis.scoreLead.toFixed(1)}目</span>
                       </div>
+                      {lastAnalysis.actualVisits && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">搜索量</span>
+                          <span className="font-mono">{lastAnalysis.actualVisits}</span>
+                        </div>
+                      )}
+                      {lastAnalysis.bestMoves && lastAnalysis.bestMoves.length > 0 && (
+                        <div className="mt-1">
+                          <span className="text-gray-600 text-xs">推荐:</span>
+                          <div className="text-xs font-mono text-blue-600">
+                            {lastAnalysis.bestMoves.slice(0, 5).map((bm, i) => (
+                              <span key={i} className="mr-2">{bm.move}(wr:{bm.winrate.toFixed(0)}%)</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -559,12 +703,85 @@ export default function AITestPage() {
             {/* Center: Board */}
             <div className="flex flex-col items-center">
               <div className="bg-white rounded-lg shadow p-4">
-                {renderMiniBoard()}
+                <svg width={boardPx} height={boardPx} className="border border-amber-300 rounded">
+                  <defs>
+                    <linearGradient id="aiBoardBg" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#dcb35c" />
+                      <stop offset="100%" stopColor="#c49a2f" />
+                    </linearGradient>
+                    <radialGradient id="aiBlackStone" cx="35%" cy="35%">
+                      <stop offset="0%" stopColor="#555" />
+                      <stop offset="100%" stopColor="#111" />
+                    </radialGradient>
+                    <radialGradient id="aiWhiteStone" cx="35%" cy="35%">
+                      <stop offset="0%" stopColor="#fff" />
+                      <stop offset="100%" stopColor="#ccc" />
+                    </radialGradient>
+                  </defs>
+                  <rect width={boardPx} height={boardPx} fill="url(#aiBoardBg)" />
+                  {/* Grid lines */}
+                  {Array.from({ length: boardSize }, (_, i) => (
+                    <g key={`line-${i}`}>
+                      <line x1={padding + i * cellSize} y1={padding} x2={padding + i * cellSize} y2={padding + (boardSize - 1) * cellSize} stroke="#8b6914" strokeWidth="0.5" />
+                      <line x1={padding} y1={padding + i * cellSize} x2={padding + (boardSize - 1) * cellSize} y2={padding + i * cellSize} stroke="#8b6914" strokeWidth="0.5" />
+                    </g>
+                  ))}
+                  {/* Star points */}
+                  {starPoints.map(([r, c]) => (
+                    <circle key={`sp-${r}-${c}`} cx={padding + c * cellSize} cy={padding + r * cellSize} r={cellSize * 0.1} fill="#8b6914" />
+                  ))}
+                  {/* Column labels */}
+                  {Array.from({ length: boardSize }, (_, i) => (
+                    <text key={`col-${i}`} x={padding + i * cellSize} y={padding * 0.5} textAnchor="middle" fontSize={cellSize * 0.35} fill="#8b6914">{COL_LABELS[i]}</text>
+                  ))}
+                  {/* Row labels */}
+                  {Array.from({ length: boardSize }, (_, i) => (
+                    <text key={`row-${i}`} x={padding * 0.35} y={padding + (boardSize - 1 - i) * cellSize + cellSize * 0.12} textAnchor="middle" fontSize={cellSize * 0.35} fill="#8b6914">{i + 1}</text>
+                  ))}
+                  {/* Hint position marker */}
+                  {hintPosition && (
+                    <rect
+                      x={padding + hintPosition.col * cellSize - cellSize * 0.4}
+                      y={padding + hintPosition.row * cellSize - cellSize * 0.4}
+                      width={cellSize * 0.8}
+                      height={cellSize * 0.8}
+                      fill="rgba(34,197,94,0.3)"
+                      stroke="#22c55e"
+                      strokeWidth="2"
+                      rx="4"
+                    />
+                  )}
+                  {/* Stones */}
+                  {board.map((row: Board[number], r: number) => row.map((cell: Stone, c: number) => cell !== null && (
+                    <g key={`s-${r}-${c}`}>
+                      <circle
+                        cx={padding + c * cellSize}
+                        cy={padding + r * cellSize}
+                        r={cellSize * 0.43}
+                        fill={cell === 'black' ? 'url(#aiBlackStone)' : 'url(#aiWhiteStone)'}
+                        stroke={cell === 'white' ? '#999' : '#000'}
+                        strokeWidth="0.5"
+                      />
+                      {/* Last move marker */}
+                      {lastMove && lastMove.row === r && lastMove.col === c && (
+                        <circle
+                          cx={padding + c * cellSize}
+                          cy={padding + r * cellSize}
+                          r={cellSize * 0.12}
+                          fill={cell === 'black' ? '#fff' : '#000'}
+                        />
+                      )}
+                    </g>
+                  )))}
+                </svg>
               </div>
               {running && (
                 <div className="mt-2 text-center">
                   <p className="text-sm text-amber-700">
-                    {paused ? '已暂停' : `第${currentStep}步 运行中...`}
+                    {paused ? '⏸ 已暂停' : `▶ 第${currentStep}步 运行中...`}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    KataGo建议: 使用{usedHintCount}次 / 未用{missedHintCount}次
                   </p>
                 </div>
               )}
@@ -574,12 +791,20 @@ export default function AITestPage() {
             <div className="bg-white rounded-lg shadow p-4">
               <div className="flex items-center justify-between mb-2">
                 <h2 className="font-semibold text-amber-800">运行日志</h2>
-                <button
-                  onClick={() => setLogs([])}
-                  className="text-xs text-gray-400 hover:text-gray-600"
-                >
-                  清空
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={exportLogs}
+                    className="text-xs text-blue-500 hover:text-blue-700"
+                  >
+                    导出日志
+                  </button>
+                  <button
+                    onClick={() => setLogs([])}
+                    className="text-xs text-gray-400 hover:text-gray-600"
+                  >
+                    清空
+                  </button>
+                </div>
               </div>
               <div className="h-[500px] overflow-y-auto space-y-0.5 font-mono text-xs">
                 {logs.map((log, idx) => (
@@ -588,7 +813,7 @@ export default function AITestPage() {
                     className={
                       log.type === 'error' ? 'text-red-600' :
                       log.type === 'success' ? 'text-green-600' :
-                      log.type === 'warn' ? 'text-yellow-600' :
+                      log.type === 'warn' ? 'text-orange-500' :
                       'text-gray-600'
                     }
                   >
