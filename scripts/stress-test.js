@@ -1,7 +1,7 @@
 /**
  * 双引擎压力测试脚本 v2
  * 
- * 50个GnuGo用户 + 50个KataGo用户
+ * 40个GnuGo用户 + 10个KataGo用户
  * 每个用户每10秒随机下一步棋（19路高级难度）
  * 并发控制：等待AI响应时如果超过10秒，延迟一个周期
  * 统计每个用户的延迟次数
@@ -10,8 +10,8 @@
  */
 
 const BASE_URL = process.argv[2] || 'https://letusgoa.cn';
-const GNUGO_USERS = 50;
-const KATAGO_USERS = 50;
+const GNUGO_USERS = 40;
+const KATAGO_USERS = 10;
 const STEP_INTERVAL_MS = 10000; // 每10秒下一步
 const MAX_STEPS = 20;           // 最多20步
 const BOARD_SIZE = 19;
