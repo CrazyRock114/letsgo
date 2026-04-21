@@ -17,6 +17,7 @@ function buildGameData(body: Record<string, unknown>, userId: number) {
     engine: body.engine,
     moves: body.moves,
     commentaries: body.commentaries,
+    teach_history: body.teachHistory,
     final_board: body.final_board,
     black_score: body.black_score,
     white_score: body.white_score,
@@ -52,6 +53,7 @@ export async function POST(request: NextRequest) {
       const updateData = {
         moves: body.moves,
         commentaries: body.commentaries,
+        teach_history: body.teachHistory,
         final_board: body.final_board,
         black_score: body.black_score,
         white_score: body.white_score,

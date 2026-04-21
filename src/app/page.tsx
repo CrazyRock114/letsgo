@@ -285,10 +285,23 @@ export default function GoGamePage() {
 
 
   // ===== AI教学 =====
+  // 教学历史条目
+  interface TeachEntry {
+    moveIndex: number;       // 教学针对的手数
+    hintPosition: Position | null; // 提示点位
+    content: string;         // 教学内容
+    faded: boolean;          // 是否已过时（用户已落子或新一局）
+  }
   const [teachingMessage, setTeachingMessage] = useState('');
+  const [teachHistory, setTeachHistory] = useState<TeachEntry[]>([]);
   const [isTeachStreaming, setIsTeachStreaming] = useState(false);
   const [teachMoveIndex, setTeachMoveIndex] = useState<number | null>(null); // 教学针对的手数
   const teachAbortRef = useRef<AbortController | null>(null); // 教学请求的中断控制器
+  const [teachUsedCount, setTeachUsedCount] = useState(0);
+  const [autoSave, setAutoSave] = useState(false);
+  const [autoSaving, setAutoSaving] = useState(false); // 本局已使用提示与教学次数
+  const MAX_TEACH_PER_GAME = 10; // 每局最多使用次数
+  const TEACH_COST = 20; // 每次消耗积分
 
   // ===== 聊天 =====
   const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
@@ -409,10 +422,12 @@ export default function GoGamePage() {
     setReplayIndex(0);
     setReplayMoves([]);
     setTeachingMessage('');
+    setTeachHistory(prev => prev.map(e => ({ ...e, faded: true })));
     setIsCommentaryStreaming(false);
     setStreamingText('');
     setIsTeachStreaming(false);
     setIsChatStreaming(false);
+    setTeachUsedCount(0);
     setConsecutivePasses(0);
     setGameEnded(false);
     setGameResult(null);
@@ -550,6 +565,7 @@ export default function GoGamePage() {
     }
     setIsTeachStreaming(false);
     setTeachingMessage('');
+    setTeachHistory(prev => prev.map(e => ({ ...e, faded: true })));
     setShowHint(null);
 
     const { newBoard, captured } = playMove(board, row, col, currentPlayer);
@@ -745,6 +761,58 @@ export default function GoGamePage() {
     isProcessingMoveRef.current = false;
   }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, engine, history, requestCommentary, gameEnded, consecutivePasses, boardSize, playerColor, token, deductPoints, refreshUser]);
 
+  // ===== 自动保存 =====
+  const autoSaveGame = useCallback(async () => {
+    if (!autoSave || !user || autoSaving || isReplayMode) return;
+    // 每步扣1积分，检查积分
+    if (user.points < 1) {
+      toast.error('积分不足，自动保存已暂停');
+      setAutoSave(false);
+      return;
+    }
+    setAutoSaving(true);
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
+      const res = await fetch('/api/games', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          id: savedGameId,
+          board_size: boardSize,
+          difficulty,
+          engine,
+          moves: history,
+          commentaries,
+          teachHistory: teachHistory.map(e => ({ moveIndex: e.moveIndex, content: e.content, hintPosition: e.hintPosition, faded: e.faded })),
+          final_board: board,
+          black_score: score.black,
+          white_score: score.white,
+          status: 'playing',
+          title: saveTitle || `${boardSize}路 ${difficulty === 'easy' ? '初级' : difficulty === 'medium' ? '中级' : '高级'} ${engine === 'katago' ? 'KataGo' : engine === 'gnugo' ? 'GnuGo' : '本地AI'} ${new Date().toLocaleDateString('zh-CN')}`,
+        }),
+      });
+      const data = await res.json();
+      if (data.game) {
+        setSavedGameId(data.game.id);
+        // 扣除1积分
+        deductPoints(1);
+      }
+    } catch (err) {
+      console.error('自动保存失败:', err);
+    }
+    setAutoSaving(false);
+  }, [autoSave, user, autoSaving, isReplayMode, token, savedGameId, boardSize, difficulty, engine, history, commentaries, teachHistory, board, score, saveTitle, deductPoints]);
+
+  // AI落子完成后触发自动保存
+  useEffect(() => {
+    if (autoSave && !isAIThinking && history.length > 0 && currentPlayer === playerColor && !gameEnded) {
+      autoSaveGame();
+    }
+  }, [autoSave, isAIThinking, history.length, currentPlayer, playerColor, gameEnded]);
+
 
   // ===== 悔棋 =====
   const undoMove = useCallback(() => {
@@ -813,6 +881,8 @@ export default function GoGamePage() {
     setReplayIndex(0);
     setReplayMoves([]);
     setTeachingMessage('');
+    setTeachHistory(prev => prev.map(e => ({ ...e, faded: true })));
+    setTeachUsedCount(0);
     setConsecutivePasses(0);
     setGameEnded(false);
     setGameResult(null);
@@ -1027,8 +1097,23 @@ export default function GoGamePage() {
   // ===== 提示与教学（一体化流程：先KataGo分析→提示点位+教学内容） =====
   const getTeaching = useCallback(async () => {
     if (isTeachStreaming) return;
+    // 检查每局使用次数限制
+    if (teachUsedCount >= MAX_TEACH_PER_GAME) {
+      toast.error('本局提示与教学已达上限', { description: `每局最多使用${MAX_TEACH_PER_GAME}次` });
+      return;
+    }
+    // 检查积分（提示需要20积分）
+    if (user && user.points < TEACH_COST) {
+      toast.error('积分不足', { description: `提示与教学需要${TEACH_COST}积分，当前${user.points}积分` });
+      return;
+    }
+    if (!user) {
+      toast.error('请先登录', { description: '提示与教学需要登录' });
+      return;
+    }
     setIsTeachStreaming(true);
     setTeachingMessage('');
+    setTeachHistory(prev => prev.map(e => ({ ...e, faded: true })));
     setTeachMoveIndex(history.length); // 记录教学针对的手数
 
     // 创建本轮教学专用的AbortController
@@ -1068,15 +1153,32 @@ export default function GoGamePage() {
           if (analyzeRes.ok) {
             const analyzeData = await analyzeRes.json();
             if (analyzeData.queueBusy) {
-              // 队列繁忙，提示用户
+              // 队列繁忙，提示用户（积分已退回）
               setTeachingMessage(analyzeData.error || '当前AI任务队列繁忙，请稍后再试');
+              setIsTeachStreaming(false);
+              return;
+            }
+            if (analyzeData.insufficientPoints) {
+              toast.error('积分不足', { description: analyzeData.error });
               setIsTeachStreaming(false);
               return;
             }
             if (analyzeData.analysis) {
               analysisData = analyzeData.analysis;
               latestAnalysisRef.current = analysisData;
+              // 积分扣除成功，增加使用次数
+              setTeachUsedCount(prev => prev + 1);
+              // 更新前端积分显示
+              if (user && analyzeData.pointsUsed) {
+                deductPoints(analyzeData.pointsUsed);
+              }
             }
+          } else if (analyzeRes.status === 403) {
+            // 积分不足
+            const errorData = await analyzeRes.json().catch(() => ({}));
+            toast.error('积分不足', { description: errorData.error || '积分不足' });
+            setIsTeachStreaming(false);
+            return;
           }
         } catch {
           // 分析失败/超时不影响教学，无分析数据也能给出专业解说
@@ -1131,22 +1233,50 @@ export default function GoGamePage() {
         body: JSON.stringify(teachingBody),
       });
       if (response.ok) {
+        let finalText = '';
         await readStream(response, text => {
+          finalText = text;
           // 只有未被中断时才更新教学内容
           if (!thisAbortController.signal.aborted) {
             setTeachingMessage(text);
           }
         });
+        // 保存到教学历史
+        if (!thisAbortController.signal.aborted) {
+          const entry: TeachEntry = {
+            moveIndex: teachMoveIndex ?? history.length,
+            hintPosition: hintPosition ?? null,
+            content: finalText,
+            faded: false,
+          };
+          setTeachHistory(prev => [...prev, entry]);
+        }
       } else {
         console.warn('[teach] API returned', response.status);
         if (!thisAbortController.signal.aborted) {
-          setTeachingMessage('小围棋暂时无法思考，请稍后再试。');
+          const fallbackMsg = '小围棋暂时无法思考，请稍后再试。';
+          setTeachingMessage(fallbackMsg);
+          const entry: TeachEntry = {
+            moveIndex: teachMoveIndex ?? history.length,
+            hintPosition: hintPosition ?? null,
+            content: fallbackMsg,
+            faded: false,
+          };
+          setTeachHistory(prev => [...prev, entry]);
         }
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       if (!thisAbortController.signal.aborted) {
-        setTeachingMessage('小围棋正在思考中...');
+        const fallbackMsg = '小围棋正在思考中...';
+        setTeachingMessage(fallbackMsg);
+        const entry: TeachEntry = {
+          moveIndex: teachMoveIndex ?? history.length,
+          hintPosition: null,
+          content: fallbackMsg,
+          faded: false,
+        };
+        setTeachHistory(prev => [...prev, entry]);
       }
     } finally {
       // 只有当前AbortController仍是最新的才重置状态
@@ -1155,7 +1285,7 @@ export default function GoGamePage() {
       }
       setIsTeachStreaming(false);
     }
-  }, [board, currentPlayer, lastMove, isTeachStreaming, boardSize, history, token]);
+  }, [board, currentPlayer, lastMove, isTeachStreaming, boardSize, history, token, teachUsedCount, user]);
 
   // ===== 聊天 =====
   const sendMessage = useCallback(async () => {
@@ -1245,6 +1375,7 @@ export default function GoGamePage() {
           engine,
           moves: history,
           commentaries,
+          teachHistory: teachHistory.map(e => ({ moveIndex: e.moveIndex, content: e.content, hintPosition: e.hintPosition, faded: e.faded })),
           final_board: board,
           black_score: score.black,
           white_score: score.white,
@@ -1303,6 +1434,7 @@ export default function GoGamePage() {
       if (game.engine) setEngine(game.engine as EngineId);
       setHistory(game.moves || []);
       setCommentaries(game.commentaries || []);
+      setTeachHistory(((game as unknown as Record<string, unknown>).teach_history || []) as TeachEntry[]);
       setSavedGameId(game.id ?? null);
       setIsReplayMode(true);
       setReplayIndex(0);
@@ -1938,6 +2070,21 @@ export default function GoGamePage() {
                     <Button onClick={saveGame} disabled={isSaving} className="w-full bg-amber-700 hover:bg-amber-800">
                       {isSaving ? '保存中...' : '确认保存'}
                     </Button>
+                    {/* 自动保存开关 */}
+                    {user && (
+                      <div className="flex items-center justify-between pt-1 border-t">
+                        <div className="flex items-center gap-2">
+                          <label className="text-xs text-gray-600">自动保存每步</label>
+                          <span className="text-xs text-gray-400">（1积分/步）</span>
+                        </div>
+                        <button
+                          onClick={() => setAutoSave(!autoSave)}
+                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${autoSave ? 'bg-amber-600' : 'bg-gray-300'}`}
+                        >
+                          <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${autoSave ? 'translate-x-4.5' : 'translate-x-1'}`} />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </DialogContent>
               </Dialog>
@@ -2027,25 +2174,39 @@ export default function GoGamePage() {
                 variant="default"
                 size="sm"
                 className="w-full gap-1.5 h-9 bg-amber-600 hover:bg-amber-700"
-                disabled={isReplayMode || isTeachStreaming || gameEnded || isAIThinking}
+                disabled={isReplayMode || isTeachStreaming || gameEnded || isAIThinking || teachUsedCount >= MAX_TEACH_PER_GAME}
               >
                 <Lightbulb className="w-4 h-4" /> 提示与教学
                 {isTeachStreaming && <Spinner className="w-3 h-3 ml-1" />}
+                <span className="text-xs opacity-80">{teachUsedCount}/{MAX_TEACH_PER_GAME}</span>
               </Button>
-              {(teachingMessage || isTeachStreaming) && (
+              {teachHistory.length > 0 && (
+                <div className="mt-2 space-y-2">
+                  {teachHistory.map((entry, idx) => (
+                    <div key={idx} className={`space-y-0.5 ${entry.faded ? 'opacity-40' : ''}`}>
+                      {entry.hintPosition && (
+                        <p className={`text-xs font-medium ${entry.faded ? 'text-amber-400' : 'text-amber-700'}`}>
+                          建议落在 {positionToCoordinate(entry.hintPosition.row, entry.hintPosition.col, boardSize)}
+                        </p>
+                      )}
+                      <p className={`text-xs leading-relaxed whitespace-pre-wrap ${entry.faded ? 'text-gray-400' : 'text-gray-700'}`}>
+                        <span className="text-amber-600 font-medium">【第{entry.moveIndex + 1}手】</span>
+                        {entry.content}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(teachingMessage || isTeachStreaming) && !teachHistory.find(e => !e.faded) && (
                 <div className="mt-2 space-y-1">
                   {showHint && (
                     <p className="text-xs text-amber-700 font-medium">
                       建议落在 {positionToCoordinate(showHint.row, showHint.col, boardSize)}
                     </p>
                   )}
-                  <p className={`text-xs leading-relaxed whitespace-pre-wrap ${teachMoveIndex !== null && teachMoveIndex < history.length ? 'text-gray-400' : 'text-gray-700'}`}>
-                    {teachMoveIndex !== null && <span className="text-amber-600 font-medium">【第{teachMoveIndex + 1}手】</span>}
-                    {teachingMessage || (isTeachStreaming ? '正在分析...' : '')}
+                  <p className="text-xs leading-relaxed whitespace-pre-wrap text-gray-700">
+                    {isTeachStreaming ? '正在分析...' : teachingMessage}
                   </p>
-                  {teachMoveIndex !== null && teachMoveIndex < history.length && (
-                    <p className="text-xs text-gray-400 italic">（已过时，针对第{teachMoveIndex + 1}手的教学）</p>
-                  )}
                 </div>
               )}
             </CardContent>

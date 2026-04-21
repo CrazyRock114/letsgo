@@ -1134,21 +1134,21 @@ class EngineQueue {
   /** 获取KataGo局面分析（通过主队列串行执行，避免与genmove命令冲突）
    *  队列保护：排队数 >= ANALYSIS_QUEUE_THRESHOLD(5) 时拒绝新analysis请求
    */
-  async enqueueAnalysis(userId: number, moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number): Promise<{ analysis: KataGoAnalysis | null; queueBusy?: boolean; queueLength?: number }> {
+  async enqueueAnalysis(userId: number, moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number, isAITest = false): Promise<{ analysis: KataGoAnalysis | null; queueBusy?: boolean; queueLength?: number }> {
     // 检查KataGo是否可用
     if (!isKataGoAvailable()) {
       console.log(`[engine-queue] Analysis rejected: KataGo不可用`);
       return { analysis: null };
     }
-    // 队列保护：排队数 >= 5 时拒绝，避免analysis阻塞genmove
+    // 队列保护：排队数 >= 5 时拒绝，避免analysis阻塞genmove（AI测试模式不受限制）
     const currentQueueLen = this.queue.length;
     const ANALYSIS_QUEUE_THRESHOLD = 5;
-    if (currentQueueLen >= ANALYSIS_QUEUE_THRESHOLD) {
+    if (!isAITest && currentQueueLen >= ANALYSIS_QUEUE_THRESHOLD) {
       console.log(`[engine-queue] Analysis rejected: 队列过长(${currentQueueLen} >= ${ANALYSIS_QUEUE_THRESHOLD}), user=${userId}`);
       return { analysis: null, queueBusy: true, queueLength: currentQueueLen };
     }
     const id = `qe-${++this.entryId}-analysis`;
-    console.log(`[engine-queue] Enqueued analysis: ${id}, user=${userId}, queueLen=${currentQueueLen}`);
+    console.log(`[engine-queue] Enqueued analysis: ${id}, user=${userId}, queueLen=${currentQueueLen}, isAITest=${isAITest}`);
     return new Promise<{ analysis: KataGoAnalysis | null }>((resolve) => {
       this.queue.push({
         id,
@@ -1235,21 +1235,83 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid analysisSeconds (0-60)' }, { status: 400 });
     }
 
-    // 按需分析请求：仅当用户点击"提示与教学"时触发
+    // 按需分析请求：仅当用户点击"提示与教学"时触发（消耗20积分）
     if (action === 'analyze') {
       const authHeader = request.headers.get('Authorization');
       const user = getUserFromAuthHeader(authHeader);
-      console.log(`[go-engine] POST analyze: user=${user?.userId || 'unknown'}, board=${boardSize}, moves=${moves?.length || 0}, queue=${engineQueue.getQueueLength()}`);
+      const isAITest = body.isAITest === true;
+      console.log(`[go-engine] POST analyze: user=${user?.userId || 'unknown'}(${user?.nickname || '?'}), board=${boardSize}, moves=${moves?.length || 0}, queue=${engineQueue.getQueueLength()}, isAITest=${isAITest}`);
       if (!user || !isKataGoAvailable()) {
-        return NextResponse.json({ analysis: null });
+        return NextResponse.json({ analysis: null, error: !user ? '请先登录' : 'KataGo不可用' });
       }
+      // 提示与教学积分消耗：20积分
+      const TEACH_COST = 20;
+      // AI测试模式：跳过积分扣除和队列限制
+      if (!isAITest) {
+      try {
+        const teachSupabase = getSupabaseClient();
+        const { data: teachUserData, error: teachUserError } = await teachSupabase
+          .from('letsgo_users')
+          .select('points')
+          .eq('id', user.userId)
+          .single();
+        if (teachUserError || !teachUserData) {
+          return NextResponse.json({ analysis: null, error: '用户信息获取失败' });
+        }
+        if (teachUserData.points < TEACH_COST) {
+          return NextResponse.json({ 
+            analysis: null, 
+            insufficientPoints: true,
+            error: `积分不足（提示与教学需要${TEACH_COST}积分，当前${teachUserData.points}积分）`,
+            required: TEACH_COST,
+            current: teachUserData.points,
+          }, { status: 403 });
+        }
+        // 扣除积分
+        const { error: teachUpdateError } = await teachSupabase
+          .from('letsgo_users')
+          .update({ points: teachUserData.points - TEACH_COST, updated_at: new Date().toISOString() })
+          .eq('id', user.userId)
+          .gte('points', TEACH_COST);
+        if (teachUpdateError) {
+          console.error('[go-engine] Teach: Failed to deduct points:', teachUpdateError);
+          return NextResponse.json({ analysis: null, error: '积分扣除失败' }, { status: 500 });
+        }
+        await teachSupabase.from('letsgo_point_transactions').insert({
+          user_id: user.userId,
+          amount: -TEACH_COST,
+          type: 'teach_use',
+          description: '提示与教学',
+        });
+        console.log(`[go-engine] Teach: Deducted ${TEACH_COST} points from user ${user.userId}`);
+      } catch (pointsErr) {
+        console.error('[go-engine] Teach points error:', pointsErr);
+        return NextResponse.json({ analysis: null, error: '积分处理失败' }, { status: 500 });
+      }
+      } // end non-AI-test teach logic
+      // AI测试模式 或 积分扣除成功后：执行分析
       try {
         const result = await engineQueue.enqueueAnalysis(
-          user?.userId || 0,
+          user.userId,
           moves as Array<{row: number, col: number, color: 'black' | 'white'}>,
-          boardSize
+          boardSize,
+          isAITest // AI测试模式不受队列限制
         );
         if (result.queueBusy) {
+          // 队列繁忙时退回积分（非AI测试）
+          if (!isAITest) {
+            try {
+              const refundSupabase = getSupabaseClient();
+              const { data: refundData } = await refundSupabase.from('letsgo_users').select('points').eq('id', user.userId).single();
+              if (refundData) {
+                await refundSupabase.from('letsgo_users').update({ points: refundData.points + TEACH_COST }).eq('id', user.userId);
+                await refundSupabase.from('letsgo_point_transactions').insert({
+                  user_id: user.userId, amount: TEACH_COST, type: 'teach_refund', description: '提示与教学-队列繁忙退回'
+                });
+                console.log(`[go-engine] Teach: Refunded ${TEACH_COST} points to user ${user.userId} (queue busy)`);
+              }
+            } catch { /* ignore refund error */ }
+          }
           return NextResponse.json({ 
             analysis: null, 
             queueBusy: true, 
@@ -1257,14 +1319,26 @@ export async function POST(request: NextRequest) {
             error: `当前AI任务队列超过5（实际${result.queueLength}），请稍后再试` 
           });
         }
-        return NextResponse.json({ analysis: result.analysis });
+        return NextResponse.json({ analysis: result.analysis, pointsUsed: isAITest ? 0 : TEACH_COST });
       } catch (err) {
         console.error('[go-engine] Analysis error:', err);
+        // 分析失败也退回积分（非AI测试）
+        if (!isAITest) {
+          try {
+            const refundSupabase = getSupabaseClient();
+            const { data: refundData } = await refundSupabase.from('letsgo_users').select('points').eq('id', user.userId).single();
+            if (refundData) {
+              await refundSupabase.from('letsgo_users').update({ points: refundData.points + TEACH_COST }).eq('id', user.userId);
+              await refundSupabase.from('letsgo_point_transactions').insert({
+                user_id: user.userId, amount: TEACH_COST, type: 'teach_refund', description: '提示与教学-分析失败退回'
+              });
+              console.log(`[go-engine] Teach: Refunded ${TEACH_COST} points to user ${user.userId} (analysis error)`);
+            }
+          } catch { /* ignore refund error */ }
+        }
         return NextResponse.json({ analysis: null });
       }
     }
-
-    // 认证：从请求头获取用户
     const authHeader = request.headers.get('Authorization');
     const user = getUserFromAuthHeader(authHeader);
     
