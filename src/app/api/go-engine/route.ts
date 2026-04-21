@@ -1021,6 +1021,31 @@ class EngineQueue {
             // 安全超时：analysisSeconds秒 + 30s缓冲（防止getKataGoAnalysis内部stop失败时无限等待）
             const analysisTimeout = (analysisSeconds || 0) * 1000 + 30000;
             let queueTimeoutId: ReturnType<typeof setTimeout> | null = null;
+            
+            // 队列溢出监控：analysis期间每2秒检查队列，>8则提前中断
+            const ANALYSIS_INTERRUPT_THRESHOLD = 8;
+            let interruptCheckInterval: ReturnType<typeof setInterval> | null = null;
+            let interruptedByQueue = false;
+            if (analysisSeconds && analysisSeconds > 0) {
+              interruptCheckInterval = setInterval(() => {
+                const qLen = this.queue.length;
+                if (qLen > ANALYSIS_INTERRUPT_THRESHOLD) {
+                  console.warn(`[engine-queue] Analysis interrupted: 队列过长(${qLen} > ${ANALYSIS_INTERRUPT_THRESHOLD}), 中断analysis ${entry.id}`);
+                  interruptedByQueue = true;
+                  try {
+                    const proc = persistentKataGo.getProcess();
+                    if (proc && !proc.killed && proc.stdin?.writable) {
+                      proc.stdin.write('stop\n');
+                      console.log(`[engine-queue] 已发送stop中断analysis（队列溢出保护）`);
+                    }
+                  } catch (e) {
+                    console.log('[engine-queue] 发送interrupt stop失败:', e);
+                  }
+                  if (interruptCheckInterval) clearInterval(interruptCheckInterval);
+                }
+              }, 2000);
+            }
+            
             analysisResult = await Promise.race([
               getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>),
               new Promise<null>(resolve => {
@@ -1031,8 +1056,12 @@ class EngineQueue {
                 }, analysisTimeout);
               }),
             ]);
-            // 关键：分析完成后立即清除队列超时计时器，防止双重stop
+            // 关键：分析完成后立即清除队列超时计时器和中断检查，防止双重stop
             if (queueTimeoutId !== null) clearTimeout(queueTimeoutId);
+            if (interruptCheckInterval !== null) clearInterval(interruptCheckInterval);
+            if (interruptedByQueue) {
+              console.log(`[engine-queue] Analysis ${entry.id} was interrupted by queue overflow, partial results used`);
+            }
           } catch (err) {
             console.warn(`[engine-queue] Analysis failed:`, err instanceof Error ? err.message : String(err));
             persistentKataGo.resetCrashState();
@@ -1102,15 +1131,25 @@ class EngineQueue {
     return { id: this.currentEntry.id, userId: this.currentEntry.userId, isAnalysis: !!this.currentEntry.isAnalysis, engine: this.currentEntry.engine };
   }
 
-  /** 获取KataGo局面分析（通过主队列串行执行，避免与genmove命令冲突） */
-  async enqueueAnalysis(userId: number, moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number): Promise<KataGoAnalysis | null> {
+  /** 获取KataGo局面分析（通过主队列串行执行，避免与genmove命令冲突）
+   *  队列保护：排队数 >= ANALYSIS_QUEUE_THRESHOLD(5) 时拒绝新analysis请求
+   */
+  async enqueueAnalysis(userId: number, moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number): Promise<{ analysis: KataGoAnalysis | null; queueBusy?: boolean; queueLength?: number }> {
     // 检查KataGo是否可用
     if (!isKataGoAvailable()) {
-      return null;
+      console.log(`[engine-queue] Analysis rejected: KataGo不可用`);
+      return { analysis: null };
+    }
+    // 队列保护：排队数 >= 5 时拒绝，避免analysis阻塞genmove
+    const currentQueueLen = this.queue.length;
+    const ANALYSIS_QUEUE_THRESHOLD = 5;
+    if (currentQueueLen >= ANALYSIS_QUEUE_THRESHOLD) {
+      console.log(`[engine-queue] Analysis rejected: 队列过长(${currentQueueLen} >= ${ANALYSIS_QUEUE_THRESHOLD}), user=${userId}`);
+      return { analysis: null, queueBusy: true, queueLength: currentQueueLen };
     }
     const id = `qe-${++this.entryId}-analysis`;
-    console.log(`[engine-queue] Enqueued analysis: ${id}, user=${userId}, queueLen=${this.queue.length}`);
-    return new Promise((resolve) => {
+    console.log(`[engine-queue] Enqueued analysis: ${id}, user=${userId}, queueLen=${currentQueueLen}`);
+    return new Promise<{ analysis: KataGoAnalysis | null }>((resolve) => {
       this.queue.push({
         id,
         userId,
@@ -1122,7 +1161,7 @@ class EngineQueue {
         engine: 'katago',
         aiColor: 'black',
         isAnalysis: true,
-        analysisResolve: resolve,
+        analysisResolve: (result: KataGoAnalysis | null) => resolve({ analysis: result }),
       });
       this.processNext();
     });
@@ -1179,6 +1218,7 @@ const engineQueue = new EngineQueue();
 // API路由
 // ============================================================
 export async function POST(request: NextRequest) {
+  const reqStart = Date.now();
   try {
     const body = await request.json();
     const { boardSize, moves, difficulty, engine: requestedEngine, aiColor: rawAiColor, action, analysisSeconds: newSeconds } = body;
@@ -1199,17 +1239,27 @@ export async function POST(request: NextRequest) {
     if (action === 'analyze') {
       const authHeader = request.headers.get('Authorization');
       const user = getUserFromAuthHeader(authHeader);
+      console.log(`[go-engine] POST analyze: user=${user?.userId || 'unknown'}, board=${boardSize}, moves=${moves?.length || 0}, queue=${engineQueue.getQueueLength()}`);
       if (!user || !isKataGoAvailable()) {
         return NextResponse.json({ analysis: null });
       }
       try {
-        const analysisResult = await engineQueue.enqueueAnalysis(
+        const result = await engineQueue.enqueueAnalysis(
           user?.userId || 0,
           moves as Array<{row: number, col: number, color: 'black' | 'white'}>,
           boardSize
         );
-        return NextResponse.json({ analysis: analysisResult });
-      } catch {
+        if (result.queueBusy) {
+          return NextResponse.json({ 
+            analysis: null, 
+            queueBusy: true, 
+            queueLength: result.queueLength,
+            error: `当前AI任务队列超过5（实际${result.queueLength}），请稍后再试` 
+          });
+        }
+        return NextResponse.json({ analysis: result.analysis });
+      } catch (err) {
+        console.error('[go-engine] Analysis error:', err);
         return NextResponse.json({ analysis: null });
       }
     }
@@ -1229,6 +1279,7 @@ export async function POST(request: NextRequest) {
 
     // 追踪活跃对弈
     trackActiveSession(user.userId, user.nickname, requestedEngine, boardSize, difficulty, moves?.length || 0);
+    console.log(`[go-engine] POST genmove: user=${user.userId}(${user.nickname}), engine=${requestedEngine}, board=${boardSize}, diff=${difficulty}, moves=${moves?.length || 0}, queue=${engineQueue.getQueueLength()}`);
 
     // ============================================================
     // GnuGo引擎：直接spawn进程执行，不走EngineQueue
@@ -1274,7 +1325,10 @@ export async function POST(request: NextRequest) {
       }
       // 直接执行GnuGo（并行，不阻塞KataGo队列）
       try {
+        const gnugoStart = Date.now();
         const gnugoResult = await getGnuGoMove(boardSize, moves, difficulty, aiColor);
+        const gnugoElapsed = Date.now() - gnugoStart;
+        console.log(`[go-engine] GnuGo完成: user=${user.userId}, move=${gnugoResult.pass ? 'pass' : gnugoResult.move ? `(${gnugoResult.move.row},${gnugoResult.move.col})` : 'null'}, ${gnugoElapsed}ms`);
         // 获取最新积分余额
         let gnugoRemainingPoints: number | undefined;
         if (gnugoCost > 0) {
@@ -1291,6 +1345,7 @@ export async function POST(request: NextRequest) {
           remainingPoints: gnugoRemainingPoints,
         });
       } catch (gnugoError) {
+        console.error(`[go-engine] GnuGo执行失败: user=${user.userId}, ${gnugoError instanceof Error ? gnugoError.message : String(gnugoError)}`);
         return NextResponse.json({
           move: null, engine: "gnugo", engineError: true,
           errorDetail: gnugoError instanceof Error ? gnugoError.message : String(gnugoError),
@@ -1349,9 +1404,12 @@ export async function POST(request: NextRequest) {
 
     // 加入引擎队列（KataGo串行处理，支持多人排队；local也走队列保持一致）
     const queueInfo = engineQueue.getQueuePosition(user.userId);
+    const queueStart = Date.now();
     const result = await engineQueue.enqueue(
       user.userId, requestedEngine, boardSize, moves, difficulty, aiColor
     );
+    const queueElapsed = Date.now() - queueStart;
+    console.log(`[go-engine] ${requestedEngine}完成: user=${user.userId}, move=${result.pass ? 'pass' : result.move ? `(${result.move.row},${result.move.col})` : 'null'}, engine=${result.engine}, queueWait=${queueElapsed}ms${result.noEngine ? ' [noEngine]' : ''}${result.engineError ? ' [error]' : ''}`);
     
     // 获取最新积分余额并附加到响应中
     let remainingPoints: number | undefined;

@@ -1067,6 +1067,12 @@ export default function GoGamePage() {
           if (thisAbortController.signal.aborted) return;
           if (analyzeRes.ok) {
             const analyzeData = await analyzeRes.json();
+            if (analyzeData.queueBusy) {
+              // 队列繁忙，提示用户
+              setTeachingMessage(analyzeData.error || '当前AI任务队列繁忙，请稍后再试');
+              setIsTeachStreaming(false);
+              return;
+            }
             if (analyzeData.analysis) {
               analysisData = analyzeData.analysis;
               latestAnalysisRef.current = analysisData;
