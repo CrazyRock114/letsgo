@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { createEmptyBoard, isValidMove, playMove, checkGameEnd, evaluateBoard, findBestHint } from '@/lib/go-logic';
+import { createEmptyBoard, isValidMove, playMove, checkGameEnd, evaluateBoard, findBestHint, getKomi } from '@/lib/go-logic';
 import type { Stone, Board } from '@/lib/go-logic';
 
 type EngineId = 'katago' | 'gnugo' | 'local';
@@ -55,6 +55,8 @@ export default function AITestPage() {
   const [usedHintCount, setUsedHintCount] = useState(0);
   const [missedHintCount, setMissedHintCount] = useState(0);
   const [showLoadDialog, setShowLoadDialog] = useState(false);
+  const [winRateEndCondition, setWinRateEndCondition] = useState<number>(99); // default 99%
+  const maxSteps = boardSize === 9 ? 150 : boardSize === 13 ? 300 : 500;
   const [savedGames, setSavedGames] = useState<Array<{
     id: number; board_size: number; difficulty: string; engine: string;
     title: string; status: string; created_at: string;
@@ -171,7 +173,7 @@ export default function AITestPage() {
     eng: EngineId,
     tok: string,
     aiColor: 'black' | 'white'
-  ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; analysis?: AnalysisData | null; error?: string; pointsUsed?: number }> => {
+  ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; noEngine?: boolean; engine?: string; analysis?: AnalysisData | null; error?: string; pointsUsed?: number }> => {
     try {
       const res = await fetch('/api/go-engine', {
         method: 'POST',
@@ -181,7 +183,7 @@ export default function AITestPage() {
       });
       const data = await res.json();
       if (data.error) return { move: null, error: data.error };
-      return { move: data.move, pass: data.pass, analysis: data.analysis, pointsUsed: data.pointsUsed };
+      return { move: data.move, pass: data.pass, resign: data.resign, noEngine: data.noEngine, engine: data.engine, analysis: data.analysis, pointsUsed: data.pointsUsed };
     } catch (err) {
       return { move: null, error: String(err) };
     }
@@ -301,7 +303,7 @@ export default function AITestPage() {
         setCurrentStep(stepCount);
         setLastMove(startingMoves[startingMoves.length - 1]);
       } else {
-        addLog('info', `===== 第${gameCount}局开始 ${boardSize}路 ${difficulty} ${engine} =====`);
+        addLog('info', `===== 第${gameCount}局开始 ${boardSize}路 ${difficulty} ${engine} (上限${maxSteps}步, 胜率结束>${winRateEndCondition / 10}%) =====`);
         setBoard([...currentBoard.map(r => [...r])]);
         setLastMove(null);
       }
@@ -450,15 +452,70 @@ export default function AITestPage() {
             consecutivePasses++;
             addLog('info', `  AI停手`);
             gameCommentaries.push({ moveIndex: stepCount, text: '[AI停手]' });
+          } else {
+            // 兜底处理：move=null, pass=false, error=undefined
+            if (aiResult.resign) {
+              addLog('info', `  AI认输，棋局结束`);
+              gameCommentaries.push({ moveIndex: stepCount, text: '[AI认输]' });
+              const eval_ = evaluateBoard(currentBoard);
+              addLog('info', `===== 第${gameCount}局结束: AI认输 =====`);
+              addLog('info', `  黑${eval_.black}目 vs 白${eval_.white}目`);
+              gameId = await saveGameToDB(token, boardSize, difficulty, engine, moves, gameCommentaries, gameId, 'finished');
+              if (gameId) { setCurrentGameId(gameId); addLog('success', `  棋局已保存 (ID:${gameId})`); }
+              break;
+            } else if (aiResult.noEngine) {
+              addLog('warn', `  引擎不可用，回退本地AI`);
+              const fallbackMove = findFallbackMove(currentBoard, aiColor);
+              if (fallbackMove && isValidMove(currentBoard, fallbackMove.row, fallbackMove.col, aiColor)) {
+                moves.push({ row: fallbackMove.row, col: fallbackMove.col, color: aiColor });
+                const result = playMove(currentBoard, fallbackMove.row, fallbackMove.col, aiColor);
+                currentBoard = result.newBoard;
+                setBoard([...currentBoard.map(r => [...r])]);
+                setLastMove(fallbackMove);
+                consecutivePasses = 0;
+                stepCount++;
+                totalStepCount++;
+                setCurrentStep(stepCount);
+                setTotalSteps(totalStepCount);
+                const moveLabel = `${COL_LABELS[fallbackMove.col]}${boardSize - fallbackMove.row}`;
+                addLog('info', `  本地AI落子: ${moveLabel}`);
+                gameCommentaries.push({ moveIndex: stepCount - 1, text: `[本地AI] ${moveLabel}` });
+              } else {
+                addLog('warn', `  本地AI也无合法落子，停手`);
+                consecutivePasses++;
+                gameCommentaries.push({ moveIndex: stepCount, text: '[AI停手-无合法]' });
+              }
+            } else {
+              addLog('warn', `  AI无合法落子，按停手处理`);
+              consecutivePasses++;
+              gameCommentaries.push({ moveIndex: stepCount, text: '[AI停手-无合法]' });
+            }
           }
         }
 
         // Check game end
         const endCheck = checkGameEnd(currentBoard, consecutivePasses, stepCount);
-        if (endCheck.ended) {
+        // Also check win rate end condition
+        let winRateEnded = false;
+        let winRateReason = '';
+        if (!endCheck.ended && lastAnalysis && stepCount >= 10) {
+          const wr = lastAnalysis.winRate;
+          const threshold = winRateEndCondition / 10; // 95→9.5, 99→9.9, 995→99.5, 999→99.9
+          if (wr >= threshold || wr <= (100 - threshold)) {
+            winRateEnded = true;
+            const winner = wr >= threshold ? '黑方' : '白方';
+            winRateReason = `黑胜率=${wr.toFixed(1)}%，${winner}绝对优势，棋局结束`;
+          }
+        }
+        if (endCheck.ended || winRateEnded) {
           const eval_ = evaluateBoard(currentBoard);
-          addLog('info', `===== 第${gameCount}局结束: ${endCheck.reason} =====`);
-          addLog('info', `  黑${eval_.black}目 vs 白${eval_.white}目`);
+          const komi = boardSize === 9 ? 2.5 : boardSize === 13 ? 3.5 : 6.5;
+          const whiteWithKomi = eval_.white + komi;
+          const blackWins = eval_.black > whiteWithKomi;
+          const reason = winRateEnded ? winRateReason : endCheck.reason;
+          addLog('info', `===== 第${gameCount}局结束: ${reason} =====`);
+          addLog('info', `  黑${eval_.black}目 vs 白${eval_.white}目(含贴目${komi}目) = ${whiteWithKomi.toFixed(1)}目`);
+          addLog('info', `  ${blackWins ? '⚫ 黑方胜' : '⚪ 白方胜'} ${blackWins ? (eval_.black - whiteWithKomi).toFixed(1) : (whiteWithKomi - eval_.black).toFixed(1)}目`);
 
           // Save finished game
           gameId = await saveGameToDB(token, boardSize, difficulty, engine, moves, gameCommentaries, gameId, 'finished');
@@ -507,7 +564,7 @@ export default function AITestPage() {
 
     setRunning(false);
     addLog('info', `测试已停止，共${gameCount}局${totalStepCount}步`);
-  }, [token, userId, boardSize, difficulty, engine, playerColor, stepInterval, currentGameId, addLog, getAIMove, getAnalysis, getHintFromAnalysis, findFallbackMove, saveGameToDB]);
+  }, [token, userId, boardSize, difficulty, engine, playerColor, stepInterval, currentGameId, winRateEndCondition, maxSteps, addLog, getAIMove, getAnalysis, getHintFromAnalysis, findFallbackMove, saveGameToDB]);
 
   const stopGame = useCallback(() => {
     runningRef.current = false;
@@ -756,6 +813,19 @@ export default function AITestPage() {
                       <option value={20000}>20秒</option>
                       <option value={30000}>30秒</option>
                       <option value={60000}>60秒</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-gray-600">胜率结束</label>
+                    <select
+                      value={winRateEndCondition}
+                      onChange={e => setWinRateEndCondition(Number(e.target.value))}
+                      className="border rounded px-2 py-1 text-sm"
+                    >
+                      <option value={95}>95%</option>
+                      <option value={99}>99%</option>
+                      <option value={995}>99.5%</option>
+                      <option value={999}>99.9%</option>
                     </select>
                   </div>
                 </div>
