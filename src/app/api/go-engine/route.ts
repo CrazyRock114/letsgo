@@ -675,7 +675,8 @@ async function getKataGoAnalysis(
         clearTimeout(stopTimer);
         console.log(`[kata-analyze] 分析完成, 响应长度=${analyzeResponse.length}, 前300字=${analyzeResponse.substring(0, 300)}`);
 
-        const result = parseKataAnalyze(analyzeResponse, boardSize);
+        const isWhiteToMove = moves.length % 2 === 1;
+        const result = parseKataAnalyze(analyzeResponse, boardSize, isWhiteToMove);
         if (result) {
           console.log(`[kata-analyze] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, actualVisits=${result.actualVisits}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
         } else {
@@ -703,9 +704,11 @@ async function getKataGoAnalysis(
 // 每行: "info move D4 visits 50 winrate 0.52 scoreMean 3.5 scoreStdev 1.2 prior 0.08 order 0 pv D4 Q16 C3 ..."
 // kata-analyze会持续输出中间结果，每轮info行代表一个搜索深度
 // 同一move会出现多次（不同visits），取最后一次（visits最高）
-// winrate范围: 0-1（0=黑必输, 1=黑必赢）
-// scoreMean: 黑方领先目数
-function parseKataAnalyze(output: string, boardSize: number): KataGoAnalysis | null {
+// winrate范围: 0-1，从"side-to-move"（当前行棋方）视角
+//   - 黑方行棋时: winrate=黑方胜率（0=黑必输, 1=黑必赢）
+//   - 白方行棋时: winrate=白方胜率（0=白必输, 1=白必赢）→ 需反转为黑方胜率
+// scoreMean/scoreLead: 始终是黑方视角（正值=黑方领先），无需转换
+function parseKataAnalyze(output: string, boardSize: number, isWhiteToMove: boolean = false): KataGoAnalysis | null {
   try {
     // 提取所有info行（以"info move"开头）
     const lines = output.split('\n');
@@ -755,16 +758,21 @@ function parseKataAnalyze(output: string, boardSize: number): KataGoAnalysis | n
         return b[1].visits - a[1].visits;
       });
 
-    const bestMoves: KataGoAnalysis['bestMoves'] = sortedMoves.slice(0, 5).map(([move, data]) => ({
-      move,
-      winrate: Math.round(data.winrate * 1000) / 10, // 0-1 → 0-100（黑方胜率）
-      scoreMean: Math.round(data.scoreMean * 10) / 10, // 黑方视角
-      visits: data.visits,
-    }));
+    const bestMoves: KataGoAnalysis['bestMoves'] = sortedMoves.slice(0, 5).map(([move, data]) => {
+      // bestMoves的winrate也是side-to-move视角，白方行棋时需反转
+      const rawWinrate = isWhiteToMove ? (1 - data.winrate) : data.winrate;
+      return {
+        move,
+        winrate: Math.round(rawWinrate * 1000) / 10, // 0-1 → 0-100（黑方胜率）
+        scoreMean: Math.round(data.scoreMean * 10) / 10, // 黑方视角
+        visits: data.visits,
+      };
+    });
 
-    // winrate: KataGo v1.15.3输出0-1范围（0=黑必输, 1=黑必赢）
-    // 统一为黑方胜率百分比，与parseKataRawNN保持一致
-    const blackWinRate = Math.round(globalWinRate * 1000) / 10;
+    // winrate: KataGo输出0-1范围，从"side-to-move"视角
+    // 白方行棋时需反转为黑方胜率，与parseKataRawNN保持一致
+    const rawGlobalWinRate = isWhiteToMove ? (1 - globalWinRate) : globalWinRate;
+    const blackWinRate = Math.round(rawGlobalWinRate * 1000) / 10;
 
     // scoreLead: scoreMean/scoreLead为黑方视角（正值=黑方领先）
     // 注意：KataGo在搜索量极少时可能输出0，这是KataGo的行为，不做假估算

@@ -309,6 +309,7 @@ export default function AITestPage() {
       }
       setHintPosition(null);
       const aiColor: Stone = playerColor === 'black' ? 'white' : 'black';
+      let currentAnalysis: { winRate: number; scoreLead: number; bestMoves?: Array<{ move: string; winrate: number; scoreMean: number }> } | null = null;
 
       // If starting fresh (no loaded moves) and player is white, AI (black) goes first
       if (startingMoves.length === 0 && playerColor === 'white') {
@@ -346,6 +347,7 @@ export default function AITestPage() {
           let hint: { row: number; col: number } | null = null;
           const analysis = await getAnalysis(moves, boardSize, token);
           if (analysis) {
+            currentAnalysis = analysis;
             setLastAnalysis(analysis);
             hint = getHintFromAnalysis(analysis, boardSize);
             if (hint) {
@@ -404,6 +406,7 @@ export default function AITestPage() {
           try {
             analysis = await getAnalysis(moves, boardSize, token);
             if (analysis) {
+              currentAnalysis = analysis;
               setLastAnalysis(analysis);
               const hintInfo = getHintFromAnalysis(analysis, boardSize);
               if (hintInfo) {
@@ -495,11 +498,11 @@ export default function AITestPage() {
 
         // Check game end
         const endCheck = checkGameEnd(currentBoard, consecutivePasses, stepCount);
-        // Also check win rate end condition
+        // Also check win rate end condition (use currentAnalysis from this iteration, not stale lastAnalysis state)
         let winRateEnded = false;
         let winRateReason = '';
-        if (!endCheck.ended && lastAnalysis && stepCount >= 10) {
-          const wr = lastAnalysis.winRate;
+        if (!endCheck.ended && currentAnalysis && stepCount >= 10) {
+          const wr = currentAnalysis.winRate;
           const threshold = winRateEndCondition / 10; // 95→9.5, 99→9.9, 995→99.5, 999→99.9
           if (wr >= threshold || wr <= (100 - threshold)) {
             winRateEnded = true;
