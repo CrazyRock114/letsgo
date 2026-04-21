@@ -540,9 +540,8 @@ async function getKataGoMove(
   boardSize: number,
   moves: Array<{ row: number; col: number; color: string }>,
   difficulty: string,
-  aiColor: 'black' | 'white' = 'white',
-  withAnalysis: boolean = false
-): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string; engineError?: boolean; analysis?: KataGoAnalysis | null }> {
+  aiColor: 'black' | 'white' = 'white'
+): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string; engineError?: boolean }> {
   const komi = getKomi(boardSize);
   const maxVisits = getKataGoVisits(difficulty);
 
@@ -597,44 +596,7 @@ async function getKataGoMove(
     throw new Error("无法解析KataGo落子坐标");
   }
 
-  // genmove后立即执行analysis（genmove已自动将AI落子加到内部棋盘，无需再play）
-  let analysis: KataGoAnalysis | null = null;
-  if (withAnalysis) {
-    try {
-      // genmove已自动在KataGo内部棋盘上放置了AI落子，直接执行分析
-      if (analysisSeconds === 0) {
-        // raw-nn模式：瞬时
-        const analyzeResponse = await persistentKataGo.sendCommand('kata-raw-nn all', 10000);
-        analysis = parseKataRawNN(analyzeResponse, boardSize);
-      } else {
-        // kata-analyze模式：搜索N秒后stop
-        const durationMs = analysisSeconds * 1000;
-        const analyzePromise = persistentKataGo.sendCommand('kata-analyze 10', durationMs + 30000);
-        const stopTimer = setTimeout(() => {
-          try {
-            const proc = persistentKataGo.getProcess();
-            if (proc && !proc.killed && proc.stdin?.writable) {
-              proc.stdin.write('stop\n');
-            }
-          } catch { /* ignore */ }
-        }, durationMs);
-        try {
-          const analyzeResponse = await analyzePromise;
-          clearTimeout(stopTimer);
-          analysis = parseKataAnalyze(analyzeResponse, boardSize);
-        } catch {
-          clearTimeout(stopTimer);
-        }
-      }
-      if (analysis) {
-        console.log(`[KataGo] genmove+analysis: move=(${position.row},${position.col}), winRate=${analysis.winRate}, scoreLead=${analysis.scoreLead}`);
-      }
-    } catch (err) {
-      console.warn(`[KataGo] genmove+analysis failed:`, err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  return { move: position, engine: "katago", analysis };
+  return { move: position, engine: "katago" };
 }
 
 // ============================================================
@@ -968,7 +930,7 @@ interface QueueEntry {
   aiColor: 'black' | 'white';
   isAnalysis?: boolean; // 分析请求标记
   analysisResolve?: (v: KataGoAnalysis | null) => void; // 分析结果回调
-  withAnalysis?: boolean; // genmove时同时获取analysis
+
 }
 
 interface EngineQueueResult {
@@ -1013,7 +975,7 @@ class EngineQueue {
     moves: Array<{ row: number; col: number; color: string }>,
     difficulty: string,
     aiColor: 'black' | 'white' = 'white',
-    withAnalysis: boolean = false
+
   ): Promise<EngineQueueResult> {
     const id = `qe-${++this.entryId}-u${userId}`;
     console.log(`[engine-queue] Enqueued: ${id}, engine=${engine}, aiColor=${aiColor}, queueLen=${this.queue.length}`);
@@ -1038,7 +1000,7 @@ class EngineQueue {
     }
 
     return new Promise<EngineQueueResult>((resolve, reject) => {
-      this.queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine, aiColor, withAnalysis });
+      this.queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine, aiColor });
       this.processNext();
     });
   }
@@ -1119,7 +1081,7 @@ class EngineQueue {
 
         if (entry.engine === "katago" && isKataGoAvailable()) {
           try {
-            const moveResult = await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty, entry.aiColor, entry.withAnalysis);
+            const moveResult = await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty, entry.aiColor);
             result = { ...moveResult };
           } catch (katagoError) {
             persistentKataGo.resetCrashState();
@@ -1522,13 +1484,12 @@ export async function POST(request: NextRequest) {
     // 加入引擎队列（KataGo串行处理，支持多人排队；local也走队列保持一致）
     const queueInfo = engineQueue.getQueuePosition(user.userId);
     const queueStart = Date.now();
-    const withAnalysis = body.withAnalysis === true; // genmove时同时获取analysis
     const result = await engineQueue.enqueue(
-      user.userId, requestedEngine, boardSize, moves, difficulty, aiColor, withAnalysis
+      user.userId, requestedEngine, boardSize, moves, difficulty, aiColor
     );
     const queueElapsed = Date.now() - queueStart;
-    console.log(`[go-engine] ${requestedEngine}完成: user=${user.userId}, move=${result.pass ? 'pass' : result.move ? `(${result.move.row},${result.move.col})` : 'null'}, engine=${result.engine}, queueWait=${queueElapsed}ms${result.noEngine ? ' [noEngine]' : ''}${result.engineError ? ' [error]' : ''}${result.analysis ? ' [withAnalysis]' : ''}`);
-    
+    console.log(`[go-engine] ${requestedEngine}完成: user=${user.userId}, move=${result.pass ? 'pass' : result.move ? `(${result.move.row},${result.move.col})` : 'null'}, engine=${result.engine}, queueWait=${queueElapsed}ms${result.noEngine ? ' [noEngine]' : ''}${result.engineError ? ' [error]' : ''}`);
+
     // 获取最新积分余额并附加到响应中
     let remainingPoints: number | undefined;
     if (cost > 0) {

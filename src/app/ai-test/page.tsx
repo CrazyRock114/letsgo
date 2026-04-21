@@ -157,25 +157,24 @@ export default function AITestPage() {
     }
   }, []);
 
-  // Get AI move from engine (optionally with analysis in one request)
+  // Get AI move from engine (separate from analysis - same as main page)
   const getAIMove = useCallback(async (
     moves: Array<{ row: number; col: number; color: Stone }>,
     bSize: number,
     diff: Difficulty,
     eng: EngineId,
-    tok: string,
-    withAnalysis: boolean = false
-  ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; analysis?: AnalysisData | null; error?: string }> => {
+    tok: string
+  ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; analysis?: AnalysisData | null; error?: string; pointsUsed?: number }> => {
     try {
       const res = await fetch('/api/go-engine', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
-        body: JSON.stringify({ boardSize: bSize, difficulty: diff, engine: eng, moves: movesToApi(moves), withAnalysis }),
+        body: JSON.stringify({ boardSize: bSize, difficulty: diff, engine: eng, moves: movesToApi(moves) }),
         signal: AbortSignal.timeout(180000),
       });
       const data = await res.json();
       if (data.error) return { move: null, error: data.error };
-      return { move: data.move, pass: data.pass, analysis: data.analysis };
+      return { move: data.move, pass: data.pass, analysis: data.analysis, pointsUsed: data.pointsUsed };
     } catch (err) {
       return { move: null, error: String(err) };
     }
@@ -315,13 +314,9 @@ export default function AITestPage() {
         if (isPlayerTurn) {
           addLog('info', `第${stepCount + 1}步: 玩家(${playerColor === 'black' ? '黑' : '白'})思考中...`);
 
-          // Get analysis for hint (only if not already available from previous AI move)
+          // 玩家回合：总是获取新的分析（与首页"提示与教学"完全一致）
           let hint: { row: number; col: number } | null = null;
-          let analysis: AnalysisData | null = lastAnalysis;
-          if (!analysis) {
-            // 首次或之前无分析数据，单独获取
-            analysis = await getAnalysis(moves, boardSize, token);
-          }
+          const analysis = await getAnalysis(moves, boardSize, token);
           if (analysis) {
             setLastAnalysis(analysis);
             hint = getHintFromAnalysis(analysis, boardSize);
@@ -375,14 +370,36 @@ export default function AITestPage() {
           }
         } else {
           addLog('info', `第${stepCount + 1}步: AI(${aiColor === 'black' ? '黑' : '白'})思考中...`);
-          // AI落子时同时获取analysis（合并为一次请求，避免两次排队）
-          const aiResult = await getAIMove(moves, boardSize, difficulty, engine, token, true);
+          // AI落子：与首页完全一致的两步请求方式
+          // 第1步：获取分析数据（与首页教学路径完全一致）
+          let analysis: AnalysisData | null = null;
+          try {
+            analysis = await getAnalysis(moves, boardSize, token);
+            if (analysis) {
+              setLastAnalysis(analysis);
+              const hintInfo = getHintFromAnalysis(analysis, boardSize);
+              if (hintInfo) {
+                addLog('info', `  AI分析: 建议${COL_LABELS[hintInfo.col]}${boardSize - hintInfo.row} 黑胜率=${analysis.winRate.toFixed(1)}% 领先=${analysis.scoreLead.toFixed(1)}目 visits=${analysis.actualVisits || '?'}`);
+              }
+            }
+          } catch {
+            addLog('warn', `  AI分析请求异常，继续落子`);
+          }
+          if (abortController.signal.aborted) break;
+
+          // 第2步：获取AI落子（与首页完全一致）
+          const aiResult = await getAIMove(moves, boardSize, difficulty, engine, token);
           if (abortController.signal.aborted) break;
 
           if (aiResult.error) {
             addLog('error', `  AI错误: ${aiResult.error}`);
             await new Promise(r => setTimeout(r, 3000));
             continue;
+          }
+
+          // 更新积分
+          if (aiResult.pointsUsed && aiResult.pointsUsed > 0) {
+            setPoints(prev => Math.max(0, prev - aiResult.pointsUsed!));
           }
 
           if (aiResult.move) {
@@ -398,6 +415,7 @@ export default function AITestPage() {
             setTotalSteps(totalStepCount);
             const moveLabel = `${COL_LABELS[aiResult.move.col]}${boardSize - aiResult.move.row}`;
             addLog('info', `  AI落子: ${moveLabel}`);
+            // genmove也可能返回analysis数据（向后兼容）
             if (aiResult.analysis) {
               setLastAnalysis(aiResult.analysis);
             }
@@ -463,7 +481,7 @@ export default function AITestPage() {
 
     setRunning(false);
     addLog('info', `测试已停止，共${gameCount}局${totalStepCount}步`);
-  }, [token, userId, boardSize, difficulty, engine, playerColor, stepInterval, addLog, getAIMove, getAnalysis, getHintFromAnalysis, findFallbackMove, saveGameToDB, lastAnalysis]);
+  }, [token, userId, boardSize, difficulty, engine, playerColor, stepInterval, addLog, getAIMove, getAnalysis, getHintFromAnalysis, findFallbackMove, saveGameToDB]);
 
   const stopGame = useCallback(() => {
     runningRef.current = false;
