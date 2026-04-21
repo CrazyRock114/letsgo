@@ -172,6 +172,8 @@ export default function GoGamePage() {
   const [queuePosition, setQueuePosition] = useState(0); // 0=无排队，>0=排队位置
   const queuePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [savedGameId, setSavedGameId] = useState<number | null>(null);
+  // 同步savedGameId到ref，供自动保存useEffect闭包使用最新值
+  useEffect(() => { savedGameIdRef.current = savedGameId; }, [savedGameId]);
   const [consecutivePasses, setConsecutivePasses] = useState(0);
   const gameEpochRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -180,6 +182,8 @@ export default function GoGamePage() {
   const isProcessingMoveRef = useRef(false);
   // 追踪最新的history长度，避免useCallback闭包中的history过时
   const historyLengthRef = useRef(0);
+  // 追踪最新的savedGameId，避免自动保存useEffect闭包中savedGameId过时导致创建新棋局
+  const savedGameIdRef = useRef<number | null>(null);
 
   // AI思考时轮询队列位置
   useEffect(() => {
@@ -422,13 +426,14 @@ export default function GoGamePage() {
     setLastMove(null);
     setShowHint(null);
     setCommentaries([]);
+    setSaveTitle('');
     setSavedGameId(null);
     latestAnalysisRef.current = null;
     setIsReplayMode(false);
     setReplayIndex(0);
     setReplayMoves([]);
     setTeachingMessage('');
-    setTeachHistory(prev => prev.map(e => ({ ...e, faded: true })));
+    setTeachHistory([]);
     setIsCommentaryStreaming(false);
     setStreamingText('');
     setIsTeachStreaming(false);
@@ -792,7 +797,7 @@ export default function GoGamePage() {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          id: savedGameId,
+          id: savedGameIdRef.current,
           board_size: boardSize,
           difficulty,
           engine,
@@ -891,12 +896,13 @@ export default function GoGamePage() {
     setShowHint(null);
     setCommentaries([]);
     setSavedGameId(null);
+    setSaveTitle('');
     latestAnalysisRef.current = null;
     setIsReplayMode(false);
     setReplayIndex(0);
     setReplayMoves([]);
     setTeachingMessage('');
-    setTeachHistory(prev => prev.map(e => ({ ...e, faded: true })));
+    setTeachHistory([]);
     setTeachUsedCount(0);
     setConsecutivePasses(0);
     setGameEnded(false);
@@ -1129,7 +1135,7 @@ export default function GoGamePage() {
     setIsTeachStreaming(true);
     setTeachingMessage('');
     setTeachHistory(prev => prev.map(e => ({ ...e, faded: true })));
-    setTeachMoveIndex(historyLengthRef.current); // 记录教学针对的手数（使用ref避免闭包过时）
+    const currentMoveIndex = historyLengthRef.current; // 记录教学针对的手数（使用ref避免闭包过时）
 
     // 创建本轮教学专用的AbortController
     const thisAbortController = new AbortController();
@@ -1259,7 +1265,7 @@ export default function GoGamePage() {
         // 保存到教学历史
         if (!thisAbortController.signal.aborted) {
           const entry: TeachEntry = {
-            moveIndex: teachMoveIndex ?? historyLengthRef.current,
+            moveIndex: currentMoveIndex,
             hintPosition: hintPosition ?? null,
             content: finalText,
             faded: false,
@@ -1272,7 +1278,7 @@ export default function GoGamePage() {
           const fallbackMsg = '小围棋暂时无法思考，请稍后再试。';
           setTeachingMessage(fallbackMsg);
           const entry: TeachEntry = {
-            moveIndex: teachMoveIndex ?? historyLengthRef.current,
+            moveIndex: currentMoveIndex,
             hintPosition: hintPosition ?? null,
             content: fallbackMsg,
             faded: false,
@@ -1286,7 +1292,7 @@ export default function GoGamePage() {
         const fallbackMsg = '小围棋正在思考中...';
         setTeachingMessage(fallbackMsg);
         const entry: TeachEntry = {
-          moveIndex: teachMoveIndex ?? history.length,
+          moveIndex: currentMoveIndex,
           hintPosition: null,
           content: fallbackMsg,
           faded: false,
@@ -1405,7 +1411,6 @@ export default function GoGamePage() {
         toast.success('棋局已保存', { description: '可在历史棋局中查看' });
         setTimeout(() => {
           setShowSaveDialog(false);
-          setSaveTitle('');
           setSaveMessage('');
         }, 800);
       } else if (data.error) {
