@@ -13,7 +13,7 @@ interface KataGoAnalysis {
   winRate: number;       // 黑方胜率 0-100
   scoreLead: number;     // 黑方领先目数（负数=白方领先）
   actualVisits: number;  // 实际完成的搜索次数（kata-analyze时有效）
-  bestMoves: {           // 推荐落点（前3）
+  bestMoves: {           // 推荐落点（前5，pass排最后）
     move: string;        // GTP坐标 如 "D4"
     winrate: number;     // 该点黑方胜率 0-100
     scoreMean: number;   // 该点目数领先（黑方视角）
@@ -69,7 +69,7 @@ function parseKataRawNN(output: string, boardSize: number): KataGoAnalysis | nul
       policyEntries.sort((a, b) => b.prob - a.prob);
       const GTP_LETTERS = 'ABCDEFGHJKLMNOPQRST';
       
-      for (const entry of policyEntries.slice(0, 3)) {
+      for (const entry of policyEntries.slice(0, 5)) {
         const move = GTP_LETTERS[entry.col] + (boardSize - entry.row);
         bestMoves.push({
           move,
@@ -784,11 +784,16 @@ function parseKataAnalyze(output: string, boardSize: number): KataGoAnalysis | n
       topMoveVisits = visits; // 最后一条info的visits就是搜索最深的
     }
 
-    // 按visits降序排列，取前3个推荐落点
+    // 按visits降序排列，pass排到最后，取前3个推荐落点
     const sortedMoves = [...latestMoveInfo.entries()]
-      .sort((a, b) => b[1].visits - a[1].visits);
+      .sort((a, b) => {
+        // pass排到最后
+        if (a[0] === 'pass') return 1;
+        if (b[0] === 'pass') return -1;
+        return b[1].visits - a[1].visits;
+      });
 
-    const bestMoves: KataGoAnalysis['bestMoves'] = sortedMoves.slice(0, 3).map(([move, data]) => ({
+    const bestMoves: KataGoAnalysis['bestMoves'] = sortedMoves.slice(0, 5).map(([move, data]) => ({
       move,
       winrate: Math.round(data.winrate * 1000) / 10, // 0-1 → 0-100（黑方胜率）
       scoreMean: Math.round(data.scoreMean * 10) / 10, // 黑方视角
@@ -799,13 +804,9 @@ function parseKataAnalyze(output: string, boardSize: number): KataGoAnalysis | n
     // 统一为黑方胜率百分比，与parseKataRawNN保持一致
     const blackWinRate = Math.round(globalWinRate * 1000) / 10;
 
-    // scoreLead: scoreMean为黑方视角（正值=黑方领先）
-    // 当scoreMean为-0（极小值截断）时，用winRate估算近似目数差
-    let blackScoreLead = Math.round(globalScoreLead * 10) / 10;
-    if (blackScoreLead === 0 && blackWinRate !== 50) {
-      // 粗略估算：胜率偏离50%的幅度 × 0.3 作为目数差
-      blackScoreLead = Math.round((blackWinRate - 50) * 0.3 * 10) / 10;
-    }
+    // scoreLead: scoreMean/scoreLead为黑方视角（正值=黑方领先）
+    // 注意：KataGo在搜索量极少时可能输出0，这是KataGo的行为，不做假估算
+    const blackScoreLead = Math.round(globalScoreLead * 10) / 10;
 
     return {
       winRate: blackWinRate,

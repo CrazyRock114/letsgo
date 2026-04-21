@@ -1211,18 +1211,21 @@ export default function GoGamePage() {
 
       // 第二步：确定提示点位 — 优先使用KataGo分析的bestMoves，否则本地评分
       if (analysisData?.bestMoves && analysisData.bestMoves.length > 0) {
-        const bestMove = analysisData.bestMoves[0].move;
-        // KataGo坐标格式: D4, Q16等，转换为row/col
-        const colChar = bestMove.charAt(0).toUpperCase();
-        const colNum = colChar.charCodeAt(0) - 'A'.charCodeAt(0) + (colChar >= 'I' ? 0 : 0);
-        const rowNum = parseInt(bestMove.substring(1));
-        // KataGo坐标: 列A-T(跳过I), 行从1开始(1=底行)
-        // 跳过I: A=0, B=1, ..., H=7, J=8, K=9, ...
-        let actualCol = colChar.charCodeAt(0) - 'A'.charCodeAt(0);
-        if (actualCol >= 8) actualCol -= 1; // 跳过I
-        const actualRow = boardSize - rowNum;
-        if (actualRow >= 0 && actualRow < boardSize && actualCol >= 0 && actualCol < boardSize) {
-          hintPosition = { row: actualRow, col: actualCol };
+        // 跳过pass/resign建议，取第一个有效坐标
+        const validMove = analysisData.bestMoves.find(bm => bm.move !== 'pass' && bm.move !== 'resign');
+        if (validMove) {
+          const bestMove = validMove.move;
+          // KataGo坐标格式: D4, Q16等，转换为row/col
+          const colChar = bestMove.charAt(0).toUpperCase();
+          const rowNum = parseInt(bestMove.substring(1));
+          // KataGo坐标: 列A-T(跳过I), 行从1开始(1=底行)
+          // 跳过I: A=0, B=1, ..., H=7, J=8, K=9, ...
+          let actualCol = colChar.charCodeAt(0) - 'A'.charCodeAt(0);
+          if (actualCol >= 8) actualCol -= 1; // 跳过I
+          const actualRow = boardSize - rowNum;
+          if (actualRow >= 0 && actualRow < boardSize && actualCol >= 0 && actualCol < boardSize) {
+            hintPosition = { row: actualRow, col: actualCol };
+          }
         }
       }
       if (!hintPosition) {
@@ -2201,8 +2204,8 @@ export default function GoGamePage() {
                 {isTeachStreaming && <Spinner className="w-3 h-3 ml-1" />}
                 <span className="text-xs opacity-80">{teachUsedCount}/{MAX_TEACH_PER_GAME} · {TEACH_COST}积分</span>
               </Button>
-              {teachHistory.length > 0 && (
-                <div className="mt-2 space-y-2">
+              {(teachHistory.length > 0 || teachingMessage || isTeachStreaming) && (
+                <div className="mt-2 max-h-48 overflow-y-auto pr-1 space-y-2">
                   {teachHistory.map((entry, idx) => (
                     <div key={idx} className={`space-y-0.5 ${entry.faded ? 'opacity-40' : ''}`}>
                       {entry.hintPosition && (
@@ -2216,18 +2219,18 @@ export default function GoGamePage() {
                       </p>
                     </div>
                   ))}
-                </div>
-              )}
-              {(teachingMessage || isTeachStreaming) && !teachHistory.find(e => !e.faded) && (
-                <div className="mt-2 space-y-1">
-                  {showHint && (
-                    <p className="text-xs text-amber-700 font-medium">
-                      建议落在 {positionToCoordinate(showHint.row, showHint.col, boardSize)}
-                    </p>
+                  {(teachingMessage || isTeachStreaming) && !teachHistory.find(e => !e.faded) && (
+                    <div className="space-y-1">
+                      {showHint && (
+                        <p className="text-xs text-amber-700 font-medium">
+                          建议落在 {positionToCoordinate(showHint.row, showHint.col, boardSize)}
+                        </p>
+                      )}
+                      <p className="text-xs leading-relaxed whitespace-pre-wrap text-gray-700">
+                        {isTeachStreaming ? '正在分析...' : teachingMessage}
+                      </p>
+                    </div>
                   )}
-                  <p className="text-xs leading-relaxed whitespace-pre-wrap text-gray-700">
-                    {isTeachStreaming ? '正在分析...' : teachingMessage}
-                  </p>
                 </div>
               )}
             </CardContent>

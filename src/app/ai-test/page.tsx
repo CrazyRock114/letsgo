@@ -86,45 +86,24 @@ export default function AITestPage() {
     }
     setLoginError('');
     try {
-      // 先尝试登录（账号可能已存在），登录失败再尝试注册
       addLog('info', `尝试登录 ${AI_TEST_USER}...`);
-      const loginRes = await fetch('/api/auth/login', {
+      const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nickname: AI_TEST_USER, password }),
       });
-      const loginData = await loginRes.json();
-      addLog('info', `登录响应: status=${loginRes.status}, hasToken=${!!loginData.token}, error=${loginData.error || '无'}`);
+      const data = await res.json();
 
-      if (loginData.token) {
-        // 登录成功
-        setToken(loginData.token);
-        setUserId(loginData.user.id);
-        setPoints(loginData.user.points);
+      if (data.token) {
+        setToken(data.token);
+        setUserId(data.user.id);
+        setPoints(data.user.points);
         setLoggedIn(true);
-        addLog('success', `登录成功，积分: ${loginData.user.points}`);
+        addLog('success', `登录成功，积分: ${data.user.points}`);
       } else {
-        // 登录失败，尝试注册
-        addLog('info', `登录失败(${loginData.error || '未知'})，尝试注册...`);
-        const regRes = await fetch('/api/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ nickname: AI_TEST_USER, password }),
-        });
-        const regData = await regRes.json();
-        addLog('info', `注册响应: status=${regRes.status}, hasToken=${!!regData.token}, error=${regData.error || '无'}`);
-
-        if (regData.token) {
-          setToken(regData.token);
-          setUserId(regData.user.id);
-          setPoints(regData.user.points);
-          setLoggedIn(true);
-          addLog('success', `注册并登录成功，积分: ${regData.user.points}`);
-        } else {
-          const errorMsg = regData.error || '登录失败';
-          setLoginError(errorMsg);
-          addLog('error', `登录失败: ${errorMsg}`);
-        }
+        const errorMsg = data.error === '昵称或密码错误' ? '密码错误' : (data.error || '登录失败');
+        setLoginError(errorMsg);
+        addLog('error', `登录失败: ${errorMsg}`);
       }
     } catch (err) {
       setLoginError('登录异常');
@@ -350,7 +329,12 @@ export default function AITestPage() {
               setHintPosition(hint);
               addLog('success', `  KataGo建议: ${COL_LABELS[hint.col]}${boardSize - hint.row} 胜率=${analysis.winRate.toFixed(1)}% 领先=${analysis.scoreLead.toFixed(1)}目 visits=${analysis.actualVisits || '?'}`);
             } else {
-              addLog('warn', `  KataGo分析完成但无法解析建议位置, bestMoves=${JSON.stringify(analysis.bestMoves?.slice(0, 3))}`);
+              const hasPass = analysis.bestMoves?.some((bm: { move: string }) => bm.move === 'pass');
+              if (hasPass) {
+                addLog('warn', `  KataGo建议认输(pass)，使用本地提示`);
+              } else {
+                addLog('warn', `  KataGo分析完成但无法解析建议位置, bestMoves=${JSON.stringify(analysis.bestMoves?.slice(0, 3))}`);
+              }
             }
           } else {
             addLog('warn', `  KataGo分析未返回数据，使用本地提示`);
@@ -509,9 +493,9 @@ export default function AITestPage() {
   }, [logs]);
 
   // Render board with coordinates (reusing main game style)
-  const cellSize = boardSize <= 9 ? 44 : boardSize <= 13 ? 34 : 26;
-  const padding = cellSize;
-  const boardPx = cellSize * (boardSize - 1) + padding * 2;
+  const baseCellSize = boardSize <= 9 ? 44 : boardSize <= 13 ? 34 : 28;
+  const padding = baseCellSize;
+  const boardPx = baseCellSize * (boardSize - 1) + padding * 2;
 
   const starPoints9 = [[2,2],[2,6],[4,4],[6,2],[6,6]];
   const starPoints13 = [[3,3],[3,9],[6,6],[9,3],[9,9],[3,6],[6,3],[6,9],[9,6]];
@@ -558,7 +542,7 @@ export default function AITestPage() {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr_260px] gap-3">
             {/* Left: Controls */}
             <div className="space-y-4">
               <div className="bg-white rounded-lg shadow p-4">
@@ -731,7 +715,7 @@ export default function AITestPage() {
             {/* Center: Board */}
             <div className="flex flex-col items-center">
               <div className="bg-white rounded-lg shadow p-4">
-                <svg width={boardPx} height={boardPx} className="border border-amber-300 rounded">
+                <svg viewBox={`0 0 ${boardPx} ${boardPx}`} className="border border-amber-300 rounded" style={{ width: boardPx, maxWidth: '100%', height: 'auto' }}>
                   <defs>
                     <linearGradient id="aiBoardBg" x1="0%" y1="0%" x2="100%" y2="100%">
                       <stop offset="0%" stopColor="#dcb35c" />
@@ -750,29 +734,29 @@ export default function AITestPage() {
                   {/* Grid lines */}
                   {Array.from({ length: boardSize }, (_, i) => (
                     <g key={`line-${i}`}>
-                      <line x1={padding + i * cellSize} y1={padding} x2={padding + i * cellSize} y2={padding + (boardSize - 1) * cellSize} stroke="#8b6914" strokeWidth="0.5" />
-                      <line x1={padding} y1={padding + i * cellSize} x2={padding + (boardSize - 1) * cellSize} y2={padding + i * cellSize} stroke="#8b6914" strokeWidth="0.5" />
+                      <line x1={padding + i * baseCellSize} y1={padding} x2={padding + i * baseCellSize} y2={padding + (boardSize - 1) * baseCellSize} stroke="#8b6914" strokeWidth="0.5" />
+                      <line x1={padding} y1={padding + i * baseCellSize} x2={padding + (boardSize - 1) * baseCellSize} y2={padding + i * baseCellSize} stroke="#8b6914" strokeWidth="0.5" />
                     </g>
                   ))}
                   {/* Star points */}
                   {starPoints.map(([r, c]) => (
-                    <circle key={`sp-${r}-${c}`} cx={padding + c * cellSize} cy={padding + r * cellSize} r={cellSize * 0.1} fill="#8b6914" />
+                    <circle key={`sp-${r}-${c}`} cx={padding + c * baseCellSize} cy={padding + r * baseCellSize} r={baseCellSize * 0.1} fill="#8b6914" />
                   ))}
                   {/* Column labels */}
                   {Array.from({ length: boardSize }, (_, i) => (
-                    <text key={`col-${i}`} x={padding + i * cellSize} y={padding * 0.5} textAnchor="middle" fontSize={cellSize * 0.35} fill="#8b6914">{COL_LABELS[i]}</text>
+                    <text key={`col-${i}`} x={padding + i * baseCellSize} y={padding * 0.5} textAnchor="middle" fontSize={baseCellSize * 0.35} fill="#8b6914">{COL_LABELS[i]}</text>
                   ))}
                   {/* Row labels */}
                   {Array.from({ length: boardSize }, (_, i) => (
-                    <text key={`row-${i}`} x={padding * 0.35} y={padding + (boardSize - 1 - i) * cellSize + cellSize * 0.12} textAnchor="middle" fontSize={cellSize * 0.35} fill="#8b6914">{i + 1}</text>
+                    <text key={`row-${i}`} x={padding * 0.35} y={padding + (boardSize - 1 - i) * baseCellSize + baseCellSize * 0.12} textAnchor="middle" fontSize={baseCellSize * 0.35} fill="#8b6914">{i + 1}</text>
                   ))}
                   {/* Hint position marker */}
                   {hintPosition && (
                     <rect
-                      x={padding + hintPosition.col * cellSize - cellSize * 0.4}
-                      y={padding + hintPosition.row * cellSize - cellSize * 0.4}
-                      width={cellSize * 0.8}
-                      height={cellSize * 0.8}
+                      x={padding + hintPosition.col * baseCellSize - baseCellSize * 0.4}
+                      y={padding + hintPosition.row * baseCellSize - baseCellSize * 0.4}
+                      width={baseCellSize * 0.8}
+                      height={baseCellSize * 0.8}
                       fill="rgba(34,197,94,0.3)"
                       stroke="#22c55e"
                       strokeWidth="2"
@@ -783,9 +767,9 @@ export default function AITestPage() {
                   {board.map((row: Board[number], r: number) => row.map((cell: Stone, c: number) => cell !== null && (
                     <g key={`s-${r}-${c}`}>
                       <circle
-                        cx={padding + c * cellSize}
-                        cy={padding + r * cellSize}
-                        r={cellSize * 0.43}
+                        cx={padding + c * baseCellSize}
+                        cy={padding + r * baseCellSize}
+                        r={baseCellSize * 0.43}
                         fill={cell === 'black' ? 'url(#aiBlackStone)' : 'url(#aiWhiteStone)'}
                         stroke={cell === 'white' ? '#999' : '#000'}
                         strokeWidth="0.5"
@@ -793,9 +777,9 @@ export default function AITestPage() {
                       {/* Last move marker */}
                       {lastMove && lastMove.row === r && lastMove.col === c && (
                         <circle
-                          cx={padding + c * cellSize}
-                          cy={padding + r * cellSize}
-                          r={cellSize * 0.12}
+                          cx={padding + c * baseCellSize}
+                          cy={padding + r * baseCellSize}
+                          r={baseCellSize * 0.12}
                           fill={cell === 'black' ? '#fff' : '#000'}
                         />
                       )}
