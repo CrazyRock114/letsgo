@@ -111,12 +111,12 @@ export default function AITestPage() {
     }
   }, [addLog, password]);
 
-  // Convert moves to API format
+  // Convert moves to API format (color must be string 'black'/'white', not number 1/2)
   const movesToApi = useCallback((moves: Array<{ row: number; col: number; color: Stone }>) => {
     return moves.map(m => ({
       row: m.row,
       col: m.col,
-      color: m.color === 'black' ? 1 : 2,
+      color: m.color,
     }));
   }, []);
 
@@ -163,13 +163,14 @@ export default function AITestPage() {
     bSize: number,
     diff: Difficulty,
     eng: EngineId,
-    tok: string
+    tok: string,
+    aiColor: 'black' | 'white'
   ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; analysis?: AnalysisData | null; error?: string; pointsUsed?: number }> => {
     try {
       const res = await fetch('/api/go-engine', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
-        body: JSON.stringify({ boardSize: bSize, difficulty: diff, engine: eng, moves: movesToApi(moves) }),
+        body: JSON.stringify({ boardSize: bSize, difficulty: diff, engine: eng, moves: movesToApi(moves), aiColor }),
         signal: AbortSignal.timeout(180000),
       });
       const data = await res.json();
@@ -285,7 +286,7 @@ export default function AITestPage() {
       // If player is white, AI (black) goes first
       if (playerColor === 'white') {
         addLog('info', `玩家执白，AI(黑)先手`);
-        const aiResult = await getAIMove(moves, boardSize, difficulty, engine, token);
+        const aiResult = await getAIMove(moves, boardSize, difficulty, engine, token, aiColor);
         if (abortController.signal.aborted) break;
         if (aiResult.move) {
           moves.push({ row: aiResult.move.row, col: aiResult.move.col, color: 'black' });
@@ -388,7 +389,7 @@ export default function AITestPage() {
           if (abortController.signal.aborted) break;
 
           // 第2步：获取AI落子（与首页完全一致）
-          const aiResult = await getAIMove(moves, boardSize, difficulty, engine, token);
+          const aiResult = await getAIMove(moves, boardSize, difficulty, engine, token, aiColor);
           if (abortController.signal.aborted) break;
 
           if (aiResult.error) {
