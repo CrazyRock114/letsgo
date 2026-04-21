@@ -587,6 +587,7 @@ export default function AITestPage() {
   // Reset all AI test state (full restart)
   const resetAITest = useCallback(() => {
     stopGame();
+    loadedMovesRef.current = [];
     setBoard(createEmptyBoard(boardSize));
     setLastMove(null);
     setCurrentStep(0);
@@ -597,9 +598,8 @@ export default function AITestPage() {
     setHintPosition(null);
     setUsedHintCount(0);
     setMissedHintCount(0);
-    setLogs([]);
-    addLog('info', '已重置所有数据');
-  }, [stopGame, boardSize, addLog]);
+    setLogs([{ type: 'info', message: '已重置所有数据', time: new Date().toLocaleTimeString() }]);
+  }, [stopGame, boardSize]);
 
   // Load saved games list
   const loadGamesList = useCallback(async () => {
@@ -914,6 +914,23 @@ export default function AITestPage() {
                       <span className="font-mono">{currentGameId}</span>
                     </div>
                   )}
+                  {/* Territory count */}
+                  {(() => {
+                    const ev = evaluateBoard(board);
+                    return (
+                      <>
+                        <div className="border-t my-1" />
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">⚫ 黑方</span>
+                          <span className="font-mono">{ev.black}目</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">⚪ 白方</span>
+                          <span className="font-mono">{ev.white}目</span>
+                        </div>
+                      </>
+                    );
+                  })()}
                   {lastAnalysis && (
                     <>
                       <div className="border-t my-1" />
