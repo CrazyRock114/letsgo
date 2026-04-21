@@ -1,0 +1,501 @@
+[14:19:01] [SUCCESS]   KataGo建议: A5 胜率=99.6% 领先=0.0目 visits=45
+[14:19:01] [SUCCESS]   落子: A5 (使用KataGo建议)
+[14:19:11] [INFO] 第66步: AI(白)思考中...
+[14:19:17] [INFO]   分析完成: winRate=0.4, scoreLead=0.0, bestMoves=P17,A4
+[14:19:17] [INFO]   AI分析: 建议P17 黑胜率=0.4% 领先=0.0目 visits=63
+[14:19:21] [INFO]   AI落子: B11
+[14:19:31] [INFO] 第67步: 玩家(黑)思考中...
+[14:19:38] [INFO]   分析完成: winRate=99.7, scoreLead=0.0, bestMoves=C11,B14
+[14:19:38] [SUCCESS]   KataGo建议: C11 胜率=99.7% 领先=0.0目 visits=55
+[14:19:38] [SUCCESS]   落子: C11 (使用KataGo建议)
+[14:19:48] [INFO] 第68步: AI(白)思考中...
+[14:19:54] [INFO]   分析完成: winRate=0.4, scoreLead=0.0, bestMoves=P17,A4,B15
+[14:19:54] [INFO]   AI分析: 建议P17 黑胜率=0.4% 领先=0.0目 visits=51
+[14:20:00] [INFO]   AI落子: A4
+[14:20:10] [INFO] 第69步: 玩家(黑)思考中...
+[14:20:17] [INFO]   分析完成: winRate=99.7, scoreLead=0.0, bestMoves=P14,A6,O17
+[14:20:17] [SUCCESS]   KataGo建议: P14 胜率=99.7% 领先=0.0目 visits=38
+[14:20:17] [SUCCESS]   落子: P14 (使用KataGo建议)
+[14:20:27] [INFO] 第70步: AI(白)思考中...
+[14:20:33] [INFO]   分析完成: winRate=0.3, scoreLead=0.0, bestMoves=P15,B15
+[14:20:33] [INFO]   AI分析: 建议P15 黑胜率=0.3% 领先=0.0目 visits=65
+[14:20:39] [INFO]   AI落子: P15
+[14:20:56] [INFO] 第71步: 玩家(黑)思考中...
+[14:21:02] [INFO]   分析完成: winRate=99.7, scoreLead=0.0, bestMoves=Q15
+[14:21:02] [SUCCESS]   KataGo建议: Q15 胜率=99.7% 领先=0.0目 visits=68
+[14:21:02] [SUCCESS]   落子: Q15 (使用KataGo建议)
+[14:21:13] [INFO] 第72步: AI(白)思考中...
+[14:21:19] [INFO]   分析完成: winRate=0.3, scoreLead=0.0, bestMoves=R14
+[14:21:19] [INFO]   AI分析: 建议R14 黑胜率=0.3% 领先=0.0目 visits=117
+[14:21:27] [INFO]   AI落子: R14
+[14:21:37] [INFO] 第73步: 玩家(黑)思考中...
+[14:21:46] [INFO]   分析完成: winRate=99.7, scoreLead=0.0, bestMoves=O17,P13
+[14:21:46] [SUCCESS]   KataGo建议: O17 胜率=99.7% 领先=0.0目 visits=71
+[14:21:46] [SUCCESS]   落子: O17 (使用KataGo建议)
+[14:21:56] [INFO] 第74步: AI(白)思考中...
+[14:22:03] [INFO]   分析完成: winRate=0.3, scoreLead=0.0, bestMoves=P13,B15
+[14:22:03] [INFO]   AI分析: 建议P13 黑胜率=0.3% 领先=0.0目 visits=57
+[14:22:08] [INFO]   AI落子: P12
+[14:22:18] [INFO] 第75步: 玩家(黑)思考中...
+[14:22:25] [INFO]   分析完成: winRate=99.6, scoreLead=0.0, bestMoves=A6,O14
+[14:22:25] [SUCCESS]   KataGo建议: A6 胜率=99.6% 领先=0.0目 visits=29
+[14:22:25] [SUCCESS]   落子: A6 (使用KataGo建议)
+[14:22:35] [INFO] 第76步: AI(白)思考中...
+[14:22:45] [INFO]   分析完成: winRate=0.7, scoreLead=0.0, bestMoves=B15,D5
+[14:22:45] [INFO]   AI分析: 建议B15 黑胜率=0.7% 领先=0.0目 visits=39
+[14:22:55] [INFO]   AI落子: D5
+[14:23:06] [INFO] 第77步: 玩家(黑)思考中...
+[14:23:12] [INFO]   分析完成: winRate=99.5, scoreLead=0.0, bestMoves=O14,C1
+[14:23:12] [SUCCESS]   KataGo建议: O14 胜率=99.5% 领先=0.0目 visits=33
+[14:23:12] [SUCCESS]   落子: O14 (使用KataGo建议)
+[14:23:22] [INFO] 第78步: AI(白)思考中...
+[14:23:30] [INFO]   分析完成: winRate=0.6, scoreLead=0.0, bestMoves=N14
+[14:23:30] [INFO]   AI分析: 建议N14 黑胜率=0.6% 领先=0.0目 visits=101
+[14:23:36] [INFO]   AI落子: N15
+[14:23:47] [INFO] 第79步: 玩家(黑)思考中...
+[14:23:54] [INFO]   分析完成: winRate=99.5, scoreLead=0.0, bestMoves=N14,C1
+[14:23:54] [SUCCESS]   KataGo建议: N14 胜率=99.5% 领先=0.0目 visits=40
+[14:23:54] [SUCCESS]   落子: N14 (使用KataGo建议)
+[14:24:04] [INFO] 第80步: AI(白)思考中...
+[14:24:10] [INFO]   分析完成: winRate=0.6, scoreLead=0.0, bestMoves=M14
+[14:24:10] [INFO]   AI分析: 建议M14 黑胜率=0.6% 领先=0.0目 visits=106
+[14:24:17] [INFO]   AI落子: M15
+[14:24:31] [INFO] 第81步: 玩家(黑)思考中...
+[14:24:37] [INFO]   分析完成: winRate=99.6, scoreLead=0.0, bestMoves=M14,C1
+[14:24:37] [SUCCESS]   KataGo建议: M14 胜率=99.6% 领先=0.0目 visits=42
+[14:24:37] [SUCCESS]   落子: M14 (使用KataGo建议)
+[14:24:47] [INFO] 第82步: AI(白)思考中...
+[14:24:55] [INFO]   分析完成: winRate=0.5, scoreLead=0.0, bestMoves=L14
+[14:24:55] [INFO]   AI分析: 建议L14 黑胜率=0.5% 领先=0.0目 visits=70
+[14:25:03] [INFO]   AI落子: M17
+[14:25:14] [INFO] 第83步: 玩家(黑)思考中...
+[14:25:20] [INFO]   分析完成: winRate=99.6, scoreLead=0.0, bestMoves=Q13,L14,C1
+[14:25:20] [SUCCESS]   KataGo建议: Q13 胜率=99.6% 领先=0.0目 visits=36
+[14:25:20] [SUCCESS]   落子: Q13 (使用KataGo建议)
+[14:25:31] [INFO] 第84步: AI(白)思考中...
+[14:25:39] [INFO]   分析完成: winRate=0.4, scoreLead=0.0, bestMoves=S16,C7,P13
+[14:25:39] [INFO]   AI分析: 建议S16 黑胜率=0.4% 领先=0.0目 visits=50
+[14:25:50] [INFO]   AI落子: B12
+[14:26:01] [INFO] 第85步: 玩家(黑)思考中...
+[14:26:07] [INFO]   分析完成: winRate=99.7, scoreLead=0.0, bestMoves=R13
+[14:26:07] [SUCCESS]   KataGo建议: R13 胜率=99.7% 领先=0.0目 visits=63
+[14:26:07] [SUCCESS]   落子: R13 (使用KataGo建议)
+[14:26:18] [INFO] 第86步: AI(白)思考中...
+[14:26:24] [INFO]   分析完成: winRate=0.3, scoreLead=0.0, bestMoves=S16,B15,C7
+[14:26:24] [INFO]   AI分析: 建议S16 黑胜率=0.3% 领先=0.0目 visits=49
+[14:26:31] [INFO]   AI落子: J17
+[14:26:41] [INFO] 第87步: 玩家(黑)思考中...
+[14:26:49] [INFO]   分析完成: winRate=99.7, scoreLead=0.0, bestMoves=B14
+[14:26:49] [SUCCESS]   KataGo建议: B14 胜率=99.7% 领先=0.0目 visits=63
+[14:26:49] [SUCCESS]   落子: B14 (使用KataGo建议)
+[14:26:59] [INFO] 第88步: AI(白)思考中...
+[14:27:06] [INFO]   分析完成: winRate=0.3, scoreLead=0.0, bestMoves=C7,S13
+[14:27:06] [INFO]   AI分析: 建议C7 黑胜率=0.3% 领先=0.0目 visits=47
+[14:27:11] [INFO]   AI落子: C7
+[14:27:22] [INFO] 第89步: 玩家(黑)思考中...
+[14:27:28] [INFO]   分析完成: winRate=99.8, scoreLead=0.0, bestMoves=B9
+[14:27:28] [SUCCESS]   KataGo建议: B9 胜率=99.8% 领先=0.0目 visits=110
+[14:27:28] [SUCCESS]   落子: B9 (使用KataGo建议)
+[14:27:38] [INFO] 第90步: AI(白)思考中...
+[14:27:44] [INFO]   分析完成: winRate=0.2, scoreLead=0.0, bestMoves=S13,S16
+[14:27:44] [INFO]   AI分析: 建议S13 黑胜率=0.2% 领先=0.0目 visits=50
+[14:27:48] [INFO]   AI落子: A7
+[14:28:00] [INFO] 第91步: 玩家(黑)思考中...
+[14:28:07] [INFO]   分析完成: winRate=99.8, scoreLead=0.0, bestMoves=A9
+[14:28:07] [SUCCESS]   KataGo建议: A9 胜率=99.8% 领先=0.0目 visits=45
+[14:28:07] [SUCCESS]   落子: A9 (使用KataGo建议)
+[14:28:17] [INFO] 第92步: AI(白)思考中...
+[14:28:24] [INFO]   分析完成: winRate=0.3, scoreLead=0.0, bestMoves=S16,C5
+[14:28:24] [INFO]   AI分析: 建议S16 黑胜率=0.3% 领先=0.0目 visits=57
+[14:28:28] [INFO]   AI落子: C5
+[14:28:38] [INFO] 第93步: 玩家(黑)思考中...
+[14:28:46] [INFO]   分析完成: winRate=99.7, scoreLead=0.0, bestMoves=F11,E6,K16
+[14:28:46] [SUCCESS]   KataGo建议: F11 胜率=99.7% 领先=0.0目 visits=29
+[14:28:46] [SUCCESS]   落子: F11 (使用KataGo建议)
+[14:28:56] [INFO] 第94步: AI(白)思考中...
+[14:29:03] [INFO]   分析完成: winRate=0.4, scoreLead=0.0, bestMoves=S16,S13
+[14:29:03] [INFO]   AI分析: 建议S16 黑胜率=0.4% 领先=0.0目 visits=63
+[14:29:06] [INFO]   AI落子: R11
+[14:29:16] [INFO] 第95步: 玩家(黑)思考中...
+[14:29:23] [INFO]   分析完成: winRate=99.8, scoreLead=0.0, bestMoves=S13,S12,S14
+[14:29:23] [SUCCESS]   KataGo建议: S13 胜率=99.8% 领先=0.0目 visits=40
+[14:29:23] [SUCCESS]   落子: S13 (使用KataGo建议)
+[14:29:33] [INFO] 第96步: AI(白)思考中...
+[14:29:45] [INFO]   分析完成: winRate=0.2, scoreLead=0.0, bestMoves=J5,E7,L14
+[14:29:45] [INFO]   AI分析: 建议J5 黑胜率=0.2% 领先=0.0目 visits=45
+[14:29:50] [INFO]   AI落子: F18
+[14:30:00] [INFO] 第97步: 玩家(黑)思考中...
+[14:30:06] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=R9,E6
+[14:30:06] [SUCCESS]   KataGo建议: R9 胜率=99.9% 领先=0.0目 visits=33
+[14:30:06] [SUCCESS]   落子: R9 (使用KataGo建议)
+[14:30:16] [INFO] 第98步: AI(白)思考中...
+[14:30:22] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=P9,E7,J5
+[14:30:22] [INFO]   AI分析: 建议P9 黑胜率=0.1% 领先=0.0目 visits=40
+[14:30:27] [INFO]   AI落子: Q10
+[14:30:37] [INFO] 第99步: 玩家(黑)思考中...
+[14:30:45] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=P8,S11
+[14:30:45] [SUCCESS]   KataGo建议: P8 胜率=99.9% 领先=0.0目 visits=38
+[14:30:45] [SUCCESS]   落子: P8 (使用KataGo建议)
+[14:30:55] [INFO] 第100步: AI(白)思考中...
+[14:31:01] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=O8
+[14:31:01] [INFO]   AI分析: 建议O8 黑胜率=0.1% 领先=0.0目 visits=69
+[14:31:07] [INFO]   AI落子: Q9
+[14:31:19] [INFO] 第101步: 玩家(黑)思考中...
+[14:31:25] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=Q8
+[14:31:25] [SUCCESS]   KataGo建议: Q8 胜率=99.9% 领先=0.0目 visits=86
+[14:31:25] [SUCCESS]   落子: Q8 (使用KataGo建议)
+[14:31:35] [INFO] 第102步: AI(白)思考中...
+[14:31:42] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=O8,R8
+[14:31:42] [INFO]   AI分析: 建议O8 黑胜率=0.1% 领先=0.0目 visits=60
+[14:31:47] [INFO]   AI落子: O10
+[14:31:57] [INFO] 第103步: 玩家(黑)思考中...
+[14:32:05] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=O8,N8
+[14:32:05] [SUCCESS]   KataGo建议: O8 胜率=99.9% 领先=0.0目 visits=43
+[14:32:05] [SUCCESS]   落子: O8 (使用KataGo建议)
+[14:32:16] [INFO] 第104步: AI(白)思考中...
+[14:32:23] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=R8,M10,E7
+[14:32:23] [INFO]   AI分析: 建议R8 黑胜率=0.1% 领先=0.0目 visits=37
+[14:32:29] [INFO]   AI落子: M10
+[14:32:39] [INFO] 第105步: 玩家(黑)思考中...
+[14:32:46] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=R6
+[14:32:46] [SUCCESS]   KataGo建议: R6 胜率=99.9% 领先=0.0目 visits=44
+[14:32:46] [SUCCESS]   落子: R6 (使用KataGo建议)
+[14:32:56] [INFO] 第106步: AI(白)思考中...
+[14:33:09] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=S5,O4,E7
+[14:33:09] [INFO]   AI分析: 建议S5 黑胜率=0.1% 领先=0.0目 visits=40
+[14:33:15] [INFO]   AI落子: K10
+[14:33:25] [INFO] 第107步: 玩家(黑)思考中...
+[14:33:31] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=S5
+[14:33:31] [SUCCESS]   KataGo建议: S5 胜率=99.9% 领先=0.0目 visits=65
+[14:33:31] [SUCCESS]   落子: S5 (使用KataGo建议)
+[14:33:41] [INFO] 第108步: AI(白)思考中...
+[14:33:47] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=S4
+[14:33:47] [INFO]   AI分析: 建议S4 黑胜率=0.1% 领先=0.0目 visits=105
+[14:33:54] [INFO]   AI落子: S4
+[14:34:05] [INFO] 第109步: 玩家(黑)思考中...
+[14:34:11] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=O5,E6
+[14:34:11] [SUCCESS]   KataGo建议: O5 胜率=99.9% 领先=0.0目 visits=41
+[14:34:11] [SUCCESS]   落子: O5 (使用KataGo建议)
+[14:34:22] [INFO] 第110步: AI(白)思考中...
+[14:34:28] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=O4,E7
+[14:34:28] [INFO]   AI分析: 建议O4 黑胜率=0.1% 领先=0.0目 visits=32
+[14:34:34] [INFO]   AI落子: P6
+[14:34:47] [INFO] 第111步: 玩家(黑)思考中...
+[14:34:53] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=N7,R5
+[14:34:53] [SUCCESS]   KataGo建议: N7 胜率=99.9% 领先=0.0目 visits=52
+[14:34:53] [SUCCESS]   落子: N7 (使用KataGo建议)
+[14:35:03] [INFO] 第112步: AI(白)思考中...
+[14:35:09] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=E7,E6
+[14:35:09] [INFO]   AI分析: 建议E7 黑胜率=0.1% 领先=0.0目 visits=31
+[14:35:14] [INFO]   AI落子: T2
+[14:35:24] [INFO] 第113步: 玩家(黑)思考中...
+[14:35:30] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=N18,E6,L9
+[14:35:30] [SUCCESS]   KataGo建议: N18 胜率=99.9% 领先=0.0目 visits=25
+[14:35:30] [SUCCESS]   落子: N18 (使用KataGo建议)
+[14:35:40] [INFO] 第114步: AI(白)思考中...
+[14:35:47] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=M18
+[14:35:47] [INFO]   AI分析: 建议M18 黑胜率=0.1% 领先=0.0目 visits=48
+[14:35:52] [INFO]   AI落子: L7
+[14:36:02] [INFO] 第115步: 玩家(黑)思考中...
+[14:36:09] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=M18,E6
+[14:36:09] [SUCCESS]   KataGo建议: M18 胜率=99.9% 领先=0.0目 visits=35
+[14:36:09] [SUCCESS]   落子: M18 (使用KataGo建议)
+[14:36:19] [INFO] 第116步: AI(白)思考中...
+[14:36:25] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=L14,L18
+[14:36:25] [INFO]   AI分析: 建议L14 黑胜率=0.1% 领先=0.0目 visits=31
+[14:36:29] [INFO]   AI落子: K16
+[14:36:39] [INFO] 第117步: 玩家(黑)思考中...
+[14:36:47] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=K18,L17,E6
+[14:36:47] [SUCCESS]   KataGo建议: K18 胜率=99.9% 领先=0.0目 visits=29
+[14:36:47] [SUCCESS]   落子: K18 (使用KataGo建议)
+[14:36:57] [INFO] 第118步: AI(白)思考中...
+[14:37:03] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=K14,L14
+[14:37:03] [INFO]   AI分析: 建议K14 黑胜率=0.1% 领先=0.0目 visits=37
+[14:37:09] [INFO]   AI落子: G17
+[14:37:19] [INFO] 第119步: 玩家(黑)思考中...
+[14:37:25] [INFO]   分析完成: winRate=100.0, scoreLead=0.0, bestMoves=K14
+[14:37:25] [SUCCESS]   KataGo建议: K14 胜率=100.0% 领先=0.0目 visits=41
+[14:37:25] [SUCCESS]   落子: K14 (使用KataGo建议)
+[14:37:35] [INFO] 第120步: AI(白)思考中...
+[14:37:41] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=J18,E7,J5
+[14:37:41] [INFO]   AI分析: 建议J18 黑胜率=0.0% 领先=0.0目 visits=29
+[14:37:46] [INFO]   AI落子: J18
+[14:37:58] [INFO] 第121步: 玩家(黑)思考中...
+[14:38:04] [INFO]   分析完成: winRate=100.0, scoreLead=0.0, bestMoves=N9,L9,E6
+[14:38:04] [SUCCESS]   KataGo建议: N9 胜率=100.0% 领先=0.0目 visits=27
+[14:38:04] [SUCCESS]   落子: N9 (使用KataGo建议)
+[14:38:14] [INFO] 第122步: AI(白)思考中...
+[14:38:20] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N10
+[14:38:20] [INFO]   AI分析: 建议N10 黑胜率=0.1% 领先=0.0目 visits=41
+[14:38:28] [INFO]   AI落子: N10
+[14:38:38] [INFO] 第123步: 玩家(黑)思考中...
+[14:38:48] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=L9,L17
+[14:38:48] [SUCCESS]   KataGo建议: L9 胜率=99.9% 领先=0.0目 visits=42
+[14:38:48] [SUCCESS]   落子: L9 (使用KataGo建议)
+[14:38:58] [INFO] 第124步: AI(白)思考中...
+[14:39:04] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=M9
+[14:39:04] [INFO]   AI分析: 建议M9 黑胜率=0.1% 领先=0.0目 visits=57
+[14:39:10] [INFO]   AI落子: L10
+[14:39:20] [INFO] 第125步: 玩家(黑)思考中...
+[14:39:27] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=K9
+[14:39:27] [SUCCESS]   KataGo建议: K9 胜率=99.9% 领先=0.0目 visits=46
+[14:39:27] [SUCCESS]   落子: K9 (使用KataGo建议)
+[14:39:37] [INFO] 第126步: AI(白)思考中...
+[14:39:43] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=J9,M9
+[14:39:43] [INFO]   AI分析: 建议J9 黑胜率=0.1% 领先=0.0目 visits=42
+[14:39:47] [INFO]   AI落子: J10
+[14:39:57] [INFO] 第127步: 玩家(黑)思考中...
+[14:40:03] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=J9,E18
+[14:40:03] [SUCCESS]   KataGo建议: J9 胜率=99.9% 领先=0.0目 visits=33
+[14:40:03] [SUCCESS]   落子: J9 (使用KataGo建议)
+[14:40:13] [INFO] 第128步: AI(白)思考中...
+[14:40:19] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=M9
+[14:40:19] [INFO]   AI分析: 建议M9 黑胜率=0.1% 领先=0.0目 visits=34
+[14:40:23] [INFO]   AI落子: H10
+[14:40:33] [INFO] 第129步: 玩家(黑)思考中...
+[14:40:39] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=L17,H9,E18
+[14:40:39] [SUCCESS]   KataGo建议: L17 胜率=99.9% 领先=0.0目 visits=34
+[14:40:39] [SUCCESS]   落子: L17 (使用KataGo建议)
+[14:40:49] [INFO] 第130步: AI(白)思考中...
+[14:40:55] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=L16,M9
+[14:40:55] [INFO]   AI分析: 建议L16 黑胜率=0.1% 领先=0.0目 visits=35
+[14:40:59] [INFO]   AI落子: H9
+[14:41:10] [INFO] 第131步: 玩家(黑)思考中...
+[14:41:16] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=H16
+[14:41:16] [SUCCESS]   KataGo建议: H16 胜率=99.9% 领先=0.0目 visits=76
+[14:41:16] [SUCCESS]   落子: H16 (使用KataGo建议)
+[14:41:26] [INFO] 第132步: AI(白)思考中...
+[14:41:33] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=K15
+[14:41:33] [INFO]   AI分析: 建议K15 黑胜率=0.1% 领先=0.0目 visits=55
+[14:41:39] [INFO]   AI落子: L15
+[14:41:49] [INFO] 第133步: 玩家(黑)思考中...
+[14:41:55] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=L14,K13
+[14:41:55] [SUCCESS]   KataGo建议: L14 胜率=99.9% 领先=0.0目 visits=60
+[14:41:55] [SUCCESS]   落子: L14 (使用KataGo建议)
+[14:42:05] [INFO] 第134步: AI(白)思考中...
+[14:42:11] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=M9
+[14:42:11] [INFO]   AI分析: 建议M9 黑胜率=0.1% 领先=0.0目 visits=38
+[14:42:15] [INFO]   AI落子: M9
+[14:42:25] [INFO] 第135步: 玩家(黑)思考中...
+[14:42:31] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=E18,J8,K7
+[14:42:31] [SUCCESS]   KataGo建议: E18 胜率=99.9% 领先=0.0目 visits=43
+[14:42:31] [SUCCESS]   落子: E18 (使用KataGo建议)
+[14:42:41] [INFO] 第136步: AI(白)思考中...
+[14:42:47] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=J5,E10
+[14:42:47] [INFO]   AI分析: 建议J5 黑胜率=0.1% 领先=0.0目 visits=32
+[14:42:52] [INFO]   AI落子: J8
+[14:43:02] [INFO] 第137步: 玩家(黑)思考中...
+[14:43:09] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=J5,E6
+[14:43:09] [SUCCESS]   KataGo建议: J5 胜率=99.9% 领先=0.0目 visits=35
+[14:43:09] [SUCCESS]   落子: J5 (使用KataGo建议)
+[14:43:19] [INFO] 第138步: AI(白)思考中...
+[14:43:27] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=E10,G16,S9
+[14:43:27] [INFO]   AI分析: 建议E10 黑胜率=0.1% 领先=0.0目 visits=24
+[14:43:33] [INFO]   AI落子: H13
+[14:43:43] [INFO] 第139步: 玩家(黑)思考中...
+[14:43:51] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=S10,K2,F9
+[14:43:51] [SUCCESS]   KataGo建议: S10 胜率=99.9% 领先=0.0目 visits=22
+[14:43:51] [SUCCESS]   落子: S10 (使用KataGo建议)
+[14:44:01] [INFO] 第140步: AI(白)思考中...
+[14:44:09] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=J15,H15
+[14:44:09] [INFO]   AI分析: 建议J15 黑胜率=0.1% 领先=0.0目 visits=39
+[14:44:22] [INFO]   AI落子: F9
+[14:44:43] [INFO] 第141步: 玩家(黑)思考中...
+[14:44:50] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=E10,E11
+[14:44:50] [SUCCESS]   KataGo建议: E10 胜率=99.9% 领先=0.0目 visits=38
+[14:44:50] [SUCCESS]   落子: E10 (使用KataGo建议)
+[14:45:01] [INFO] 第142步: AI(白)思考中...
+[14:45:07] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=H15,J15
+[14:45:07] [INFO]   AI分析: 建议H15 黑胜率=0.1% 领先=0.0目 visits=35
+[14:45:12] [INFO]   AI落子: M1
+[14:45:22] [INFO] 第143步: 玩家(黑)思考中...
+[14:45:29] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=S11,H15
+[14:45:29] [SUCCESS]   KataGo建议: S11 胜率=99.9% 领先=0.0目 visits=28
+[14:45:29] [SUCCESS]   落子: S11 (使用KataGo建议)
+[14:45:39] [INFO] 第144步: AI(白)思考中...
+[14:45:45] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=H15,J15
+[14:45:45] [INFO]   AI分析: 建议H15 黑胜率=0.1% 领先=0.0目 visits=42
+[14:45:50] [INFO]   AI落子: G16
+[14:46:00] [INFO] 第145步: 玩家(黑)思考中...
+[14:46:06] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=H14,H15
+[14:46:06] [SUCCESS]   KataGo建议: H14 胜率=99.9% 领先=0.0目 visits=51
+[14:46:06] [SUCCESS]   落子: H14 (使用KataGo建议)
+[14:46:16] [INFO] 第146步: AI(白)思考中...
+[14:46:23] [INFO]   分析完成: winRate=0.2, scoreLead=0.0, bestMoves=H15
+[14:46:23] [INFO]   AI分析: 建议H15 黑胜率=0.2% 领先=0.0目 visits=64
+[14:46:27] [INFO]   AI落子: J13
+[14:46:37] [INFO] 第147步: 玩家(黑)思考中...
+[14:46:44] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=H15
+[14:46:44] [SUCCESS]   KataGo建议: H15 胜率=99.9% 领先=0.0目 visits=103
+[14:46:44] [SUCCESS]   落子: H15 (使用KataGo建议)
+[14:46:54] [INFO] 第148步: AI(白)思考中...
+[14:47:00] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17,J14
+[14:47:00] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=32
+[14:47:04] [INFO]   AI落子: G13
+[14:47:14] [INFO] 第149步: 玩家(黑)思考中...
+[14:47:21] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=F13
+[14:47:21] [SUCCESS]   KataGo建议: F13 胜率=99.9% 领先=0.0目 visits=85
+[14:47:21] [SUCCESS]   落子: F13 (使用KataGo建议)
+[14:47:31] [INFO] 第150步: AI(白)思考中...
+[14:47:37] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17,E6
+[14:47:37] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=35
+[14:47:41] [INFO]   AI落子: E6
+[14:47:54] [INFO] 第151步: 玩家(黑)思考中...
+[14:48:01] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=H4
+[14:48:01] [SUCCESS]   KataGo建议: H4 胜率=99.9% 领先=0.0目 visits=73
+[14:48:01] [SUCCESS]   落子: H4 (使用KataGo建议)
+[14:48:11] [INFO] 第152步: AI(白)思考中...
+[14:48:17] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17,G3
+[14:48:17] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=33
+[14:48:21] [INFO]   AI落子: G3
+[14:48:31] [INFO] 第153步: 玩家(黑)思考中...
+[14:48:37] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=F5
+[14:48:37] [SUCCESS]   KataGo建议: F5 胜率=99.9% 领先=0.0目 visits=41
+[14:48:37] [SUCCESS]   落子: F5 (使用KataGo建议)
+[14:48:47] [INFO] 第154步: AI(白)思考中...
+[14:48:55] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17,F17
+[14:48:55] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=33
+[14:48:59] [INFO]   AI落子: M6
+[14:49:09] [INFO] 第155步: 玩家(黑)思考中...
+[14:49:26] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=E7
+[14:49:26] [SUCCESS]   KataGo建议: E7 胜率=99.9% 领先=0.0目 visits=36
+[14:49:26] [SUCCESS]   落子: E7 (使用KataGo建议)
+[14:49:36] [INFO] 第156步: AI(白)思考中...
+[14:49:43] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=B7
+[14:49:43] [INFO]   AI分析: 建议B7 黑胜率=0.1% 领先=0.0目 visits=75
+[14:49:47] [INFO]   AI落子: B7
+[14:49:57] [INFO] 第157步: 玩家(黑)思考中...
+[14:50:04] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=N6,K2
+[14:50:04] [SUCCESS]   KataGo建议: N6 胜率=99.9% 领先=0.0目 visits=31
+[14:50:04] [SUCCESS]   落子: N6 (使用KataGo建议)
+[14:50:14] [INFO] 第158步: AI(白)思考中...
+[14:50:21] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17
+[14:50:21] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=39
+[14:50:34] [INFO]   AI落子: M5
+[14:50:44] [INFO] 第159步: 玩家(黑)思考中...
+[14:50:51] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=L6,L2,M8
+[14:50:51] [SUCCESS]   KataGo建议: L6 胜率=99.9% 领先=0.0目 visits=30
+[14:50:51] [SUCCESS]   落子: L6 (使用KataGo建议)
+[14:51:01] [INFO] 第160步: AI(白)思考中...
+[14:51:18] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=M7
+[14:51:18] [INFO]   AI分析: 建议M7 黑胜率=0.1% 领先=0.0目 visits=43
+[14:51:22] [INFO]   AI落子: M7
+[14:51:35] [INFO] 第161步: 玩家(黑)思考中...
+[14:51:43] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=M4,G8
+[14:51:43] [SUCCESS]   KataGo建议: M4 胜率=99.9% 领先=0.0目 visits=33
+[14:51:43] [SUCCESS]   落子: M4 (使用KataGo建议)
+[14:51:53] [INFO] 第162步: AI(白)思考中...
+[14:52:01] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17,N5,J14
+[14:52:01] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=37
+[14:52:05] [INFO]   AI落子: G11
+[14:52:15] [INFO] 第163步: 玩家(黑)思考中...
+[14:52:24] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=L2,F10
+[14:52:24] [SUCCESS]   KataGo建议: L2 胜率=99.9% 领先=0.0目 visits=27
+[14:52:24] [SUCCESS]   落子: L2 (使用KataGo建议)
+[14:52:34] [INFO] 第164步: AI(白)思考中...
+[14:52:40] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17,J14,F17
+[14:52:40] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=33
+[14:52:42] [INFO]   AI落子: E2
+[14:52:52] [INFO] 第165步: 玩家(黑)思考中...
+[14:52:59] [INFO]   分析完成: winRate=100.0, scoreLead=0.0, bestMoves=Q2,K7,L1
+[14:52:59] [SUCCESS]   KataGo建议: Q2 胜率=100.0% 领先=0.0目 visits=26
+[14:52:59] [SUCCESS]   落子: Q2 (使用KataGo建议)
+[14:53:09] [INFO] 第166步: AI(白)思考中...
+[14:53:16] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17
+[14:53:16] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=33
+[14:53:19] [INFO]   AI落子: R5
+[14:53:29] [INFO] 第167步: 玩家(黑)思考中...
+[14:53:37] [INFO]   分析完成: winRate=100.0, scoreLead=0.0, bestMoves=S6,K1
+[14:53:37] [SUCCESS]   KataGo建议: S6 胜率=100.0% 领先=0.0目 visits=34
+[14:53:37] [SUCCESS]   落子: S6 (使用KataGo建议)
+[14:53:47] [INFO] 第168步: AI(白)思考中...
+[14:53:54] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17,J14
+[14:53:54] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=31
+[14:53:57] [INFO]   AI落子: S1
+[14:54:07] [INFO] 第169步: 玩家(黑)思考中...
+[14:54:24] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=K1,L1
+[14:54:24] [SUCCESS]   KataGo建议: K1 胜率=99.9% 领先=0.0目 visits=35
+[14:54:24] [SUCCESS]   落子: K1 (使用KataGo建议)
+[14:54:34] [INFO] 第170步: AI(白)思考中...
+[14:54:40] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17,J14,F7
+[14:54:40] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=31
+[14:54:54] [INFO]   AI落子: F10
+[14:55:06] [INFO] 第171步: 玩家(黑)思考中...
+[14:55:19] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=E11
+[14:55:19] [SUCCESS]   KataGo建议: E11 胜率=99.9% 领先=0.0目 visits=61
+[14:55:19] [SUCCESS]   落子: E11 (使用KataGo建议)
+[14:55:29] [INFO] 第172步: AI(白)思考中...
+[14:55:40] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17
+[14:55:40] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=33
+[14:55:51] [INFO]   AI落子: D1
+[14:56:01] [INFO] 第173步: 玩家(黑)思考中...
+[14:56:10] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=K7,J3,P13
+[14:56:10] [SUCCESS]   KataGo建议: K7 胜率=99.9% 领先=0.0目 visits=31
+[14:56:10] [SUCCESS]   落子: K7 (使用KataGo建议)
+[14:56:20] [INFO] 第174步: AI(白)思考中...
+[14:56:29] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17,K8
+[14:56:29] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=39
+[14:56:33] [INFO]   AI落子: K8
+[14:56:43] [INFO] 第175步: 玩家(黑)思考中...
+[14:56:52] [INFO]   分析完成: winRate=99.9, scoreLead=0.0, bestMoves=J3,J7
+[14:56:52] [SUCCESS]   KataGo建议: J3 胜率=99.9% 领先=0.0目 visits=40
+[14:56:52] [SUCCESS]   落子: J3 (使用KataGo建议)
+[14:57:02] [INFO] 第176步: AI(白)思考中...
+[14:57:08] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17,J14
+[14:57:08] [INFO]   AI分析: 建议N17 黑胜率=0.1% 领先=0.0目 visits=29
+[14:57:21] [INFO] 第176步: 玩家(黑)思考中...
+[14:57:27] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=N17
+[14:57:27] [SUCCESS]   KataGo建议: N17 胜率=0.1% 领先=0.0目 visits=51
+[14:57:27] [SUCCESS]   落子: N17 (使用KataGo建议)
+[14:57:37] [INFO] 第177步: AI(白)思考中...
+[14:57:44] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=J14
+[14:57:44] [INFO]   AI分析: 建议J14 黑胜率=0.1% 领先=0.0目 visits=32
+[14:57:56] [INFO] 第177步: 玩家(黑)思考中...
+[14:58:02] [INFO]   分析完成: winRate=0.1, scoreLead=0.0, bestMoves=J14
+[14:58:02] [SUCCESS]   KataGo建议: J14 胜率=0.1% 领先=0.0目 visits=58
+[14:58:02] [SUCCESS]   落子: J14 (使用KataGo建议)
+[14:58:12] [INFO] 第178步: AI(白)思考中...
+[14:58:20] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=Q1,N5,P4
+[14:58:20] [INFO]   AI分析: 建议Q1 黑胜率=0.0% 领先=0.0目 visits=28
+[14:58:35] [INFO] 第178步: 玩家(黑)思考中...
+[14:58:42] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=Q1,N5,F17
+[14:58:42] [SUCCESS]   KataGo建议: Q1 胜率=0.0% 领先=0.0目 visits=40
+[14:58:42] [SUCCESS]   落子: Q1 (使用KataGo建议)
+[14:58:52] [INFO] 第179步: AI(白)思考中...
+[14:58:59] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=N5,F7,F17
+[14:58:59] [INFO]   AI分析: 建议N5 黑胜率=0.0% 领先=0.0目 visits=25
+[14:59:15] [INFO] 第179步: 玩家(黑)思考中...
+[14:59:22] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=F7,F17
+[14:59:22] [SUCCESS]   KataGo建议: F7 胜率=0.0% 领先=0.0目 visits=38
+[14:59:22] [SUCCESS]   落子: F7 (使用KataGo建议)
+[14:59:32] [INFO] 第180步: AI(白)思考中...
+[14:59:38] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=F17,N5,P16
+[14:59:38] [INFO]   AI分析: 建议F17 黑胜率=0.0% 领先=0.0目 visits=25
+[15:00:00] [INFO] 第180步: 玩家(黑)思考中...
+[15:00:08] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=F17
+[15:00:08] [SUCCESS]   KataGo建议: F17 胜率=0.0% 领先=0.0目 visits=49
+[15:00:08] [SUCCESS]   落子: F17 (使用KataGo建议)
+[15:00:20] [INFO] 第181步: AI(白)思考中...
+[15:00:27] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=N5
+[15:00:27] [INFO]   AI分析: 建议N5 黑胜率=0.0% 领先=0.0目 visits=34
+[15:00:57] [INFO] 第181步: 玩家(黑)思考中...
+[15:01:08] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=N5
+[15:01:08] [SUCCESS]   KataGo建议: N5 胜率=0.0% 领先=0.0目 visits=38
+[15:01:08] [SUCCESS]   落子: N5 (使用KataGo建议)
+[15:01:18] [INFO] 第182步: AI(白)思考中...
+[15:01:30] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=P4,K2
+[15:01:30] [INFO]   AI分析: 建议P4 黑胜率=0.0% 领先=0.0目 visits=23
+[15:01:42] [INFO] 第182步: 玩家(黑)思考中...
+[15:01:48] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=G18,F12,K2
+[15:01:48] [SUCCESS]   KataGo建议: G18 胜率=0.0% 领先=0.0目 visits=35
+[15:01:48] [SUCCESS]   落子: G18 (使用KataGo建议)
+[15:01:58] [INFO] 第183步: AI(白)思考中...
+[15:02:05] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=J7,K2
+[15:02:05] [INFO]   AI分析: 建议J7 黑胜率=0.0% 领先=0.0目 visits=20
+[15:02:18] [INFO] 第183步: 玩家(黑)思考中...
+[15:02:26] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=K2,J7,K6
+[15:02:26] [SUCCESS]   KataGo建议: K2 胜率=0.0% 领先=0.0目 visits=35
+[15:02:26] [SUCCESS]   落子: K2 (使用KataGo建议)
+[15:02:36] [INFO] 第184步: AI(白)思考中...
+[15:02:44] [INFO]   分析完成: winRate=0.0, scoreLead=0.0, bestMoves=P4,H18,J7
+[15:02:44] [INFO]   AI分析: 建议P4 黑胜率=0.0% 领先=0.0目 visits=25

@@ -20,16 +20,7 @@ interface LogEntry {
   message: string;
 }
 
-interface SavedGame {
-  id?: number;
-  board_size: number;
-  difficulty: string;
-  engine: string;
-  moves: Array<{ row: number; col: number; color: number }>;
-  commentaries: Array<{ moveIndex: number; text: string }>;
-  title: string;
-  status: string;
-}
+
 
 const AI_TEST_USER = 'AItest';
 const AI_TEST_PASS = 'AItest2026';
@@ -63,11 +54,17 @@ export default function AITestPage() {
   const [hintPosition, setHintPosition] = useState<{ row: number; col: number } | null>(null);
   const [usedHintCount, setUsedHintCount] = useState(0);
   const [missedHintCount, setMissedHintCount] = useState(0);
+  const [showLoadDialog, setShowLoadDialog] = useState(false);
+  const [savedGames, setSavedGames] = useState<Array<{
+    id: number; board_size: number; difficulty: string; engine: string;
+    title: string; status: string; created_at: string;
+  }>>([]);
 
   const runningRef = useRef(false);
   const pausedRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const loadedMovesRef = useRef<Array<{ row: number; col: number; color: Stone }>>([]);
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -120,7 +117,7 @@ export default function AITestPage() {
     }));
   }, []);
 
-  // Save or update game
+  // Save or update game (uses same MoveEntry format as main page for compatibility)
   const saveGameToDB = useCallback(async (
     tok: string,
     bSize: number,
@@ -132,14 +129,23 @@ export default function AITestPage() {
     status: string = 'playing'
   ): Promise<number | null> => {
     try {
-      const body: SavedGame = {
+      // Convert to main-page compatible MoveEntry format: {position: {row, col}, color: Stone, captured: 0}
+      const movesCompat = moves.map(m => ({
+        position: { row: m.row, col: m.col },
+        color: m.color,
+        captured: 0,
+      }));
+      const body: Record<string, unknown> = {
         board_size: bSize,
         difficulty: diff,
         engine: eng,
-        moves: moves.map(m => ({ row: m.row, col: m.col, color: m.color === 'black' ? 1 : 2 })),
+        moves: movesCompat,
         commentaries,
         title: `${bSize}路 ${diff === 'easy' ? '初级' : diff === 'medium' ? '中级' : '高级'} ${eng} AI测试 ${new Date().toLocaleDateString('zh-CN')}`,
         status,
+        final_board: null,
+        black_score: 0,
+        white_score: 0,
       };
       if (gameId) {
         body.id = gameId;
@@ -268,23 +274,42 @@ export default function AITestPage() {
     while (runningRef.current) {
       gameCount++;
       setTotalGames(gameCount);
-      addLog('info', `===== 第${gameCount}局开始 ${boardSize}路 ${difficulty} ${engine} =====`);
+
+      // Check if we have loaded moves to continue from
+      const startingMoves = [...loadedMovesRef.current];
+      loadedMovesRef.current = [];
 
       let currentBoard = createEmptyBoard(boardSize);
-      setBoard([...currentBoard.map(r => [...r])]);
       const moves: Array<{ row: number; col: number; color: Stone }> = [];
       const gameCommentaries: Array<{ moveIndex: number; text: string }> = [];
       let currentPlayer: Stone = 'black';
       let consecutivePasses = 0;
       let stepCount = 0;
-      let gameId: number | null = null;
+      let gameId: number | null = currentGameId;
+
+      // Replay loaded moves if any
+      if (startingMoves.length > 0) {
+        addLog('info', `===== 继续棋局 ${boardSize}路 ${difficulty} ${engine} (已有${startingMoves.length}步) =====`);
+        for (const m of startingMoves) {
+          const result = playMove(currentBoard, m.row, m.col, m.color);
+          currentBoard = result.newBoard;
+          moves.push(m);
+          currentPlayer = m.color === 'black' ? 'white' : 'black';
+        }
+        stepCount = startingMoves.length;
+        setBoard([...currentBoard.map(r => [...r])]);
+        setCurrentStep(stepCount);
+        setLastMove(startingMoves[startingMoves.length - 1]);
+      } else {
+        addLog('info', `===== 第${gameCount}局开始 ${boardSize}路 ${difficulty} ${engine} =====`);
+        setBoard([...currentBoard.map(r => [...r])]);
+        setLastMove(null);
+      }
+      setHintPosition(null);
       const aiColor: Stone = playerColor === 'black' ? 'white' : 'black';
 
-      setLastMove(null);
-      setHintPosition(null);
-
-      // If player is white, AI (black) goes first
-      if (playerColor === 'white') {
+      // If starting fresh (no loaded moves) and player is white, AI (black) goes first
+      if (startingMoves.length === 0 && playerColor === 'white') {
         addLog('info', `玩家执白，AI(黑)先手`);
         const aiResult = await getAIMove(moves, boardSize, difficulty, engine, token, aiColor);
         if (abortController.signal.aborted) break;
@@ -323,7 +348,7 @@ export default function AITestPage() {
             hint = getHintFromAnalysis(analysis, boardSize);
             if (hint) {
               setHintPosition(hint);
-              addLog('success', `  KataGo建议: ${COL_LABELS[hint.col]}${boardSize - hint.row} 胜率=${analysis.winRate.toFixed(1)}% 领先=${analysis.scoreLead.toFixed(1)}目 visits=${analysis.actualVisits || '?'}`);
+              addLog('success', `  KataGo建议: ${COL_LABELS[hint.col]}${boardSize - hint.row} 黑胜率=${analysis.winRate.toFixed(1)}%${Math.abs(analysis.scoreLead) > 0.05 ? ` 领先=${analysis.scoreLead.toFixed(1)}目` : ''} visits=${analysis.actualVisits || '?'}`);
             } else {
               const hasPass = analysis.bestMoves?.some((bm: { move: string }) => bm.move === 'pass');
               if (hasPass) {
@@ -358,7 +383,7 @@ export default function AITestPage() {
             if (usedKataGoHint) {
               setUsedHintCount(prev => prev + 1);
               addLog('success', `  落子: ${moveLabel} (使用KataGo建议)`);
-              gameCommentaries.push({ moveIndex: stepCount - 1, text: `[KataGo建议] ${moveLabel} 胜率${analysis?.winRate.toFixed(1)}% 领先${analysis?.scoreLead.toFixed(1)}目` });
+              gameCommentaries.push({ moveIndex: stepCount - 1, text: `[KataGo建议] ${moveLabel} 黑胜率${analysis?.winRate.toFixed(1)}%${analysis && Math.abs(analysis.scoreLead) > 0.05 ? ` 领先${analysis.scoreLead.toFixed(1)}目` : ''}` });
             } else {
               setMissedHintCount(prev => prev + 1);
               addLog('warn', `  落子: ${moveLabel} (本地提示，KataGo建议未使用)`);
@@ -380,7 +405,7 @@ export default function AITestPage() {
               setLastAnalysis(analysis);
               const hintInfo = getHintFromAnalysis(analysis, boardSize);
               if (hintInfo) {
-                addLog('info', `  AI分析: 建议${COL_LABELS[hintInfo.col]}${boardSize - hintInfo.row} 黑胜率=${analysis.winRate.toFixed(1)}% 领先=${analysis.scoreLead.toFixed(1)}目 visits=${analysis.actualVisits || '?'}`);
+                addLog('info', `  AI分析: 建议${COL_LABELS[hintInfo.col]}${boardSize - hintInfo.row} 黑胜率=${analysis.winRate.toFixed(1)}%${Math.abs(analysis.scoreLead) > 0.05 ? ` 领先=${analysis.scoreLead.toFixed(1)}目` : ''} visits=${analysis.actualVisits || '?'}`);
               }
             }
           } catch {
@@ -482,7 +507,7 @@ export default function AITestPage() {
 
     setRunning(false);
     addLog('info', `测试已停止，共${gameCount}局${totalStepCount}步`);
-  }, [token, userId, boardSize, difficulty, engine, playerColor, stepInterval, addLog, getAIMove, getAnalysis, getHintFromAnalysis, findFallbackMove, saveGameToDB]);
+  }, [token, userId, boardSize, difficulty, engine, playerColor, stepInterval, currentGameId, addLog, getAIMove, getAnalysis, getHintFromAnalysis, findFallbackMove, saveGameToDB]);
 
   const stopGame = useCallback(() => {
     runningRef.current = false;
@@ -498,6 +523,106 @@ export default function AITestPage() {
     setPaused(newPaused);
     addLog('info', newPaused ? '已暂停' : '继续运行');
   }, [addLog]);
+
+  // Reset all AI test state (full restart)
+  const resetAITest = useCallback(() => {
+    stopGame();
+    setBoard(createEmptyBoard(boardSize));
+    setLastMove(null);
+    setCurrentStep(0);
+    setTotalGames(0);
+    setTotalSteps(0);
+    setLastAnalysis(null);
+    setCurrentGameId(null);
+    setHintPosition(null);
+    setUsedHintCount(0);
+    setMissedHintCount(0);
+    setLogs([]);
+    addLog('info', '已重置所有数据');
+  }, [stopGame, boardSize, addLog]);
+
+  // Load saved games list
+  const loadGamesList = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch('/api/games', { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      setSavedGames(data.games || []);
+    } catch {
+      addLog('error', '加载棋局列表失败');
+    }
+  }, [token, addLog]);
+
+  // Load a saved game and continue testing from where it left off
+  const loadGame = useCallback(async (gameId: number) => {
+    if (!token) return;
+    try {
+      stopGame();
+      const res = await fetch(`/api/games/${gameId}`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      const game = data.game;
+      if (!game) return;
+
+      // Set game parameters
+      setBoardSize(game.board_size);
+      setDifficulty(game.difficulty || 'easy');
+      if (game.engine) setEngine(game.engine as EngineId);
+      setCurrentGameId(game.id);
+      setShowLoadDialog(false);
+
+      // Replay all moves to reconstruct board state
+      const moves = game.moves || [];
+      let currentBoard = createEmptyBoard(game.board_size);
+      const replayedMoves: Array<{ row: number; col: number; color: Stone }> = [];
+      let currentColor: Stone = 'black';
+
+      for (const move of moves) {
+        // Handle both main-page format {position: {row, col}, color: 'black'} and ai-test format {row, col, color: 1}
+        const row = move.position?.row ?? move.row;
+        const col = move.position?.col ?? move.col;
+        const color: Stone = move.color === 'black' || move.color === 1 ? 'black' : 'white';
+
+        if (row !== undefined && col !== undefined) {
+          const result = playMove(currentBoard, row, col, color);
+          currentBoard = result.newBoard;
+          replayedMoves.push({ row, col, color });
+          currentColor = color === 'black' ? 'white' : 'black';
+        }
+      }
+
+      setBoard([...currentBoard.map(r => [...r])]);
+      setLastMove(replayedMoves.length > 0 ? replayedMoves[replayedMoves.length - 1] : null);
+      setCurrentStep(replayedMoves.length);
+      setLastAnalysis(null);
+      setHintPosition(null);
+      setUsedHintCount(0);
+      setMissedHintCount(0);
+
+      // Store replayed moves for the runGame loop to pick up
+      // We'll store them in a ref so the game loop can use them as starting moves
+      loadedMovesRef.current = replayedMoves;
+
+      // Determine player color from the game
+      // If the last move was black, next is white; use stored playerColor
+      setPlayerColor(playerColor);
+
+      addLog('success', `已加载棋局 #${gameId}: ${game.title || '无标题'} (${replayedMoves.length}步)`);
+    } catch (err) {
+      addLog('error', `加载棋局失败: ${err}`);
+    }
+  }, [token, stopGame, addLog, playerColor]);
+
+  // Delete a saved game
+  const deleteGame = useCallback(async (gameId: number) => {
+    if (!token) return;
+    try {
+      await fetch(`/api/games?id=${gameId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+      setSavedGames(prev => prev.filter(g => g.id !== gameId));
+      addLog('info', `已删除棋局 #${gameId}`);
+    } catch {
+      addLog('error', '删除棋局失败');
+    }
+  }, [token, addLog]);
 
   // Export logs as text file
   const exportLogs = useCallback(() => {
@@ -638,30 +763,48 @@ export default function AITestPage() {
 
               <div className="bg-white rounded-lg shadow p-4">
                 <h2 className="font-semibold text-amber-800 mb-3">控制</h2>
-                <div className="flex gap-2">
-                  {!running ? (
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    {!running ? (
+                      <button
+                        onClick={runGame}
+                        className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+                      >
+                        开始测试
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={togglePause}
+                          className="flex-1 px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 text-sm"
+                        >
+                          {paused ? '继续' : '暂停'}
+                        </button>
+                        <button
+                          onClick={stopGame}
+                          className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
+                        >
+                          停止
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
                     <button
-                      onClick={runGame}
-                      className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+                      onClick={() => { setShowLoadDialog(true); loadGamesList(); }}
+                      disabled={running}
+                      className="flex-1 px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      开始测试
+                      加载棋局
                     </button>
-                  ) : (
-                    <>
-                      <button
-                        onClick={togglePause}
-                        className="flex-1 px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 text-sm"
-                      >
-                        {paused ? '继续' : '暂停'}
-                      </button>
-                      <button
-                        onClick={stopGame}
-                        className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
-                      >
-                        停止
-                      </button>
-                    </>
-                  )}
+                    <button
+                      onClick={resetAITest}
+                      disabled={running}
+                      className="flex-1 px-3 py-1.5 bg-gray-600 text-white rounded-lg hover:bg-gray-700 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      重新开始
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -705,10 +848,12 @@ export default function AITestPage() {
                         <span className="text-gray-600">黑方胜率</span>
                         <span className="font-mono">{lastAnalysis.winRate.toFixed(1)}%</span>
                       </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-600">黑方领先</span>
-                        <span className="font-mono">{lastAnalysis.scoreLead.toFixed(1)}目</span>
-                      </div>
+                      {Math.abs(lastAnalysis.scoreLead) > 0.05 && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">黑方领先</span>
+                          <span className="font-mono">{lastAnalysis.scoreLead.toFixed(1)}目</span>
+                        </div>
+                      )}
                       {lastAnalysis.actualVisits && (
                         <div className="flex justify-between">
                           <span className="text-gray-600">搜索量</span>
@@ -720,7 +865,7 @@ export default function AITestPage() {
                           <span className="text-gray-600 text-xs">推荐:</span>
                           <div className="text-xs font-mono text-blue-600">
                             {lastAnalysis.bestMoves.slice(0, 5).map((bm, i) => (
-                              <span key={i} className="mr-2">{bm.move}(wr:{bm.winrate.toFixed(0)}%)</span>
+                              <span key={i} className="mr-2">{bm.move}(黑胜率:{bm.winrate.toFixed(0)}%)</span>
                             ))}
                           </div>
                         </div>
@@ -852,6 +997,45 @@ export default function AITestPage() {
                   </div>
                 ))}
                 <div ref={logsEndRef} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Load Game Dialog */}
+        {showLoadDialog && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[70vh] flex flex-col">
+              <div className="flex items-center justify-between p-4 border-b">
+                <h3 className="font-semibold text-amber-800">加载棋局</h3>
+                <button onClick={() => setShowLoadDialog(false)} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {savedGames.length === 0 ? (
+                  <p className="text-center text-gray-400 text-sm py-8">没有已保存的棋局</p>
+                ) : (
+                  <div className="space-y-2">
+                    {savedGames.map(g => (
+                      <div key={g.id} className="flex items-center justify-between p-2 border rounded-lg hover:bg-gray-50">
+                        <button
+                          onClick={() => loadGame(g.id)}
+                          className="flex-1 text-left"
+                        >
+                          <p className="text-sm font-medium">{g.title || `棋局 #${g.id}`}</p>
+                          <p className="text-xs text-gray-500">
+                            {g.board_size}路 {g.engine} {g.status === 'finished' ? '已结束' : '进行中'} {g.created_at ? new Date(g.created_at).toLocaleDateString('zh-CN') : ''}
+                          </p>
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); deleteGame(g.id); }}
+                          className="text-red-400 hover:text-red-600 text-xs ml-2"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
