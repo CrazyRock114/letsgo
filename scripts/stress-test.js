@@ -138,6 +138,7 @@ async function runUser(engine, userId) {
   const userDelays = { count: 0 }; // 该用户延迟次数
   const userIdx = engine === 'gnugo' ? userId : userId + 100; // 确保不重叠
 
+  let gameStarted = false;
   try {
     // 注册
     const rid = Math.random().toString(36).slice(2, 5);
@@ -157,6 +158,7 @@ async function runUser(engine, userId) {
 
     stats[engine].users++;
     activeGames++;
+    gameStarted = true;
     console.log(`${tag} ✓ 已注册，开始对弈`);
 
     // 创建棋局
@@ -281,7 +283,7 @@ async function runUser(engine, userId) {
     stats[engine].errors++;
     console.log(`${tag} 异常退出: ${e.message}`);
   } finally {
-    activeGames--;
+    if (gameStarted) activeGames--;
     completedUsers++;
   }
 }
