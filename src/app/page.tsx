@@ -319,6 +319,7 @@ export default function GoGamePage() {
   const [isChatStreaming, setIsChatStreaming] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const commentaryScrollRef = useRef<HTMLDivElement>(null);
+  const teachScrollRef = useRef<HTMLDivElement>(null);
 
   // 解说区自动滚到底部（仅滚动ScrollArea内部，不影响页面）
   useEffect(() => {
@@ -326,6 +327,13 @@ export default function GoGamePage() {
       commentaryScrollRef.current.scrollTop = commentaryScrollRef.current.scrollHeight;
     }
   }, [commentaries, streamingText]);
+
+  // 教学区自动滚到底部
+  useEffect(() => {
+    if (teachScrollRef.current) {
+      teachScrollRef.current.scrollTop = teachScrollRef.current.scrollHeight;
+    }
+  }, [teachHistory, teachingMessage, isTeachStreaming]);
 
   // ===== 弹窗 =====
   const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -2205,7 +2213,7 @@ export default function GoGamePage() {
                 <span className="text-xs opacity-80">{teachUsedCount}/{MAX_TEACH_PER_GAME} · {TEACH_COST}积分</span>
               </Button>
               {(teachHistory.length > 0 || teachingMessage || isTeachStreaming) && (
-                <div className="mt-2 max-h-48 overflow-y-auto pr-1 space-y-2">
+                <div ref={teachScrollRef} className="mt-2 max-h-48 overflow-y-auto pr-1 space-y-2">
                   {teachHistory.map((entry, idx) => (
                     <div key={idx} className={`space-y-0.5 ${entry.faded ? 'opacity-40' : ''}`}>
                       {entry.hintPosition && (
