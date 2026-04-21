@@ -299,7 +299,8 @@ export default function GoGamePage() {
   const teachAbortRef = useRef<AbortController | null>(null); // 教学请求的中断控制器
   const [teachUsedCount, setTeachUsedCount] = useState(0);
   const [autoSave, setAutoSave] = useState(false);
-  const [autoSaving, setAutoSaving] = useState(false); // 本局已使用提示与教学次数
+  const [autoSaving, setAutoSaving] = useState(false);
+  const [commentaryVersion, setCommentaryVersion] = useState(0); // 解说完成时递增，触发自动保存
   const MAX_TEACH_PER_GAME = 10; // 每局最多使用次数
   const TEACH_COST = 20; // 每次消耗积分
 
@@ -496,6 +497,7 @@ export default function GoGamePage() {
             next.sort((a, b) => a.moveIndex - b.moveIndex);
             return next;
           });
+          setCommentaryVersion(v => v + 1); // 触发自动保存
         }
       } else {
         // API 返回非200，使用兜底解说（epoch匹配时才保存）
@@ -512,6 +514,7 @@ export default function GoGamePage() {
             next.sort((a, b) => a.moveIndex - b.moveIndex);
             return next;
           });
+          setCommentaryVersion(v => v + 1); // 触发自动保存
         }
       }
     } catch (err) {
@@ -806,12 +809,13 @@ export default function GoGamePage() {
     setAutoSaving(false);
   }, [autoSave, user, autoSaving, isReplayMode, token, savedGameId, boardSize, difficulty, engine, history, commentaries, teachHistory, board, score, saveTitle, deductPoints]);
 
-  // AI落子完成后触发自动保存
+  // AI落子完成后触发自动保存（延迟2秒等解说完成）
   useEffect(() => {
     if (autoSave && !isAIThinking && history.length > 0 && currentPlayer === playerColor && !gameEnded) {
-      autoSaveGame();
+      const timer = setTimeout(() => { autoSaveGame(); }, 2000);
+      return () => clearTimeout(timer);
     }
-  }, [autoSave, isAIThinking, history.length, currentPlayer, playerColor, gameEnded]);
+  }, [autoSave, isAIThinking, history.length, currentPlayer, playerColor, gameEnded, commentaryVersion]);
 
 
   // ===== 悔棋 =====
@@ -2178,7 +2182,7 @@ export default function GoGamePage() {
               >
                 <Lightbulb className="w-4 h-4" /> 提示与教学
                 {isTeachStreaming && <Spinner className="w-3 h-3 ml-1" />}
-                <span className="text-xs opacity-80">{teachUsedCount}/{MAX_TEACH_PER_GAME}</span>
+                <span className="text-xs opacity-80">{teachUsedCount}/{MAX_TEACH_PER_GAME} · {TEACH_COST}积分</span>
               </Button>
               {teachHistory.length > 0 && (
                 <div className="mt-2 space-y-2">
