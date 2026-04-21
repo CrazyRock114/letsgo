@@ -38,6 +38,35 @@ export async function POST(request: NextRequest) {
     const { id } = body;
     const client = getSupabaseClient();
 
+    // 自动保存扣除1积分（仅autoSave标记时扣除，首次创建不扣）
+    if (body.autoSave && id) {
+      try {
+        const AUTO_SAVE_COST = 1;
+        const { data: saveUserData } = await client
+          .from('letsgo_users')
+          .select('points')
+          .eq('id', user.userId)
+          .single();
+        if (saveUserData && saveUserData.points >= AUTO_SAVE_COST) {
+          const { error: deductErr } = await client
+            .from('letsgo_users')
+            .update({ points: saveUserData.points - AUTO_SAVE_COST, updated_at: new Date().toISOString() })
+            .eq('id', user.userId)
+            .gte('points', AUTO_SAVE_COST);
+          if (!deductErr) {
+            await client.from('letsgo_point_transactions').insert({
+              user_id: user.userId,
+              amount: -AUTO_SAVE_COST,
+              type: 'auto_save',
+              description: '自动保存棋局',
+            });
+          }
+        }
+      } catch {
+        // 积分扣除失败不影响保存
+      }
+    }
+
     if (id) {
       // 更新已有棋局 - 验证所有权
       const { data: existing } = await client

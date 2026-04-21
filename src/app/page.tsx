@@ -155,6 +155,9 @@ export default function GoGamePage() {
   const [lastMove, setLastMove] = useState<Position | null>(null);
   const [showHint, setShowHint] = useState<Position | null>(null);
 
+  // 同步history长度到ref，供useCallback闭包使用最新值
+  useEffect(() => { historyLengthRef.current = history.length; }, [history.length]);
+
   // 每次落子历史变化时，强制同步lastMove标记到最新一手（防止残留）
   useEffect(() => {
     if (history.length > 0) {
@@ -175,6 +178,8 @@ export default function GoGamePage() {
   const commentaryAbortRef = useRef<AbortController | null>(null);
   // 防止handleMove重入（快速点击时闭包值可能过期）
   const isProcessingMoveRef = useRef(false);
+  // 追踪最新的history长度，避免useCallback闭包中的history过时
+  const historyLengthRef = useRef(0);
 
   // AI思考时轮询队列位置
   useEffect(() => {
@@ -655,6 +660,10 @@ export default function GoGamePage() {
               if (data.pointsUsed > 0) {
                 deductPoints(data.pointsUsed);
               }
+              // 如果genmove返回了analysis数据，保存供解说/教学使用
+              if (data.analysis) {
+                latestAnalysisRef.current = data.analysis;
+              }
               // queuePosition 由轮询机制实时更新，不再从响应中读取
               if (data.move && isValidMove(newBoard, data.move.row, data.move.col, aiColor)) {
                 aiMove = data.move;
@@ -795,6 +804,7 @@ export default function GoGamePage() {
           white_score: score.white,
           status: 'playing',
           title: saveTitle || `${boardSize}路 ${difficulty === 'easy' ? '初级' : difficulty === 'medium' ? '中级' : '高级'} ${engine === 'katago' ? 'KataGo' : engine === 'gnugo' ? 'GnuGo' : '本地AI'} ${new Date().toLocaleDateString('zh-CN')}`,
+          autoSave: true, // 标记为自动保存，后端扣1积分
         }),
       });
       const data = await res.json();
@@ -809,13 +819,14 @@ export default function GoGamePage() {
     setAutoSaving(false);
   }, [autoSave, user, autoSaving, isReplayMode, token, savedGameId, boardSize, difficulty, engine, history, commentaries, teachHistory, board, score, saveTitle, deductPoints]);
 
-  // AI落子完成后触发自动保存（延迟2秒等解说完成）
+  // AI落子完成后触发自动保存（等解说流式完成后再保存）
   useEffect(() => {
-    if (autoSave && !isAIThinking && history.length > 0 && currentPlayer === playerColor && !gameEnded) {
-      const timer = setTimeout(() => { autoSaveGame(); }, 2000);
+    // 条件：自动保存开启 + AI已思考完 + 有落子历史 + 轮到玩家 + 游戏未结束 + 解说已结束
+    if (autoSave && !isAIThinking && history.length > 0 && currentPlayer === playerColor && !gameEnded && !isCommentaryStreaming) {
+      const timer = setTimeout(() => { autoSaveGame(); }, 1000);
       return () => clearTimeout(timer);
     }
-  }, [autoSave, isAIThinking, history.length, currentPlayer, playerColor, gameEnded, commentaryVersion]);
+  }, [autoSave, isAIThinking, history.length, currentPlayer, playerColor, gameEnded, commentaryVersion, isCommentaryStreaming]);
 
 
   // ===== 悔棋 =====
@@ -1118,12 +1129,12 @@ export default function GoGamePage() {
     setIsTeachStreaming(true);
     setTeachingMessage('');
     setTeachHistory(prev => prev.map(e => ({ ...e, faded: true })));
-    setTeachMoveIndex(history.length); // 记录教学针对的手数
+    setTeachMoveIndex(historyLengthRef.current); // 记录教学针对的手数（使用ref避免闭包过时）
 
     // 创建本轮教学专用的AbortController
     const thisAbortController = new AbortController();
     teachAbortRef.current = thisAbortController;
-    const teachEpoch = history.length; // 记录当前手数，用于判断教学是否已过时
+    const teachEpoch = historyLengthRef.current; // 记录当前手数，用于判断教学是否已过时
 
     try {
       // 第一步：请求KataGo分析，用分析结果的bestMoves作为提示点位
@@ -1248,7 +1259,7 @@ export default function GoGamePage() {
         // 保存到教学历史
         if (!thisAbortController.signal.aborted) {
           const entry: TeachEntry = {
-            moveIndex: teachMoveIndex ?? history.length,
+            moveIndex: teachMoveIndex ?? historyLengthRef.current,
             hintPosition: hintPosition ?? null,
             content: finalText,
             faded: false,
@@ -1261,7 +1272,7 @@ export default function GoGamePage() {
           const fallbackMsg = '小围棋暂时无法思考，请稍后再试。';
           setTeachingMessage(fallbackMsg);
           const entry: TeachEntry = {
-            moveIndex: teachMoveIndex ?? history.length,
+            moveIndex: teachMoveIndex ?? historyLengthRef.current,
             hintPosition: hintPosition ?? null,
             content: fallbackMsg,
             faded: false,
@@ -1440,6 +1451,7 @@ export default function GoGamePage() {
       setCommentaries(game.commentaries || []);
       setTeachHistory(((game as unknown as Record<string, unknown>).teach_history || []) as TeachEntry[]);
       setSavedGameId(game.id ?? null);
+      setSaveTitle((game as unknown as Record<string, unknown>).title as string || ''); // 载入棋局名称
       setIsReplayMode(true);
       setReplayIndex(0);
 

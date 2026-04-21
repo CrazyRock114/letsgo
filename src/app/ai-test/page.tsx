@@ -86,14 +86,16 @@ export default function AITestPage() {
     }
     setLoginError('');
     try {
-      let res = await fetch('/api/auth/register', {
+      // 先尝试登录（账号可能已存在），登录失败再尝试注册
+      let res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nickname: AI_TEST_USER, password }),
       });
       let data = await res.json();
-      if (!res.ok && data.error?.includes('已存在')) {
-        res = await fetch('/api/auth/login', {
+      if (!data.token) {
+        // 登录失败，尝试注册
+        res = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ nickname: AI_TEST_USER, password }),
@@ -162,20 +164,21 @@ export default function AITestPage() {
     }
   }, []);
 
-  // Get AI move from engine
+  // Get AI move from engine (optionally with analysis in one request)
   const getAIMove = useCallback(async (
     moves: Array<{ row: number; col: number; color: Stone }>,
     bSize: number,
     diff: Difficulty,
     eng: EngineId,
-    tok: string
+    tok: string,
+    withAnalysis: boolean = false
   ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; analysis?: AnalysisData | null; error?: string }> => {
     try {
       const res = await fetch('/api/go-engine', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
-        body: JSON.stringify({ boardSize: bSize, difficulty: diff, engine: eng, moves: movesToApi(moves) }),
-        signal: AbortSignal.timeout(120000),
+        body: JSON.stringify({ boardSize: bSize, difficulty: diff, engine: eng, moves: movesToApi(moves), withAnalysis }),
+        signal: AbortSignal.timeout(180000),
       });
       const data = await res.json();
       if (data.error) return { move: null, error: data.error };
@@ -196,15 +199,21 @@ export default function AITestPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
         body: JSON.stringify({ action: 'analyze', boardSize: bSize, moves: movesToApi(moves), aiColor: 2, isAITest: true }),
-        signal: AbortSignal.timeout(60000),
+        signal: AbortSignal.timeout(120000),
       });
       const data = await res.json();
-      if (data.analysis) return data.analysis;
+      if (data.analysis) {
+        addLog('info', `  分析完成: winRate=${data.analysis.winRate?.toFixed(1) ?? '?'}, scoreLead=${data.analysis.scoreLead?.toFixed(1) ?? '?'}, bestMoves=${data.analysis.bestMoves?.slice(0,3).map((m: {move: string}) => m.move).join(',') ?? 'none'}`);
+        return data.analysis;
+      }
       if (data.queueBusy) {
         addLog('warn', `分析排队拒绝: 队列${data.queueLength}人`);
-      }
-      if (data.insufficientPoints) {
+      } else if (data.insufficientPoints) {
         addLog('warn', `积分不足，无法获取分析`);
+      } else if (data.error) {
+        addLog('warn', `分析失败: ${data.error}`);
+      } else {
+        addLog('warn', `分析返回空结果 (HTTP ${res.status})`);
       }
       return null;
     } catch (err) {
@@ -313,9 +322,13 @@ export default function AITestPage() {
         if (isPlayerTurn) {
           addLog('info', `第${stepCount + 1}步: 玩家(${playerColor === 'black' ? '黑' : '白'})思考中...`);
 
-          // Get analysis for hint
+          // Get analysis for hint (only if not already available from previous AI move)
           let hint: { row: number; col: number } | null = null;
-          const analysis = await getAnalysis(moves, boardSize, token);
+          let analysis: AnalysisData | null = lastAnalysis;
+          if (!analysis) {
+            // 首次或之前无分析数据，单独获取
+            analysis = await getAnalysis(moves, boardSize, token);
+          }
           if (analysis) {
             setLastAnalysis(analysis);
             hint = getHintFromAnalysis(analysis, boardSize);
@@ -364,7 +377,8 @@ export default function AITestPage() {
           }
         } else {
           addLog('info', `第${stepCount + 1}步: AI(${aiColor === 'black' ? '黑' : '白'})思考中...`);
-          const aiResult = await getAIMove(moves, boardSize, difficulty, engine, token);
+          // AI落子时同时获取analysis（合并为一次请求，避免两次排队）
+          const aiResult = await getAIMove(moves, boardSize, difficulty, engine, token, true);
           if (abortController.signal.aborted) break;
 
           if (aiResult.error) {
@@ -451,7 +465,7 @@ export default function AITestPage() {
 
     setRunning(false);
     addLog('info', `测试已停止，共${gameCount}局${totalStepCount}步`);
-  }, [token, userId, boardSize, difficulty, engine, playerColor, stepInterval, addLog, getAIMove, getAnalysis, getHintFromAnalysis, findFallbackMove, saveGameToDB]);
+  }, [token, userId, boardSize, difficulty, engine, playerColor, stepInterval, addLog, getAIMove, getAnalysis, getHintFromAnalysis, findFallbackMove, saveGameToDB, lastAnalysis]);
 
   const stopGame = useCallback(() => {
     runningRef.current = false;
