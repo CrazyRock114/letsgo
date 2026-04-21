@@ -87,30 +87,44 @@ export default function AITestPage() {
     setLoginError('');
     try {
       // 先尝试登录（账号可能已存在），登录失败再尝试注册
-      let res = await fetch('/api/auth/login', {
+      addLog('info', `尝试登录 ${AI_TEST_USER}...`);
+      const loginRes = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nickname: AI_TEST_USER, password }),
       });
-      let data = await res.json();
-      if (!data.token) {
+      const loginData = await loginRes.json();
+      addLog('info', `登录响应: status=${loginRes.status}, hasToken=${!!loginData.token}, error=${loginData.error || '无'}`);
+
+      if (loginData.token) {
+        // 登录成功
+        setToken(loginData.token);
+        setUserId(loginData.user.id);
+        setPoints(loginData.user.points);
+        setLoggedIn(true);
+        addLog('success', `登录成功，积分: ${loginData.user.points}`);
+      } else {
         // 登录失败，尝试注册
-        res = await fetch('/api/auth/register', {
+        addLog('info', `登录失败(${loginData.error || '未知'})，尝试注册...`);
+        const regRes = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ nickname: AI_TEST_USER, password }),
         });
-        data = await res.json();
-      }
-      if (data.token) {
-        setToken(data.token);
-        setUserId(data.user.id);
-        setPoints(data.user.points);
-        setLoggedIn(true);
-        addLog('success', `登录成功，积分: ${data.user.points}`);
-      } else {
-        setLoginError(data.error || '登录失败');
-        addLog('error', `登录失败: ${data.error}`);
+        const regData = await regRes.json();
+        addLog('info', `注册响应: status=${regRes.status}, hasToken=${!!regData.token}, error=${regData.error || '无'}`);
+
+        if (regData.token) {
+          setToken(regData.token);
+          setUserId(regData.user.id);
+          setPoints(regData.user.points);
+          setLoggedIn(true);
+          addLog('success', `注册并登录成功，积分: ${regData.user.points}`);
+        } else {
+          const errorMsg = regData.error || '登录失败';
+          setLoginError(errorMsg);
+          addLog('error', `登录失败: ${errorMsg}`);
+        }
       }
     } catch (err) {
       setLoginError('登录异常');
