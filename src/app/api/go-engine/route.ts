@@ -156,7 +156,7 @@ const activeSessions: Map<string, ActiveSession> = new Map();
 // 分析引擎配置（可在monitor页面动态调整）
 // 0 = kata-raw-nn（瞬时，纯神经网络直出）
 // >0 = kata-analyze（MCTS搜索N秒后用GTP stop中断）
-let analysisSeconds = 0;
+let analysisSeconds = 3;
 let currentModelPath: string | null = null;
 
 // 获取所有可用的KataGo模型列表
@@ -355,9 +355,9 @@ function getKomi(boardSize: number): number {
 
 // KataGo难度映射 - 通过maxVisits控制
 function getKataGoVisits(difficulty: string): number {
-  if (difficulty === "easy") return 15;
-  if (difficulty === "medium") return 50;
-  return 150;
+  if (difficulty === "easy") return 300;
+  if (difficulty === "medium") return 1500;
+  return 5000;
 }
 
 // GnuGo难度映射
@@ -445,7 +445,6 @@ class PersistentKataGo {
       "gtp",
       "-model", model,
       "-config", KATAGO_CONFIG,
-      "-override-config", "maxVisits=50",  // 默认中等难度，后续动态调整
     ], {
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -793,7 +792,7 @@ async function getKataGoAnalysis(
       console.log(`[kata-analyze] 开始分析, ${seconds}秒后stop`);
 
       // 发送kata-analyze命令（超时设长，实际由stop控制终止）
-      const analyzePromise = persistentKataGo.sendCommand('kata-analyze 10', durationMs + 30000);
+      const analyzePromise = persistentKataGo.sendCommand('kata-analyze 1', durationMs + 30000);
 
       // 定时发送stop中断分析
       const stopTimer = setTimeout(() => {
@@ -959,6 +958,7 @@ async function getGnuGoMove(
   const gtpCommands: string[] = [
     `boardsize ${boardSize}`,
     "clear_board",
+    `komi ${komi}`,
   ];
 
   if (moves && Array.isArray(moves)) {

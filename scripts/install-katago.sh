@@ -127,6 +127,7 @@ cat >> "${KATAGO_CFG}" << 'CPUCFG'
 # ===== 小围棋乐园 CPU 专用覆盖配置 =====
 numSearchThreads = 2
 nnMaxBatchSize = 8
+maxVisits = 1000
 logAllGTPCommunication = false
 logSearchInfo = false
 CPUCFG

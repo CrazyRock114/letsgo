@@ -49,6 +49,7 @@ multiStoneSuicideLegal = false
 hasResignedRule = true
 numSearchThreads = 2
 nnMaxBatchSize = 8
+maxVisits = 1000
 logAllGTPCommunication = false
 logSearchInfo = false
 CPUCFG
