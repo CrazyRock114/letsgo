@@ -5,7 +5,7 @@ import { verifyToken } from '@/lib/auth';
 export async function GET(request: NextRequest) {
   try {
     const authHeader = request.headers.get('Authorization');
-    const ip = request.headers.get('x-forwarded-for') || request.ip || 'unknown';
+    const ip = request.headers.get('x-forwarded-for') || 'unknown';
     const ua = request.headers.get('user-agent') || 'unknown';
     if (!authHeader?.startsWith('Bearer ')) {
       return NextResponse.json({ error: '未登录' }, { status: 401 });
