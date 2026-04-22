@@ -487,9 +487,37 @@ class PersistentKataGo {
     });
 
     // 等待进程就绪：发送name命令，成功则表示GTP握手完成
-    // 首次启动需要加载模型，可能较慢（大模型需要30秒+）
+    // 注意：这里不能用 this.sendCommand，因为它会调用 ensureReady() 导致死锁
+    // （ensureReady 等待 startProcess 完成，startProcess 等待 sendCommand 完成）
     try {
-      const nameResp = await this.sendCommand("name", 120000);
+      const nameResp = await new Promise<string>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('KataGo name command timeout (120s)'));
+        }, 120000);
+
+        const onData = (data: Buffer) => {
+          if (this.procEpoch !== currentEpoch) return;
+          this.buffer += data.toString();
+          // 检查是否有完整的 GTP 响应
+          const endIdx = this.buffer.indexOf('\n\n');
+          if (endIdx !== -1) {
+            const response = this.buffer.substring(0, endIdx).trim();
+            this.buffer = this.buffer.substring(endIdx + 2);
+            // 只处理 name 命令的响应（以 = 开头）
+            if (response.startsWith('=') || response.startsWith('?')) {
+              clearTimeout(timeout);
+              this.proc?.stdout?.off('data', onData);
+              resolve(response);
+            } else {
+              // 不是 name 的响应，可能是启动时的其他输出，继续等待
+              console.log(`[KataGo] startup output: ${response.substring(0, 100)}`);
+            }
+          }
+        };
+
+        this.proc?.stdout?.on('data', onData);
+        this.proc?.stdin?.write('name\n');
+      });
       console.log(`[KataGo] Process ready: ${nameResp}`);
     } catch (err) {
       this.killProcess();
@@ -675,6 +703,7 @@ async function getKataGoMove(
 ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string; engineError?: boolean }> {
   const komi = getKomi(boardSize);
   const maxVisits = getKataGoVisits(difficulty);
+  console.log(`[KataGo] getKataGoMove START: board=${boardSize}, diff=${difficulty}, maxVisits=${maxVisits}, aiColor=${aiColor}, moves=${moves.length}`);
 
   // 构建GTP命令序列：重置棋盘 → 重放落子 → 生成AI落子
   const gtpCommands: string[] = [
@@ -695,12 +724,14 @@ async function getKataGoMove(
 
   // 请求AI落子
   gtpCommands.push(`genmove ${aiColor === 'black' ? 'B' : 'W'}`);
+  console.log(`[KataGo] GTP commands: ${JSON.stringify(gtpCommands)}`);
 
   // 彻底清理残留数据（stop命令后可能有残余输出，等待并消耗干净）
   await persistentKataGo.thoroughFlush();
-  
+
   // 发送命令，单条超时60秒（CPU竞争时可能较慢）
   const responses = await persistentKataGo.sendCommands(gtpCommands, 60000);
+  console.log(`[KataGo] GTP responses count=${responses.length}, lastResponse="${responses[responses.length - 1]}"`);
 
   // 解析genmove响应
   const lastResponse = responses[responses.length - 1];
@@ -714,19 +745,23 @@ async function getKataGoMove(
   const moveStr = moveMatch[1].toUpperCase();
 
   if (moveStr === "PASS") {
+    console.log(`[KataGo] PASS`);
     return { move: null, pass: true, engine: "katago" };
   }
 
   if (moveStr === "RESIGN") {
+    console.log(`[KataGo] RESIGN`);
     return { move: null, resign: true, engine: "katago" };
   }
 
   const position = gtpToBoardCoord(moveStr, boardSize);
 
   if (!position) {
+    console.error(`[KataGo] Cannot parse coord: ${moveStr}`);
     throw new Error("无法解析KataGo落子坐标");
   }
 
+  console.log(`[KataGo] MOVE: ${moveStr} -> (${position.row},${position.col})`);
   return { move: position, engine: "katago" };
 }
 
@@ -941,6 +976,7 @@ async function getGnuGoMove(
 ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engineError?: boolean; engine: string }> {
   const komi = getKomi(boardSize);
   const gnugoLevel = getGnuGoLevel(difficulty);
+  console.log(`[GnuGo] getGnuGoMove START: board=${boardSize}, diff=${difficulty}, level=${gnugoLevel}, aiColor=${aiColor}, moves=${moves.length}`);
 
   const gnugoPath = findGnuGoPath();
   if (!gnugoPath) throw new Error("GnuGo not found");
@@ -970,6 +1006,7 @@ async function getGnuGoMove(
   }
 
   gtpCommands.push(`genmove ${aiColor === 'black' ? 'B' : 'W'}`);
+  console.log(`[GnuGo] GTP commands: ${JSON.stringify(gtpCommands)}`);
 
   // GnuGo用一次性命令发送方式
   try {
@@ -978,11 +1015,13 @@ async function getGnuGoMove(
       const resp = await sendOneShotGTP(proc, cmd, 30000);
       results.push(resp);
     }
+    console.log(`[GnuGo] GTP responses count=${results.length}, lastResponse="${results[results.length - 1]}"`);
 
     const lastResponse = results[results.length - 1];
     const moveMatch = lastResponse.match(/=\s*([A-HJ-T]\d+|PASS|resign)/i);
 
     if (!moveMatch) {
+      console.warn(`[GnuGo] Unexpected genmove response: "${lastResponse}"`);
       proc.stdin?.write("quit\n");
       proc.kill();
       return { move: null, pass: false, engineError: true, engine: "gnugo" };
@@ -991,12 +1030,14 @@ async function getGnuGoMove(
     const moveStr = moveMatch[1].toUpperCase();
 
     if (moveStr === "PASS") {
+      console.log(`[GnuGo] PASS`);
       proc.stdin?.write("quit\n");
       proc.kill();
       return { move: null, pass: true, engine: "gnugo" };
     }
 
     if (moveStr === "RESIGN") {
+      console.log(`[GnuGo] RESIGN`);
       proc.stdin?.write("quit\n");
       proc.kill();
       return { move: null, resign: true, engine: "gnugo" };
@@ -1007,11 +1048,14 @@ async function getGnuGoMove(
     proc.kill();
 
     if (!position) {
+      console.error(`[GnuGo] Cannot parse coord: ${moveStr}`);
       throw new Error("无法解析GnuGo落子坐标");
     }
 
+    console.log(`[GnuGo] MOVE: ${moveStr} -> (${position.row},${position.col})`);
     return { move: position, engine: "gnugo" };
   } catch (gtpError) {
+    console.error(`[GnuGo] GTP error:`, gtpError instanceof Error ? gtpError.message : String(gtpError));
     proc.kill();
     throw gtpError;
   }
@@ -1233,31 +1277,40 @@ class EngineQueue {
         let result: EngineQueueResult;
 
         if (entry.engine === "katago" && isKataGoAvailable()) {
+          console.log(`[engine-queue] Executing KataGo: ${entry.id}, board=${entry.boardSize}, diff=${entry.difficulty}, moves=${entry.moves.length}`);
           try {
             const moveResult = await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty, entry.aiColor);
             result = { ...moveResult };
+            console.log(`[engine-queue] KataGo success: ${entry.id}, move=${result.move ? `(${result.move.row},${result.move.col})` : result.pass ? 'PASS' : 'null'}, engineError=${result.engineError}`);
           } catch (katagoError) {
+            const errMsg = katagoError instanceof Error ? katagoError.message : String(katagoError);
+            console.error(`[engine-queue] KataGo FAILED: ${entry.id}, error=${errMsg}`);
             persistentKataGo.resetCrashState();
             result = {
               move: null, engine: "katago", engineError: true,
-              errorDetail: katagoError instanceof Error ? katagoError.message : String(katagoError),
+              errorDetail: errMsg,
             };
           }
         } else if (entry.engine === "gnugo" && isGnuGoAvailable()) {
+          console.log(`[engine-queue] Executing GnuGo: ${entry.id}, board=${entry.boardSize}, diff=${entry.difficulty}, moves=${entry.moves.length}`);
           try {
             const moveResult = await getGnuGoMove(entry.boardSize, entry.moves, entry.difficulty, entry.aiColor);
             result = { ...moveResult };
+            console.log(`[engine-queue] GnuGo success: ${entry.id}, move=${result.move ? `(${result.move.row},${result.move.col})` : result.pass ? 'PASS' : 'null'}, engineError=${result.engineError}`);
           } catch (gtpError) {
+            const errMsg = gtpError instanceof Error ? gtpError.message : String(gtpError);
+            console.error(`[engine-queue] GnuGo FAILED: ${entry.id}, error=${errMsg}`);
             result = {
               move: null, engine: "gnugo", engineError: true,
-              errorDetail: gtpError instanceof Error ? gtpError.message : String(gtpError),
+              errorDetail: errMsg,
             };
           }
         } else {
+          console.log(`[engine-queue] Engine not available: ${entry.id}, engine=${entry.engine}, katagoAvail=${isKataGoAvailable()}, gnugoAvail=${isGnuGoAvailable()}`);
           result = { move: null, engine: entry.engine || "local", noEngine: true };
         }
 
-        console.log(`[engine-queue] Completed: ${entry.id}, engine=${result.engine}`);
+        console.log(`[engine-queue] Completed: ${entry.id}, engine=${result.engine}, hasMove=${!!result.move}, pass=${!!result.pass}, error=${result.engineError || false}`);
         entry.resolve(result);
       }
     } catch (error) {

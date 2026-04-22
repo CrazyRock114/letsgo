@@ -1608,17 +1608,22 @@ export default function GoGamePage() {
 
             if (engine !== 'local') {
               try {
+                console.log(`[frontend] Sending engine request: engine=${engine}, difficulty=${difficulty}, moves=${moveHistoryForEngine.length}`);
                 const res = await fetch('/api/go-engine', {
                   method: 'POST',
                   signal: createAbortableFetch(),
                   headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
                   body: JSON.stringify({ boardSize, difficulty, engine, moves: moveHistoryForEngine, aiColor: aiColorCalc }),
                 });
+                console.log(`[frontend] Engine response status: ${res.status}`);
                 const data = await res.json();
+                console.log(`[frontend] Engine response data:`, JSON.stringify(data));
                 if (data.move && isValidMove(newBoard, data.move.row, data.move.col, aiColorCalc)) {
                   aiMove = data.move;
                   usedEngine = true;
+                  console.log(`[frontend] Engine move accepted: (${aiMove.row},${aiMove.col})`);
                 } else if (data.pass) {
+                  console.log(`[frontend] Engine pass`);
                   // AI停手
                   setConsecutivePasses(prev => {
                     const newPasses = prev + 1;
@@ -1635,8 +1640,11 @@ export default function GoGamePage() {
                   setIsAIThinking(false);
     setQueuePosition(0);
                   return;
+                } else {
+                  console.warn(`[frontend] Engine returned invalid/null move. data:`, JSON.stringify(data));
                 }
-              } catch {
+              } catch (err) {
+                console.warn(`[frontend] Engine fetch failed:`, err instanceof Error ? err.message : String(err));
                 // 引擎失败，用本地AI
               }
             }
