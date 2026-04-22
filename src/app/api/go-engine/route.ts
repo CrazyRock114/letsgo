@@ -357,7 +357,7 @@ function getKomi(boardSize: number): number {
 function getKataGoVisits(difficulty: string): number {
   if (difficulty === "easy") return 15;
   if (difficulty === "medium") return 50;
-  return 150;
+  return 500;
 }
 
 // GnuGo难度映射
