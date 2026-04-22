@@ -27,7 +27,13 @@ function parseTokenPayload(token: string): { userId?: number; nickname?: string;
   try {
     const parts = token.split('.');
     if (parts.length !== 3) return null;
-    const payload = JSON.parse(atob(parts[1]));
+    // base64url → base64: 替换 - → +, _ → /
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(base64));
+    // 确保 userId 是数字（避免字符串/数字类型不一致导致误判）
+    if (payload.userId !== undefined) {
+      payload.userId = Number(payload.userId);
+    }
     return payload;
   } catch {
     return null;
@@ -52,6 +58,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const savedUser = JSON.parse(savedUserStr) as UserInfo;
         const payload = parseTokenPayload(savedToken);
         console.log(`[auth] init: parsed token payload=`, payload);
+        console.log(`[auth] init: savedUser=`, JSON.stringify(savedUser));
 
         // 拒绝旧格式 token（缺少 isAdmin 字段 = 可能是残留的旧 token）
         if (payload && payload.isAdmin === undefined) {
@@ -64,8 +71,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // 一致性验证：token 中的 userId 必须与 savedUser 中的 userId 匹配
         else if (payload && payload.userId !== undefined && payload.userId !== savedUser.userId) {
           console.error(
-            `[auth] init: MISMATCH DETECTED: token.userId=${payload.userId} (${payload.nickname}) ` +
-            `!= savedUser.userId=${savedUser.userId} (${savedUser.nickname}). Clearing auth state.`
+            `[auth] init: MISMATCH DETECTED: token.userId=${payload.userId} (type=${typeof payload.userId}) ` +
+            `!= savedUser.userId=${savedUser.userId} (type=${typeof savedUser.userId}). Clearing auth state.`
           );
           localStorage.removeItem('letsgo_token');
           localStorage.removeItem('letsgo_user');
@@ -81,6 +88,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         localStorage.removeItem('letsgo_token');
         localStorage.removeItem('letsgo_user');
       }
+    } else {
+      console.log('[auth] init: No saved session found');
     }
     setLoading(false);
   }, []);
@@ -97,15 +106,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!token) return;
     try {
       const payload = parseTokenPayload(token);
-      console.log(`[auth] refreshUser: calling /api/auth/me, tokenUserId=${payload?.userId}, tokenNick=${payload?.nickname}`);
+      console.log(`[auth] refreshUser: calling /api/auth/me, tokenUserId=${payload?.userId} (type=${typeof payload?.userId}), tokenNick=${payload?.nickname}`);
       const res = await fetch('/api/auth/me', {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
-        console.log(`[auth] refreshUser: /api/auth/me returned userId=${data.user.id}, nickname=${data.user.nickname}, isAdmin=${data.user.isAdmin}`);
+        console.log(`[auth] refreshUser: /api/auth/me returned userId=${data.user.id} (type=${typeof data.user.id}), nickname=${data.user.nickname}, isAdmin=${data.user.isAdmin}`);
         const userInfo: UserInfo = {
-          userId: data.user.id,
+          userId: Number(data.user.id),
           nickname: data.user.nickname,
           points: data.user.points,
           totalGames: data.user.total_games,
@@ -114,7 +123,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
         // 如果返回的 userId 和 token 中的不一致，记录错误并登出
         if (payload && payload.userId !== undefined && payload.userId !== userInfo.userId) {
-          console.error(`[auth] refreshUser MISMATCH: token says userId=${payload.userId} but API returned userId=${userInfo.userId}. Logging out.`);
+          console.error(`[auth] refreshUser MISMATCH: token says userId=${payload.userId} (type=${typeof payload.userId}) but API returned userId=${userInfo.userId} (type=${typeof userInfo.userId}). Logging out.`);
           logout();
           return;
         }
@@ -156,7 +165,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       localStorage.removeItem('letsgo_user');
 
       const userInfo: UserInfo = {
-        userId: data.user.id,
+        userId: Number(data.user.id),
         nickname: data.user.nickname,
         points: data.user.points,
         totalGames: data.user.total_games,
@@ -196,7 +205,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       localStorage.removeItem('letsgo_user');
 
       const userInfo: UserInfo = {
-        userId: data.user.id,
+        userId: Number(data.user.id),
         nickname: data.user.nickname,
         points: data.user.points,
         totalGames: data.user.total_games,
