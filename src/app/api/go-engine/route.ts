@@ -733,7 +733,19 @@ async function getKataGoMove(
 
   // 发送命令，单条超时60秒（CPU竞争时可能较慢）
   const responses = await persistentKataGo.sendCommands(gtpCommands, 60000);
-  console.log(`[KataGo] GTP responses count=${responses.length}, lastResponse="${responses[responses.length - 1]}"`);
+
+  // 验证 maxVisits 是否生效：发送 kata-get-param 检查
+  try {
+    const verifyResp = await persistentKataGo.sendCommand('kata-get-param maxVisits', 5000);
+    console.log(`[KataGo] maxVisits verification: requested=${maxVisits}, actual="${verifyResp}"`);
+  } catch (verifyErr) {
+    console.warn(`[KataGo] maxVisits verification failed:`, verifyErr instanceof Error ? verifyErr.message : String(verifyErr));
+  }
+
+  // 打印所有响应以便诊断
+  for (let i = 0; i < responses.length; i++) {
+    console.log(`[KataGo] response[${i}] cmd="${gtpCommands[i]}": "${responses[i]}"`);
+  }
 
   // 解析genmove响应
   const lastResponse = responses[responses.length - 1];
