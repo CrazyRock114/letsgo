@@ -1621,7 +1621,7 @@ export default function GoGamePage() {
                 if (data.move && isValidMove(newBoard, data.move.row, data.move.col, aiColorCalc)) {
                   aiMove = data.move;
                   usedEngine = true;
-                  console.log(`[frontend] Engine move accepted: (${aiMove.row},${aiMove.col})`);
+                  console.log(`[frontend] Engine move accepted: (${aiMove?.row},${aiMove?.col})`);
                 } else if (data.pass) {
                   console.log(`[frontend] Engine pass`);
                   // AI停手
