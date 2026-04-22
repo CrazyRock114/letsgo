@@ -1,10 +1,11 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
+const rawJwtSecret = process.env.JWT_SECRET;
+if (!rawJwtSecret) {
   throw new Error('JWT_SECRET environment variable is required');
 }
+const JWT_SECRET: string = rawJwtSecret;
 const JWT_EXPIRES_IN = '7d';
 
 export interface JWTPayload {

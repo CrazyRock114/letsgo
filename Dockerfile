@@ -21,8 +21,22 @@ RUN mkdir -p /usr/local/katago && \
     unzip -o katago.zip -d katago-extracted && \
     find katago-extracted -name katago -type f -exec cp {} /usr/local/katago/katago \; && \
     chmod +x /usr/local/katago/katago && \
+    echo "Extracting AppImage (Docker has no FUSE)..." && \
+    cd /usr/local/katago && \
+    ./katago --appimage-extract && \
+    # 提取后的二进制可能在不同位置，尝试找到真正的 ELF
+    if [ -f squashfs-root/usr/bin/katago ]; then \
+        cp squashfs-root/usr/bin/katago ./katago.real; \
+    elif [ -f squashfs-root/katago ]; then \
+        cp squashfs-root/katago ./katago.real; \
+    else \
+        find squashfs-root -name katago -type f | head -1 | xargs -I{} cp {} ./katago.real; \
+    fi && \
+    rm -rf squashfs-root ./katago && \
+    mv ./katago.real ./katago && \
+    chmod +x ./katago && \
     echo "Verifying katago binary..." && \
-    /usr/local/katago/katago version 2>&1 | head -3 || echo "WARNING: katago version check failed (may need runtime libs)" && \
+    ./katago version && \
     rm -rf /tmp/katago.zip /tmp/katago-extracted
 
 # 直接生成最小化 CPU 配置（不依赖官方配置模板）
