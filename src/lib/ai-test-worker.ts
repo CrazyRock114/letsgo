@@ -306,6 +306,9 @@ async function tick(): Promise<void> {
     return;
   }
 
+  // 更新心跳，防止其他实例抢占领导权
+  await updateHeartbeat().catch(() => { /* ignore */ });
+
   const supabase = getSupabase();
 
   // 重新加载棋局
@@ -401,8 +404,7 @@ async function tick(): Promise<void> {
   }
 
   // 保存
-  const status: 'running' = 'running';
-  await saveGame(currentGameId, newMoves, newBoard, status, configTitle(config), newCommentaries);
+  await saveGame(currentGameId, newMoves, newBoard, 'running', configTitle(config), newCommentaries);
 
   // 检查常规结束条件（连续 pass 等）
   const gameEnd = checkGameEnd(newBoard, 0, newMoves.length);
@@ -420,6 +422,11 @@ async function tick(): Promise<void> {
 }
 
 async function autoRestart(config: SpectatorConfig): Promise<void> {
+  // 防止 endGame() 被调用后仍然触发自动重启
+  if (!isRunning || !currentGameId) {
+    console.log('[ai-test-worker] Auto-restart skipped: worker stopped or game cleared');
+    return;
+  }
   console.log('[ai-test-worker] Auto-restarting with same config...');
   const result = await createGame(config);
   if (!result.success) {
@@ -510,11 +517,89 @@ function buildEndCommentary(scores: ReturnType<typeof calculateFinalScore>, reas
 
 // ========== 对外接口 ==========
 
+const WORKER_INSTANCE_ID = `${process.env.RAILWAY_REPLICA_ID || process.env.HOSTNAME || 'local'}-${Date.now()}`;
+
+async function tryAcquireLeadership(): Promise<boolean> {
+  if (!INTERNAL_KEY) {
+    console.error('[ai-test-worker] FATAL: INTERNAL_API_KEY is not set. Worker cannot authenticate with go-engine API.');
+    return false;
+  }
+
+  const supabase = getSupabase();
+  const now = new Date().toISOString();
+  const thirtySecondsAgo = new Date(Date.now() - 30000).toISOString();
+
+  // 检查最近30秒内是否有其他活跃worker
+  const { data: heartbeats } = await supabase
+    .from('letsgo_games')
+    .select('id, commentaries, updated_at')
+    .eq('title', '__WORKER_HEARTBEAT__')
+    .gt('updated_at', thirtySecondsAgo)
+    .order('updated_at', { ascending: false })
+    .limit(1);
+
+  if (heartbeats && heartbeats.length > 0) {
+    const hb = heartbeats[0];
+    const commentaries = (hb.commentaries as Array<Record<string, unknown>> | null) || [];
+    const lastEntry = commentaries[0] as { instanceId?: string; heartbeat?: string } | undefined;
+    if (lastEntry?.instanceId !== WORKER_INSTANCE_ID) {
+      console.log(`[ai-test-worker] Another worker is active (instance=${lastEntry?.instanceId}), this instance (${WORKER_INSTANCE_ID}) will not start`);
+      return false;
+    }
+  }
+
+  // 更新心跳记录
+  const { data: existing } = await supabase
+    .from('letsgo_games')
+    .select('id')
+    .eq('title', '__WORKER_HEARTBEAT__')
+    .maybeSingle();
+
+  if (existing) {
+    await supabase.from('letsgo_games').update({
+      commentaries: [{ instanceId: WORKER_INSTANCE_ID, heartbeat: now }],
+      updated_at: now,
+    }).eq('id', existing.id);
+  } else {
+    await supabase.from('letsgo_games').insert({
+      user_id: null,
+      board_size: 9,
+      difficulty: 'medium',
+      engine: 'local',
+      moves: [],
+      commentaries: [{ instanceId: WORKER_INSTANCE_ID, heartbeat: now }],
+      final_board: [],
+      black_score: 0,
+      white_score: 0,
+      status: 'finished',
+      title: '__WORKER_HEARTBEAT__',
+    });
+  }
+
+  return true;
+}
+
+async function updateHeartbeat(): Promise<void> {
+  const supabase = getSupabase();
+  await supabase.from('letsgo_games').update({
+    commentaries: [{ instanceId: WORKER_INSTANCE_ID, heartbeat: new Date().toISOString() }],
+    updated_at: new Date().toISOString(),
+  }).eq('title', '__WORKER_HEARTBEAT__');
+}
+
 export async function start(): Promise<void> {
   if (isRunning) {
     console.log('[ai-test-worker] Already running');
     return;
   }
+
+  const isLeader = await tryAcquireLeadership();
+  if (!isLeader) {
+    console.log('[ai-test-worker] Not leader, skipping start');
+    return;
+  }
+
+  console.log(`[ai-test-worker] Instance ${WORKER_INSTANCE_ID} acquired leadership`);
 
   // 检查是否有进行中的棋局
   const supabase = getSupabase();

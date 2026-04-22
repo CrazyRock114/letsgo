@@ -1,6 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useAuth } from "@/lib/auth-context";
+import { useRouter } from "next/navigation";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { AlertTriangle } from "lucide-react";
 
 interface MonitorData {
   timestamp: string;
@@ -30,6 +35,8 @@ interface MonitorData {
       analysisSeconds: number;
       currentTask: { id: string; userId: number; isAnalysis: boolean; engine: string } | null;
       queueEntries: Array<{ id: string; userId: number; type: string; engine: string; boardSize: number; difficulty: string }>;
+      currentModel: { path: string; name: string } | null;
+      availableModels: Array<{ name: string; path: string; sizeMB: number; displayName: string }>;
     };
     gnugo: { queueLength: number; processing: boolean };
   };
@@ -48,16 +55,19 @@ const ENGINE_NAMES: Record<string, string> = {
 };
 
 const ENGINE_COLORS: Record<string, string> = {
-  katago: "bg-purple-500",
-  gnugo: "bg-blue-500",
-  local: "bg-green-500",
+  katago: "border-purple-500/30",
+  gnugo: "border-blue-500/30",
+  local: "border-green-500/30",
 };
 
 export default function MonitorPage() {
+  const { user, loading: authLoading } = useAuth();
+  const router = useRouter();
   const [data, setData] = useState<MonitorData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<Array<{ time: string; mem: number; cpu: number; active: number }>>([]);
   const [selectedSeconds, setSelectedSeconds] = useState<number>(0);
+  const [selectedModel, setSelectedModel] = useState<string>("");
   const [configSaving, setConfigSaving] = useState(false);
   const [configMsg, setConfigMsg] = useState<string | null>(null);
 
@@ -70,6 +80,10 @@ export default function MonitorPage() {
       // 同步当前analysisSeconds到选择器
       if (d?.engineQueue?.katago?.analysisSeconds !== undefined) {
         setSelectedSeconds(d.engineQueue.katago.analysisSeconds);
+      }
+      // 同步当前模型到选择器
+      if (d?.engineQueue?.katago?.currentModel?.path) {
+        setSelectedModel(d.engineQueue.katago.currentModel.path);
       }
       setError(null);
       // 记录历史数据（最多60个点=5分钟）
@@ -91,15 +105,32 @@ export default function MonitorPage() {
     setConfigSaving(true);
     setConfigMsg(null);
     try {
+      const payload: Record<string, unknown> = { action: "setConfig" };
+      if (selectedSeconds !== (data?.engineQueue?.katago?.analysisSeconds ?? 0)) {
+        payload.analysisSeconds = selectedSeconds;
+      }
+      if (selectedModel && selectedModel !== (data?.engineQueue?.katago?.currentModel?.path ?? "")) {
+        payload.model = selectedModel;
+      }
+
+      if (Object.keys(payload).length === 1) {
+        setConfigMsg("未做任何更改");
+        setConfigSaving(false);
+        setTimeout(() => setConfigMsg(null), 3000);
+        return;
+      }
+
       const res = await fetch("/api/go-engine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "setConfig", analysisSeconds: selectedSeconds }),
+        body: JSON.stringify(payload),
       });
       const result = await res.json();
       if (res.ok && result.success) {
-        setConfigMsg(`已更新: ${result.analysisSeconds}s`);
-        // 立即刷新数据
+        const parts: string[] = [];
+        if (result.analysisSeconds !== undefined) parts.push(`${result.analysisSeconds}s`);
+        if (result.currentModel !== undefined) parts.push(result.currentModel.name);
+        setConfigMsg(`已更新: ${parts.join(" + ")}`);
         fetchData();
       } else {
         setConfigMsg(`失败: ${result.error || "未知错误"}`);
@@ -110,13 +141,39 @@ export default function MonitorPage() {
       setConfigSaving(false);
       setTimeout(() => setConfigMsg(null), 3000);
     }
-  }, [selectedSeconds, fetchData]);
+  }, [selectedSeconds, selectedModel, data, fetchData]);
 
   useEffect(() => {
     fetchData();
     const timer = setInterval(fetchData, 5000);
     return () => clearInterval(timer);
   }, [fetchData]);
+
+  // 管理员权限检查
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-950 text-white">
+        <div className="text-gray-400">加载中...</div>
+      </div>
+    );
+  }
+
+  if (!user?.isAdmin) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-950 text-white">
+        <Card className="w-full max-w-md mx-4 bg-gray-900 border-gray-800">
+          <CardContent className="pt-6 text-center">
+            <AlertTriangle className="w-12 h-12 text-orange-500 mx-auto mb-4" />
+            <h2 className="text-xl font-bold text-gray-100 mb-2">访问受限</h2>
+            <p className="text-gray-400 mb-4">此页面仅限管理员访问。</p>
+            <Button onClick={() => router.push("/")} variant="outline" className="border-gray-700 text-gray-300 hover:bg-gray-800">
+              返回首页
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (error && !data) {
     return (
@@ -131,6 +188,10 @@ export default function MonitorPage() {
   const uptimeStr = uptime > 3600
     ? `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`
     : `${Math.floor(uptime / 60)}m ${uptime % 60}s`;
+
+  const currentModelPath = data?.engineQueue?.katago?.currentModel?.path ?? "";
+  const hasConfigChanges = selectedSeconds !== (data?.engineQueue?.katago?.analysisSeconds ?? 0)
+    || (selectedModel && selectedModel !== currentModelPath);
 
   return (
     <div className="min-h-screen bg-gray-950 text-white p-4 md:p-6">
@@ -157,12 +218,12 @@ export default function MonitorPage() {
         {/* 1小时统计 */}
         <div className="grid grid-cols-2 gap-3 mb-6">
           <StatCard label="1h引擎调用" value={fmt(data?.usage.engineCallsLastHour ?? 0)} sub={`消耗 ${fmt(data?.usage.pointsUsedLastHour ?? 0)} 积分`} color="purple" />
-          <StatCard label="1h完成棋局" value={fmt(data?.games.finishedLastHour ?? 0)} sub={`活跃 ${fmt(data?.games.active ?? 0)} 局`} color="green" />
+          <StatCard label="1h完成棋局" value={fmt(data?.games.finishedLastHour ?? 0)} sub={`活跃 ${data?.games.active ?? 0} 局`} color="green" />
         </div>
 
-        {/* KataGo 分析配置 + 队列详情 */}
+        {/* KataGo 配置面板 */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-          {/* 分析配置面板 */}
+          {/* 分析配置 + 模型切换 */}
           <div className="bg-gray-900 rounded-xl p-4">
             <h2 className="text-sm font-semibold text-gray-400 mb-3">KataGo 分析配置</h2>
             <div className="space-y-3">
@@ -184,12 +245,31 @@ export default function MonitorPage() {
                   <option value={60}>60秒 - 极限深度</option>
                 </select>
               </div>
+
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">神经网络模型</label>
+                <select
+                  value={selectedModel}
+                  onChange={e => setSelectedModel(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  {data?.engineQueue?.katago?.availableModels?.length === 0 && (
+                    <option value="">无可用模型</option>
+                  )}
+                  {data?.engineQueue?.katago?.availableModels?.map(m => (
+                    <option key={m.path} value={m.path}>
+                      {m.displayName} ({m.sizeMB}MB)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div className="flex items-center gap-3">
                 <button
                   onClick={handleSaveConfig}
-                  disabled={configSaving || selectedSeconds === (data?.engineQueue?.katago?.analysisSeconds ?? 0)}
+                  disabled={configSaving || !hasConfigChanges}
                   className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                    configSaving || selectedSeconds === (data?.engineQueue?.katago?.analysisSeconds ?? 0)
+                    configSaving || !hasConfigChanges
                       ? "bg-gray-700 text-gray-500 cursor-not-allowed"
                       : "bg-purple-600 hover:bg-purple-500 text-white"
                   }`}
@@ -203,7 +283,8 @@ export default function MonitorPage() {
                 )}
               </div>
               <div className="text-xs text-gray-600 space-y-0.5 pt-2 border-t border-gray-800">
-                <div>当前值: <span className="text-gray-400">{data?.engineQueue?.katago?.analysisSeconds ?? 0}s</span></div>
+                <div>当前分析: <span className="text-gray-400">{data?.engineQueue?.katago?.analysisSeconds ?? 0}s</span></div>
+                <div>当前模型: <span className="text-gray-400">{data?.engineQueue?.katago?.currentModel?.name ?? "自动选择"}</span></div>
                 <div>
                   {data?.engineQueue?.katago?.analysisSeconds === 0
                     ? "模式: 神经网络直出 (kata-raw-nn), ~0.04秒, 无搜索树"
@@ -375,7 +456,7 @@ export default function MonitorPage() {
                       <span>{count} 局</span>
                     </div>
                     <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full ${ENGINE_COLORS[engine] || "bg-gray-500"}`}
+                      <div className={`h-full rounded-full ${ENGINE_COLORS[engine]?.replace('border-', 'bg-') || "bg-gray-500"}`}
                         style={{ width: `${Math.max((count / Math.max(data.games.active, 1)) * 100, 5)}%` }} />
                     </div>
                   </div>

@@ -157,6 +157,37 @@ const activeSessions: Map<string, ActiveSession> = new Map();
 // 0 = kata-raw-nn（瞬时，纯神经网络直出）
 // >0 = kata-analyze（MCTS搜索N秒后用GTP stop中断）
 let analysisSeconds = 0;
+let currentModelPath: string | null = null;
+
+// 获取所有可用的KataGo模型列表
+function getAvailableModels(): Array<{ name: string; path: string; sizeMB: number }> {
+  try {
+    const files = fs.readdirSync(KATAGO_DIR);
+    const modelFiles = files.filter(f => f.endsWith(".bin.gz") || f.endsWith(".txt.gz"));
+    return modelFiles.map(f => {
+      const path = `${KATAGO_DIR}/${f}`;
+      const stats = fs.statSync(path);
+      return {
+        name: f,
+        path,
+        sizeMB: Math.round(stats.size / 1024 / 1024 * 10) / 10,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+// 获取模型显示名称
+function getModelDisplayName(path: string): string {
+  const basename = path.split('/').pop() || path;
+  if (/lionffen/.test(basename)) return 'Lionffen (小模型, 2MB, 快)';
+  if (/rect15-b20c256/.test(basename)) return 'Rect15-B20C256 (中模型, 22MB)';
+  if (/b20c256/.test(basename)) return 'B20C256 (中模型)';
+  if (/b18c384/.test(basename)) return 'B18C384 (大模型)';
+  if (/b40c256/.test(basename)) return 'B40C256 (超大模型)';
+  return basename;
+}
 
 // KataGo分析结果缓存（LRU + 过期清理，防止内存泄漏）
 const analysisCache: Map<string, { data: KataGoAnalysis; timestamp: number }> = new Map();
@@ -213,6 +244,8 @@ function trackActiveSession(userId: number, nickname: string, engine: string, bo
 // 引擎监控数据导出
 export function getEngineMonitorData() {
   const currentInfo = engineQueue.getCurrentEntryInfo();
+  const available = getAvailableModels();
+  const currentModel = persistentKataGo.getCurrentModel();
   return {
     kataGo: {
       queueLength: engineQueue.getQueueLength(),
@@ -220,6 +253,8 @@ export function getEngineMonitorData() {
       currentTask: currentInfo ? { id: currentInfo.id, userId: currentInfo.userId, isAnalysis: currentInfo.isAnalysis, engine: currentInfo.engine } : null,
       analysisSeconds,  // 当前分析配置
       queueEntries: engineQueue.getQueueEntries(),  // 队列中每个任务的详情
+      currentModel: currentModel ? { path: currentModel, name: getModelDisplayName(currentModel) } : null,
+      availableModels: available.map(m => ({ ...m, displayName: getModelDisplayName(m.path) })),
     },
     gnugo: { queueLength: 0, processing: false, note: '独立并行，不走EngineQueue' },
     activeSessions: Array.from(activeSessions.values()).map(s => ({
@@ -237,6 +272,11 @@ export function getEngineMonitorData() {
 // 自动查找KataGo可用的神经网络模型
 // 支持多种模型格式(.bin.gz, .txt.gz)，按优先级返回
 function findKataGoModel(): string | null {
+  // 如果已指定模型且文件存在，优先使用
+  if (currentModelPath && fs.existsSync(currentModelPath)) {
+    return currentModelPath;
+  }
+
   // 优先级顺序：lionffen(小,快,支持所有棋盘) > g170-b6c96 > rect15(通用,大) > 其他
   const priorityPatterns = [
     /lionffen/,           // lionffen小模型(2MB)，实测支持所有棋盘
@@ -343,6 +383,7 @@ class PersistentKataGo {
   private crashed = false;
   private lastError = "";
   private procEpoch = 0;  // 进程纪元，用于区分新旧进程
+  private currentModel: string | null = null;
 
   isAvailable(): boolean {
     return !!(this.proc && !this.proc.killed && this.proc.exitCode === null);
@@ -350,6 +391,24 @@ class PersistentKataGo {
 
   getProcess(): ChildProcess | null {
     return this.proc;
+  }
+
+  getCurrentModel(): string | null {
+    return this.currentModel;
+  }
+
+  // 切换KataGo模型：杀掉当前进程，用新模型重启
+  async switchModel(modelPath: string): Promise<void> {
+    if (this.currentModel === modelPath && this.isAvailable()) {
+      console.log(`[KataGo] Model already active: ${modelPath}`);
+      return;
+    }
+    console.log(`[KataGo] Switching model: ${this.currentModel ?? 'auto'} -> ${modelPath}`);
+    this.killProcess();
+    this.currentModel = modelPath;
+    // 进程会在下一次 ensureReady 时自动用新模型启动
+    await this.ensureReady();
+    console.log(`[KataGo] Model switched successfully: ${modelPath}`);
   }
 
   // 确保进程已启动并就绪
@@ -375,6 +434,7 @@ class PersistentKataGo {
     if (!fs.existsSync(KATAGO_PATH)) throw new Error("KataGo binary not found");
     if (!fs.existsSync(KATAGO_CONFIG)) throw new Error("KataGo config not found");
 
+    this.currentModel = model;
     console.log(`[KataGo] Starting persistent process with model: ${model}`);
 
     // Kill any old process
@@ -1314,13 +1374,36 @@ export async function POST(request: NextRequest) {
 
     // 配置更新请求：修改分析时长（秒）
     if (action === 'setConfig') {
+      const updates: Record<string, unknown> = {};
+
+      // 更新分析时长
       if (typeof newSeconds === 'number' && newSeconds >= 0 && newSeconds <= 60) {
         const oldSeconds = analysisSeconds;
         analysisSeconds = newSeconds;
+        updates.analysisSeconds = analysisSeconds;
         console.log(`[go-engine] analysisSeconds updated: ${oldSeconds}s → ${analysisSeconds}s`);
-        return NextResponse.json({ success: true, analysisSeconds });
       }
-      return NextResponse.json({ error: 'Invalid analysisSeconds (0-60)' }, { status: 400 });
+
+      // 切换KataGo模型
+      const newModel = body.model;
+      if (typeof newModel === 'string') {
+        const available = getAvailableModels();
+        const modelEntry = available.find(m => m.path === newModel);
+        if (modelEntry) {
+          currentModelPath = newModel;
+          await persistentKataGo.switchModel(newModel);
+          updates.currentModel = { path: newModel, name: getModelDisplayName(newModel) };
+          console.log(`[go-engine] Model switched to: ${getModelDisplayName(newModel)}`);
+        } else {
+          return NextResponse.json({ error: 'Model not found', available: available.map(m => ({ path: m.path, name: getModelDisplayName(m.path) })) }, { status: 400 });
+        }
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return NextResponse.json({ error: 'Invalid config (expected analysisSeconds or model)' }, { status: 400 });
+      }
+
+      return NextResponse.json({ success: true, ...updates });
     }
 
     // 按需分析请求：仅当用户点击"提示与教学"时触发（消耗20积分）
