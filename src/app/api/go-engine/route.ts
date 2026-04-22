@@ -355,9 +355,9 @@ function getKomi(boardSize: number): number {
 
 // KataGo难度映射 - 通过maxVisits控制
 function getKataGoVisits(difficulty: string): number {
-  if (difficulty === "easy") return 300;
-  if (difficulty === "medium") return 1500;
-  return 5000;
+  if (difficulty === "easy") return 15;
+  if (difficulty === "medium") return 50;
+  return 150;
 }
 
 // GnuGo难度映射
@@ -1074,10 +1074,21 @@ function sendOneShotGTP(proc: ChildProcess, command: string, timeoutMs: number =
 
     const onData = (data: Buffer) => {
       output += data.toString();
-      if (output.includes("\n\n") && !settled) {
-        settled = true;
-        cleanup();
-        resolve(output.trim());
+      // GTP 响应以 "\n\n" 结束，且必须以 "= " 或 "? " 开头
+      // 某些引擎可能在响应前输出空行或警告，持续读取直到找到有效的 GTP 响应
+      while (!settled) {
+        const endIdx = output.indexOf("\n\n");
+        if (endIdx === -1) break;
+        const response = output.substring(0, endIdx).trim();
+        output = output.substring(endIdx + 2);
+        // 跳过空行或非 GTP 输出的内容（如引擎启动信息、空行等）
+        if (response.startsWith("=") || response.startsWith("?")) {
+          settled = true;
+          cleanup();
+          resolve(response);
+          return;
+        }
+        // 跳过空行和无关输出，继续等待
       }
     };
 
@@ -1087,7 +1098,7 @@ function sendOneShotGTP(proc: ChildProcess, command: string, timeoutMs: number =
       if (!settled) {
         settled = true;
         cleanup();
-        reject(new Error(`GTP command timeout: ${command}`));
+        reject(new Error(`GTP command timeout: ${command}, output="${output.substring(0, 200)}"`));
       }
     }, timeoutMs);
 
