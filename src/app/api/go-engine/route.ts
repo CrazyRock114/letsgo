@@ -357,7 +357,7 @@ function getKomi(boardSize: number): number {
 function getKataGoVisits(difficulty: string): number {
   if (difficulty === "easy") return 15;
   if (difficulty === "medium") return 50;
-  return 5000;
+  return 150;
 }
 
 // GnuGo难度映射
@@ -694,8 +694,49 @@ export async function warmupKataGo(): Promise<void> {
   }
 }
 
+// 向一次性KataGo子进程发送单条GTP命令并等待响应
+function sendOneShotCommand(
+  proc: ChildProcess,
+  command: string,
+  timeoutMs: number = 30000
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!proc || proc.killed) {
+      reject(new Error("KataGo process not available"));
+      return;
+    }
+
+    let buffer = "";
+    const onData = (data: Buffer) => {
+      buffer += data.toString();
+      const endIdx = buffer.indexOf("\n\n");
+      if (endIdx !== -1) {
+        const response = buffer.substring(0, endIdx).trim();
+        buffer = buffer.substring(endIdx + 2);
+        proc.stdout?.off("data", onData);
+        clearTimeout(timeout);
+        resolve(response);
+      }
+    };
+
+    const timeout = setTimeout(() => {
+      proc.stdout?.off("data", onData);
+      reject(new Error(`GTP command timeout: ${command}`));
+    }, timeoutMs);
+
+    proc.stdout?.on("data", onData);
+    try {
+      proc.stdin?.write(command + "\n");
+    } catch (writeErr) {
+      proc.stdout?.off("data", onData);
+      clearTimeout(timeout);
+      reject(new Error(`KataGo stdin write failed: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`));
+    }
+  });
+}
+
 // ============================================================
-// KataGo落子（使用持久化进程）
+// KataGo落子（每次spawn新进程，通过-override-config确保visits生效）
 // ============================================================
 async function getKataGoMove(
   boardSize: number,
@@ -705,17 +746,43 @@ async function getKataGoMove(
 ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string; engineError?: boolean }> {
   const komi = getKomi(boardSize);
   const maxVisits = getKataGoVisits(difficulty);
-  console.log(`[KataGo] getKataGoMove START: board=${boardSize}, diff=${difficulty}, maxVisits=${maxVisits}, aiColor=${aiColor}, moves=${moves.length}`);
+  const model = findKataGoModel();
 
-  // 构建GTP命令序列：重置棋盘 → 重放落子 → 生成AI落子
+  if (!model) {
+    throw new Error("KataGo model not found");
+  }
+
+  console.log(`[KataGo] getKataGoMove START (one-shot): board=${boardSize}, diff=${difficulty}, maxVisits=${maxVisits}, aiColor=${aiColor}, moves=${moves.length}, model=${model.split('/').pop()}`);
+
+  const startTime = Date.now();
+
+  // 启动新进程，-override-config 在进程启动时就锁定 visits
+  const proc = spawn(KATAGO_PATH, [
+    "gtp",
+    "-model", model,
+    "-config", KATAGO_CONFIG,
+    "-override-config", `maxVisits=${maxVisits},komi=${komi}`,
+  ], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  // 等待进程启动（模型加载需要时间）
+  await new Promise(r => setTimeout(r, 100));
+
+  // 先发送 name 命令消耗启动输出，确保后续响应对齐
+  try {
+    const nameResp = await sendOneShotCommand(proc, 'name', 10000);
+    console.log(`[KataGo] one-shot process ready: ${nameResp}`);
+  } catch (nameErr) {
+    console.warn(`[KataGo] name command failed, continuing anyway:`, nameErr instanceof Error ? nameErr.message : String(nameErr));
+  }
+
+  // 构建GTP命令序列
   const gtpCommands: string[] = [
     `boardsize ${boardSize}`,
     "clear_board",
-    `komi ${komi}`,
-    `kata-set-param maxVisits ${maxVisits}`,  // 动态调整难度
   ];
 
-  // 重放所有落子历史
   if (moves && Array.isArray(moves)) {
     for (const move of moves) {
       const color = move.color === "black" ? "B" : "W";
@@ -724,59 +791,55 @@ async function getKataGoMove(
     }
   }
 
-  // 请求AI落子
   gtpCommands.push(`genmove ${aiColor === 'black' ? 'B' : 'W'}`);
-  console.log(`[KataGo] GTP commands: ${JSON.stringify(gtpCommands)}`);
 
-  // 彻底清理残留数据（stop命令后可能有残余输出，等待并消耗干净）
-  await persistentKataGo.thoroughFlush();
-
-  // 发送命令，单条超时60秒（CPU竞争时可能较慢）
-  const responses = await persistentKataGo.sendCommands(gtpCommands, 60000);
-
-  // 验证 maxVisits 是否生效：发送 kata-get-param 检查
   try {
-    const verifyResp = await persistentKataGo.sendCommand('kata-get-param maxVisits', 5000);
-    console.log(`[KataGo] maxVisits verification: requested=${maxVisits}, actual="${verifyResp}"`);
-  } catch (verifyErr) {
-    console.warn(`[KataGo] maxVisits verification failed:`, verifyErr instanceof Error ? verifyErr.message : String(verifyErr));
+    const results: string[] = [];
+    for (const cmd of gtpCommands) {
+      const resp = await sendOneShotCommand(proc, cmd, 60000);
+      if (resp.trim().startsWith('?')) {
+        throw new Error(`GTP command failed: ${cmd} -> ${resp.trim()}`);
+      }
+      results.push(resp);
+    }
+
+    const lastResponse = results[results.length - 1];
+    const moveMatch = lastResponse.match(/=\s*([A-HJ-T]\d+|PASS|resign)/i);
+
+    if (!moveMatch) {
+      console.warn(`[KataGo] Unexpected genmove response: "${lastResponse}"`);
+      return { move: null, pass: false, engineError: true, engine: "katago" };
+    }
+
+    const moveStr = moveMatch[1].toUpperCase();
+
+    if (moveStr === "PASS") {
+      console.log(`[KataGo] PASS (${Date.now() - startTime}ms)`);
+      return { move: null, pass: true, engine: "katago" };
+    }
+
+    if (moveStr === "RESIGN") {
+      console.log(`[KataGo] RESIGN (${Date.now() - startTime}ms)`);
+      return { move: null, resign: true, engine: "katago" };
+    }
+
+    const position = gtpToBoardCoord(moveStr, boardSize);
+    if (!position) {
+      console.error(`[KataGo] Cannot parse coord: ${moveStr}`);
+      throw new Error("无法解析KataGo落子坐标");
+    }
+
+    console.log(`[KataGo] MOVE: ${moveStr} -> (${position.row},${position.col}) (${Date.now() - startTime}ms)`);
+    return { move: position, engine: "katago" };
+  } finally {
+    // 确保进程被清理
+    if (proc && !proc.killed) {
+      try { proc.stdin?.write("quit\n"); } catch { /* ignore */ }
+      setTimeout(() => {
+        if (!proc.killed) proc.kill();
+      }, 500);
+    }
   }
-
-  // 打印所有响应以便诊断
-  for (let i = 0; i < responses.length; i++) {
-    console.log(`[KataGo] response[${i}] cmd="${gtpCommands[i]}": "${responses[i]}"`);
-  }
-
-  // 解析genmove响应
-  const lastResponse = responses[responses.length - 1];
-  const moveMatch = lastResponse.match(/=\s*([A-HJ-T]\d+|PASS|resign)/i);
-
-  if (!moveMatch) {
-    console.warn(`[KataGo] Unexpected genmove response: "${lastResponse}"`);
-    return { move: null, pass: false, engineError: true, engine: "katago" };
-  }
-
-  const moveStr = moveMatch[1].toUpperCase();
-
-  if (moveStr === "PASS") {
-    console.log(`[KataGo] PASS`);
-    return { move: null, pass: true, engine: "katago" };
-  }
-
-  if (moveStr === "RESIGN") {
-    console.log(`[KataGo] RESIGN`);
-    return { move: null, resign: true, engine: "katago" };
-  }
-
-  const position = gtpToBoardCoord(moveStr, boardSize);
-
-  if (!position) {
-    console.error(`[KataGo] Cannot parse coord: ${moveStr}`);
-    throw new Error("无法解析KataGo落子坐标");
-  }
-
-  console.log(`[KataGo] MOVE: ${moveStr} -> (${position.row},${position.col})`);
-  return { move: position, engine: "katago" };
 }
 
 // ============================================================
