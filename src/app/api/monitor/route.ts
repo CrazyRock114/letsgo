@@ -129,6 +129,8 @@ export async function GET() {
           analysisSeconds: engineData.kataGo.analysisSeconds,
           currentTask: engineData.kataGo.currentTask,
           queueEntries: engineData.kataGo.queueEntries,
+          currentModel: engineData.kataGo.currentModel,
+          availableModels: engineData.kataGo.availableModels,
         },
         gnugo: {
           queueLength: engineData.gnugo.queueLength,
