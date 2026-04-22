@@ -68,10 +68,13 @@ RUN curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networ
     echo "rect15 download attempted"
 
 # 3. g170-b6c96 (3.7MB, KataGo官方小模型, 平衡速度与棋力)
-RUN curl -fSL --retry 3 --max-time 300 \
+RUN curl -sL --max-time 300 \
       -o /usr/local/katago/g170-b6c96-s175395328-d26788732.bin.gz \
-      "https://github.com/lightvector/KataGo/releases/download/v1.12.3/g170-b6c96-s175395328-d26788732.bin.gz" && \
-    echo "g170-b6c96 download attempted"
+      "https://media.katagotraining.org/uploaded/networks/models/g170-b6c96-s175395328-d26788732.bin.gz" || \
+    curl -sL --max-time 300 \
+      -o /usr/local/katago/g170-b6c96-s175395328-d26788732.bin.gz \
+      "https://github.com/lightvector/KataGo/releases/download/v1.12.3/g170-b6c96-s175395328-d26788732.bin.gz" || \
+    echo "g170-b6c96 download failed, skipping"
 
 # 验证各模型是否下载成功
 RUN for f in /usr/local/katago/*.gz; do \
