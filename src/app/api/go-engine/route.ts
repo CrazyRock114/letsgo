@@ -349,8 +349,10 @@ function gtpToBoardCoord(gtpCoord: string, boardSize: number): { row: number; co
 }
 
 // 获取贴目值
-function getKomi(boardSize: number): number {
-  return boardSize <= 9 ? 2.5 : boardSize <= 13 ? 3.5 : 6.5;
+function getKomi(_boardSize: number): number {
+  // 中国/AGA 规则标准贴目：所有路数统一 6.5 目（黑贴 3¾ 子 = 7.5 目等价于 6.5 目）
+  // 此前 9路=2.5、13路=3.5 严重偏低，导致黑方先手优势过大
+  return 6.5;
 }
 
 // KataGo难度映射 - 通过maxVisits控制
