@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   createEmptyBoard,
   playMove,
@@ -31,6 +32,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { toast } from 'sonner';
 import { Input } from '@/components/ui/input';
 import { useAuth } from '@/lib/auth-context';
+import GoBoard from '@/components/go-board';
 import {
   RotateCcw,
   MessageCircle,
@@ -51,6 +53,7 @@ import {
   GraduationCap,
   LogOut,
   Coins,
+  Eye,
 } from 'lucide-react';
 
 // ========== 常量 ==========
@@ -79,16 +82,6 @@ const ENGINE_COSTS: Record<EngineId, number> = {
   gnugo: 2,
   local: 0,
 };
-
-const COL_LABELS = 'ABCDEFGHJKLMNOPQRST';
-
-// 星位坐标
-function getStarPoints(boardSize: number): [number, number][] {
-  if (boardSize === 9) return [[2, 2], [2, 6], [4, 4], [6, 2], [6, 6]];
-  if (boardSize === 13) return [[3, 3], [3, 9], [6, 6], [9, 3], [9, 9], [3, 6], [6, 3], [6, 9], [9, 6]];
-  if (boardSize === 19) return [[3, 3], [3, 9], [3, 15], [9, 3], [9, 9], [9, 15], [15, 3], [15, 9], [15, 15]];
-  return [];
-}
 
 // 解说条目
 interface CommentaryEntry {
@@ -154,6 +147,19 @@ export default function GoGamePage() {
   const [history, setHistory] = useState<MoveEntry[]>([]);
   const [lastMove, setLastMove] = useState<Position | null>(null);
   const [showHint, setShowHint] = useState<Position | null>(null);
+  const [isLocalhost, setIsLocalhost] = useState(false);
+  useEffect(() => {
+    setIsLocalhost(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  }, []);
+
+  // 提子统计
+  const captures = useMemo(() => {
+    return history.reduce((acc, m) => {
+      if (m.color === 'black') acc.black += m.captured;
+      else acc.white += m.captured;
+      return acc;
+    }, { black: 0, white: 0 });
+  }, [history]);
 
   // 同步history长度到ref，供useCallback闭包使用最新值
   useEffect(() => { historyLengthRef.current = history.length; }, [history.length]);
@@ -246,6 +252,8 @@ export default function GoGamePage() {
   const needsAIMoveRef = useRef(false);
   // 切换执子需要重开标记
   const [needsNewGame, setNeedsNewGame] = useState(false);
+
+  const router = useRouter();
 
   // ===== 认证 UI =====
   const [showAuthDialog, setShowAuthDialog] = useState(false);
@@ -1485,6 +1493,23 @@ export default function GoGamePage() {
     }
   }, []);
 
+  // 支持 ?loadGame=xxx URL 参数自动加载复盘
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const loadGameId = params.get('loadGame');
+    if (loadGameId) {
+      const id = parseInt(loadGameId, 10);
+      if (!isNaN(id)) {
+        loadGame(id);
+        params.delete('loadGame');
+        const newSearch = params.toString();
+        const newUrl = window.location.pathname + (newSearch ? '?' + newSearch : '') + window.location.hash;
+        window.history.replaceState(null, '', newUrl);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ===== 删除棋局 =====
   const deleteGame = useCallback(async (gameId: number) => {
     try {
@@ -1667,155 +1692,6 @@ export default function GoGamePage() {
     }
   }, [isReplayMode, replayIndex, replayMoves, boardSize, commentaries, exitReplay, playerColor, engine, difficulty, requestCommentary]);
 
-  // ===== SVG棋盘 =====
-  const renderSVGBoard = () => {
-    const size = boardSize;
-    const cellSize = size <= 9 ? 44 : size <= 13 ? 34 : 26;
-    const padding = cellSize;
-    const stoneRadius = cellSize * 0.44;
-    const boardPx = cellSize * (size - 1) + padding * 2;
-    const starPts = getStarPoints(size);
-
-    // 统一的点击/触摸处理函数 - 从屏幕坐标计算棋盘交叉点
-    // 防止 touch + click 双重触发：touch 后短时间内忽略 click
-    let lastTouchTime = 0;
-    // 记录触摸起始位置，用于区分轻触和滑动
-    let touchStartPos: { x: number; y: number } | null = null;
-    const handleBoardInteraction = (clientX: number, clientY: number, isTouchEvent = false) => {
-      if (isTouchEvent) {
-        lastTouchTime = Date.now();
-      } else {
-        // 如果刚刚处理过 touch 事件，跳过这次 click（防止双重触发）
-        if (Date.now() - lastTouchTime < 500) return;
-      }
-      const svgEl = document.getElementById('go-board-svg');
-      if (!svgEl) return;
-      const rect = svgEl.getBoundingClientRect();
-      const scaleX = boardPx / rect.width;
-      const scaleY = boardPx / rect.height;
-      const svgX = (clientX - rect.left) * scaleX;
-      const svgY = (clientY - rect.top) * scaleY;
-      const col = Math.round((svgX - padding) / cellSize);
-      const row = Math.round((svgY - padding) / cellSize);
-      if (row >= 0 && row < size && col >= 0 && col < size) {
-        const dx = svgX - (padding + col * cellSize);
-        const dy = svgY - (padding + row * cellSize);
-        if (Math.sqrt(dx * dx + dy * dy) < cellSize * 0.55) {
-          handleMove(row, col);
-        }
-      }
-    };
-
-    return (
-      <svg
-        id="go-board-svg"
-        width={boardPx}
-        height={boardPx}
-        viewBox={`0 0 ${boardPx} ${boardPx}`}
-        className="max-w-full h-auto"
-        style={{ filter: 'drop-shadow(0 8px 24px rgba(0,0,0,0.18))', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
-        onClick={(e) => {
-          // 桌面端和安卓：click 事件处理
-          handleBoardInteraction(e.clientX, e.clientY, false);
-        }}
-        onTouchStart={(e) => {
-          // 记录触摸起始位置
-          const touch = e.changedTouches[0];
-          if (touch) {
-            touchStartPos = { x: touch.clientX, y: touch.clientY };
-          }
-        }}
-        onTouchEnd={(e) => {
-          // iPad Safari / 手机端：touch 事件处理
-          const touch = e.changedTouches[0];
-          if (!touch) return;
-          // 如果触摸移动距离过大（滑动/滚动），不视为落子
-          if (touchStartPos) {
-            const dx = touch.clientX - touchStartPos.x;
-            const dy = touch.clientY - touchStartPos.y;
-            if (Math.sqrt(dx * dx + dy * dy) > 15) return;
-          }
-          e.preventDefault(); // 阻止后续 click 事件
-          handleBoardInteraction(touch.clientX, touch.clientY, true);
-        }}
-        onTouchMove={() => {
-          // 触摸移动时清除起始位置（表示在滑动而非轻触）
-          touchStartPos = null;
-        }}
-      >
-        <defs>
-          <radialGradient id="bgGrad" cx="50%" cy="50%">
-            <stop offset="0%" stopColor="#dcb87a" />
-            <stop offset="100%" stopColor="#c4a06a" />
-          </radialGradient>
-          <radialGradient id="blackStone" cx="35%" cy="30%">
-            <stop offset="0%" stopColor="#666" />
-            <stop offset="50%" stopColor="#333" />
-            <stop offset="100%" stopColor="#111" />
-          </radialGradient>
-          <radialGradient id="whiteStone" cx="35%" cy="30%">
-            <stop offset="0%" stopColor="#fff" />
-            <stop offset="80%" stopColor="#e8e8e8" />
-            <stop offset="100%" stopColor="#d0d0d0" />
-          </radialGradient>
-          <filter id="stoneShadow">
-            <feDropShadow dx="1" dy="1" stdDeviation="1.5" floodOpacity="0.3" />
-          </filter>
-        </defs>
-
-        <rect width={boardPx} height={boardPx} rx="6" fill="url(#bgGrad)" />
-
-        {Array.from({ length: size }, (_, i) => (
-          <g key={`line-${i}`}>
-            <line x1={padding} y1={padding + i * cellSize} x2={padding + (size - 1) * cellSize} y2={padding + i * cellSize} stroke="#6b5a3e" strokeWidth={size >= 19 ? 0.7 : 1} />
-            <line x1={padding + i * cellSize} y1={padding} x2={padding + i * cellSize} y2={padding + (size - 1) * cellSize} stroke="#6b5a3e" strokeWidth={size >= 19 ? 0.7 : 1} />
-          </g>
-        ))}
-
-        <rect x={padding} y={padding} width={(size - 1) * cellSize} height={(size - 1) * cellSize} fill="none" stroke="#5a4a3a" strokeWidth={size >= 19 ? 1.5 : 2} />
-
-        {starPts.map(([r, c]) => (
-          <circle key={`star-${r}-${c}`} cx={padding + c * cellSize} cy={padding + r * cellSize} r={size >= 19 ? 3 : 4} fill="#5a4a3a" />
-        ))}
-
-        {Array.from({ length: size }, (_, i) => (
-          <g key={`label-${i}`}>
-            <text x={padding + i * cellSize} y={padding - cellSize * 0.4} textAnchor="middle" fontSize={size >= 19 ? 9 : 11} fill="#8b7355" fontFamily="sans-serif">{COL_LABELS[i]}</text>
-            <text x={padding - cellSize * 0.4} y={padding + i * cellSize + 4} textAnchor="middle" fontSize={size >= 19 ? 9 : 11} fill="#8b7355" fontFamily="sans-serif">{size - i}</text>
-          </g>
-        ))}
-
-        {board.map((row, r) =>
-          row.map((stone, c) => {
-            if (!stone) return null;
-            const isLast = lastMove?.row === r && lastMove?.col === c && history.length > 0 && history[history.length - 1].position.row === r && history[history.length - 1].position.col === c;
-            return (
-              <g key={`s-${r}-${c}`} filter="url(#stoneShadow)">
-                <circle cx={padding + c * cellSize} cy={padding + r * cellSize} r={stoneRadius} fill={stone === 'black' ? 'url(#blackStone)' : 'url(#whiteStone)'} stroke={stone === 'white' ? '#bbb' : 'none'} strokeWidth={0.5} />
-                {isLast && <circle cx={padding + c * cellSize} cy={padding + r * cellSize} r={stoneRadius * 0.28} fill={stone === 'black' ? '#fff' : '#333'} />}
-              </g>
-            );
-          })
-        )}
-
-        {showHint && !board[showHint.row][showHint.col] && (
-          <circle cx={padding + showHint.col * cellSize} cy={padding + showHint.row * cellSize} r={stoneRadius} fill="rgba(59,130,246,0.25)" stroke="rgba(59,130,246,0.6)" strokeWidth={2}>
-            <animate attributeName="opacity" values="0.4;0.8;0.4" dur="1.5s" repeatCount="indefinite" />
-          </circle>
-        )}
-
-        {!isAIThinking && !isReplayMode && board.map((row, r) =>
-          row.map((stone, c) => {
-            if (stone) return null;
-            return (
-              <circle key={`c-${r}-${c}`} cx={padding + c * cellSize} cy={padding + r * cellSize} r={stoneRadius} fill="transparent" cursor="pointer" />
-            );
-          })
-        )}
-      </svg>
-    );
-  };
-
   // 教程与百科数据
   const allTutorialSteps = getAllSteps();
   const currentChapter = GO_TUTORIAL[tutorialChapterIdx];
@@ -1979,8 +1855,27 @@ export default function GoGamePage() {
               </Button>
             ))}
           </div>
+
+          {/* 围观AI对弈入口 */}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => router.push('/ai-test')}
+            className="h-7 text-xs"
+            title="围观AI对弈"
+          >
+            <Eye className="w-3 h-3 mr-1" />
+            围观AI对弈
+          </Button>
         </div>
       </header>
+
+      {/* 本地开发警告 */}
+      {isLocalhost && (
+        <div className="bg-orange-100 border-b border-orange-300 px-4 py-2 text-center text-xs text-orange-700">
+          <span className="font-semibold">⚠️ 本地开发环境</span> — 当前连接的是线上数据库，操作会写入真实数据。请使用测试账号，避免影响线上用户。
+        </div>
+      )}
 
       {/* 引擎加载提示 */}
       {enginesLoading && (
@@ -2037,6 +1932,7 @@ export default function GoGamePage() {
                   <div className="w-7 h-7 rounded-full bg-gray-800 shadow mb-1" />
                   <span className="text-xs text-gray-500">黑方{playerColor === 'black' ? '(你)' : '(AI)'}</span>
                   <span className="text-lg font-bold">{score.black}</span>
+                  <span className="text-[10px] text-amber-600">提{captures.black}子</span>
                 </div>
                 <div className="flex items-center text-gray-300 text-xs">VS</div>
                 <div className="flex flex-col items-center">
@@ -2044,6 +1940,7 @@ export default function GoGamePage() {
                   <span className="text-xs text-gray-500">白方{playerColor === 'white' ? '(你)' : '(AI)'}</span>
                   <span className="text-lg font-bold">{score.white}</span>
                   <span className="text-[9px] text-gray-400">含贴目{getKomi(boardSize)}</span>
+                  <span className="text-[10px] text-amber-600">提{captures.white}子</span>
                 </div>
               </div>
               <div className="mt-2 text-center">
@@ -2144,7 +2041,7 @@ export default function GoGamePage() {
                             >
                               <p className="text-sm font-medium">{g.title || '未命名棋局'}</p>
                               <p className="text-xs text-gray-400">
-                                {g.board_size}路 | {g.difficulty === 'easy' ? '初级' : g.difficulty === 'medium' ? '中级' : '高级'} | 黑{g.black_score} - 白{g.white_score}
+                                {g.board_size}路 | {g.difficulty === 'easy' ? '初级' : g.difficulty === 'medium' ? '中级' : '高级'} | 黑{g.black_score} - 白{g.white_score} {g.created_at ? `| ${new Date(g.created_at).toLocaleDateString('zh-CN')}` : ''}
                               </p>
                             </button>
                             <Button variant="ghost" size="sm" onClick={() => deleteGame(g.id!)} className="text-red-400 hover:text-red-600">
@@ -2251,7 +2148,7 @@ export default function GoGamePage() {
         {/* 中间：棋盘 + 聊天 */}
         <div className="lg:col-span-5 space-y-3 lg:overflow-y-auto">
           <div className="flex justify-center" style={{ touchAction: 'manipulation' }}>
-            {renderSVGBoard()}
+            <GoBoard board={board} boardSize={boardSize} lastMove={lastMove} showHint={showHint} isAIThinking={isAIThinking} isReplayMode={isReplayMode} onMove={handleMove} />
           </div>
 
           {/* 问我围棋问题（棋盘正下方） */}

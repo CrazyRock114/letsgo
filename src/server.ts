@@ -4,7 +4,7 @@ import next from 'next';
 
 const dev = process.env.COZE_PROJECT_ENV !== 'PROD';
 const hostname = process.env.HOSTNAME || 'localhost';
-const port = parseInt(process.env.PORT || '5000', 10);
+const port = parseInt(process.env.PORT || '5001', 10);
 
 // Create Next.js app
 const app = next({ dev, hostname, port });
@@ -31,5 +31,14 @@ app.prepare().then(() => {
         dev ? 'development' : process.env.COZE_PROJECT_ENV
       }`,
     );
+
+    // 启动AI测试Worker（常驻后台对弈）
+    if (process.env.ENABLE_AI_TEST_WORKER !== 'false') {
+      import('@/lib/ai-test-worker').then(worker => {
+        worker.start().catch((err: unknown) => {
+          console.error('[server] Failed to start ai-test worker:', err instanceof Error ? err.message : String(err));
+        });
+      });
+    }
   });
 });

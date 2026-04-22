@@ -21,6 +21,7 @@ export const letsgoGames = pgTable("letsgo_games", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
 	engine: text().default('local'),
+	config: jsonb().default({}),
 	userId: integer("user_id"),
 }, (table) => [
 	index("idx_games_user_id").using("btree", table.userId.asc().nullsLast().op("int4_ops")),
@@ -43,6 +44,7 @@ export const letsgoUsers = pgTable("letsgo_users", {
 	wins: integer().default(0).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+	isAdmin: integer("is_admin").default(0).notNull(),
 }, (table) => [
 	index("letsgo_users_nickname_idx").using("btree", table.nickname.asc().nullsLast().op("text_ops")),
 	unique("letsgo_users_nickname_key").on(table.nickname),

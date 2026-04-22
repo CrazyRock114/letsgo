@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
     // Find user
     const { data: user, error } = await supabase
       .from('letsgo_users')
-      .select('id, nickname, password_hash, points, total_games, wins, created_at')
+      .select('id, nickname, password_hash, points, total_games, wins, created_at, is_admin')
       .eq('nickname', nickname)
       .single();
 
@@ -70,10 +70,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Generate token
-    const token = generateToken({ userId: user.id, nickname: user.nickname });
+    const token = generateToken({ userId: user.id, nickname: user.nickname, isAdmin: user.is_admin === 1 });
 
     return NextResponse.json({
-      user: { id: user.id, nickname: user.nickname, points: currentPoints, totalGames: user.total_games, wins: user.wins },
+      user: { id: user.id, nickname: user.nickname, points: currentPoints, totalGames: user.total_games, wins: user.wins, isAdmin: user.is_admin === 1 },
       token,
       dailyBonusAwarded,
       dailyBonusAmount: dailyBonusAwarded ? DAILY_BONUS : 0,

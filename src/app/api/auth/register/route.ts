@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
     const { data: user, error } = await supabase
       .from('letsgo_users')
       .insert({ nickname, password_hash: passwordHash })
-      .select('id, nickname, points, total_games, wins, created_at')
+      .select('id, nickname, points, total_games, wins, created_at, is_admin')
       .single();
 
     if (error) {
@@ -48,10 +48,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Generate token
-    const token = generateToken({ userId: user.id, nickname: user.nickname });
+    const token = generateToken({ userId: user.id, nickname: user.nickname, isAdmin: user.is_admin === 1 });
 
     return NextResponse.json({
-      user: { id: user.id, nickname: user.nickname, points: user.points, totalGames: user.total_games, wins: user.wins },
+      user: { id: user.id, nickname: user.nickname, points: user.points, totalGames: user.total_games, wins: user.wins, isAdmin: user.is_admin === 1 },
       token,
     });
   } catch (err) {

@@ -38,8 +38,9 @@ export async function POST(request: NextRequest) {
     const { id } = body;
     const client = getSupabaseClient();
 
-    // 自动保存扣除1积分（仅autoSave标记时扣除，首次创建不扣）
-    if (body.autoSave && id) {
+    const isAITest = body.isAITest === true;
+    // 自动保存扣除1积分（仅autoSave标记时扣除，首次创建不扣；AI测试模式跳过）
+    if (body.autoSave && id && !isAITest) {
       try {
         const AUTO_SAVE_COST = 1;
         const { data: saveUserData } = await client

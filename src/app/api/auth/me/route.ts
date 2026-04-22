@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
     const supabase = getSupabaseClient();
     const { data: user, error } = await supabase
       .from('letsgo_users')
-      .select('id, nickname, points, total_games, wins, created_at')
+      .select('id, nickname, points, total_games, wins, created_at, is_admin')
       .eq('id', payload.userId)
       .single();
 
@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      user: { id: user.id, nickname: user.nickname, points: user.points, totalGames: user.total_games, wins: user.wins },
+      user: { id: user.id, nickname: user.nickname, points: user.points, totalGames: user.total_games, wins: user.wins, isAdmin: user.is_admin === 1 },
     });
   } catch (err) {
     console.error('[auth] Me error:', err);

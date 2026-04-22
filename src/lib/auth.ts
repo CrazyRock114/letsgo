@@ -20,6 +20,7 @@ function getJwtSecret(): string {
 export interface JWTPayload {
   userId: number;
   nickname: string;
+  isAdmin: boolean;
 }
 
 export async function hashPassword(password: string): Promise<string> {

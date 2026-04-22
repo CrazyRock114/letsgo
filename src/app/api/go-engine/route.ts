@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { spawn, ChildProcess } from "child_process";
 import fs from "fs";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
-import { getUserFromAuthHeader } from "@/lib/auth";
+import { getUserFromAuthHeader, type JWTPayload } from "@/lib/auth";
 
 // KataGo分析结果类型
 interface KataGoAnalysis {
@@ -27,6 +27,8 @@ interface KataGoAnalysis {
 function parseKataRawNN(output: string, boardSize: number): KataGoAnalysis | null {
   try {
     const lines = output.trim().split('\n');
+    console.log(`[kata-raw-nn] Parsing output, ${lines.length} lines, boardSize=${boardSize}`);
+    console.log(`[kata-raw-nn] First 10 lines:`, lines.slice(0, 10).join(' | '));
     
     // Parse whiteWin
     let whiteWin = 0.5;
@@ -80,13 +82,15 @@ function parseKataRawNN(output: string, boardSize: number): KataGoAnalysis | nul
       }
     }
     
+    console.log(`[kata-raw-nn] Parsed OK: winRate=${Math.round(blackWinRate * 10) / 10}, scoreLead=${Math.round(blackScoreLead * 10) / 10}, bestMoves=${bestMoves.length}`);
     return {
       winRate: Math.round(blackWinRate * 10) / 10,
       scoreLead: Math.round(blackScoreLead * 10) / 10,
       actualVisits: 0,
       bestMoves,
     };
-  } catch {
+  } catch (e) {
+    console.error('[kata-raw-nn] Parse error:', e instanceof Error ? e.message : String(e));
     return null;
   }
 }
@@ -104,10 +108,26 @@ if (!process.env._EPIPE_HANDLER_SET) {
   process.env._EPIPE_HANDLER_SET = '1';
 }
 
-// 引擎路径
-const KATAGO_PATH = "/usr/local/katago/katago";
-const KATAGO_DIR = "/usr/local/katago";
-const KATAGO_CONFIG = "/usr/local/katago/gtp.cfg";
+// 引擎路径：支持环境变量覆盖，以及多路径自动发现
+const KATAGO_HOME = process.env.HOME || process.env.USERPROFILE || '';
+const KATAGO_CANDIDATES = [
+  { path: "/usr/local/katago/katago", dir: "/usr/local/katago", config: "/usr/local/katago/gtp.cfg" },
+  { path: `${KATAGO_HOME}/katago/katago`, dir: `${KATAGO_HOME}/katago`, config: `${KATAGO_HOME}/katago/gtp.cfg` },
+];
+
+function findKataGoPaths() {
+  for (const c of KATAGO_CANDIDATES) {
+    if (fs.existsSync(c.path) && fs.existsSync(c.config)) {
+      return c;
+    }
+  }
+  return KATAGO_CANDIDATES[0];
+}
+
+const KATAGO_PATHS = findKataGoPaths();
+const KATAGO_PATH = KATAGO_PATHS.path;
+const KATAGO_DIR = KATAGO_PATHS.dir;
+const KATAGO_CONFIG = KATAGO_PATHS.config;
 // GnuGo：优先项目捆绑版本（生产环境），备选系统安装路径（开发环境）
 const GNUGO_PATHS = [
   process.cwd() + "/bin/gnugo",  // 项目捆绑，生产环境可用
@@ -468,7 +488,11 @@ class PersistentKataGo {
   async sendCommands(commands: string[], timeoutMs: number = 30000): Promise<string[]> {
     const results: string[] = [];
     for (const cmd of commands) {
-      results.push(await this.sendCommand(cmd, timeoutMs));
+      const resp = await this.sendCommand(cmd, timeoutMs);
+      if (resp.trim().startsWith('?')) {
+        throw new Error(`GTP command failed: ${cmd} -> ${resp.trim()}`);
+      }
+      results.push(resp);
     }
     return results;
   }
@@ -638,8 +662,10 @@ async function getKataGoMove(
 // ============================================================
 async function getKataGoAnalysis(
   boardSize: number,
-  moves: Array<{ row: number; col: number; color: "black" | "white" }>
+  moves: Array<{ row: number; col: number; color: "black" | "white" }>,
+  overrideSeconds?: number
 ): Promise<KataGoAnalysis | null> {
+  const seconds = overrideSeconds !== undefined ? overrideSeconds : analysisSeconds;
   try {
     await persistentKataGo.ensureReady();
   } catch {
@@ -651,10 +677,11 @@ async function getKataGoAnalysis(
   await persistentKataGo.thoroughFlush();
 
   try {
-    // 准备棋盘（boardsize + clear_board + 重放所有落子）
+    // 准备棋盘（boardsize + clear_board + komi + 重放所有落子）
     const setupCommands = [
       `boardsize ${boardSize}`,
       'clear_board',
+      `komi ${getKomi(boardSize)}`,
     ];
     for (const m of moves) {
       const colChar = String.fromCharCode(65 + (m.col >= 8 ? m.col + 1 : m.col));
@@ -662,29 +689,32 @@ async function getKataGoAnalysis(
       const color = m.color === "black" ? "B" : "W";
       setupCommands.push(`play ${color} ${coord}`);
     }
-    console.log(`[kata-analysis] 准备棋盘: ${moves.length}步, boardSize=${boardSize}, mode=${analysisSeconds === 0 ? 'raw-nn' : `analyze(${analysisSeconds}s)`}`);
-    await persistentKataGo.sendCommands(setupCommands, 30000);
+    console.log(`[kata-analysis] 准备棋盘: ${moves.length}步, boardSize=${boardSize}, mode=${seconds === 0 ? 'raw-nn' : `analyze(${seconds}s)`}`);
+    const setupResponses = await persistentKataGo.sendCommands(setupCommands, 30000);
+    const failedSetup = setupResponses.filter((r: string) => r.trim().startsWith('?'));
+    if (failedSetup.length > 0) {
+      console.error('[kata-analysis] Setup commands failed:', failedSetup);
+    }
+    // 调试用：打印当前棋盘状态
+    try {
+      const boardState = await persistentKataGo.sendCommand('showboard', 5000);
+      console.log('[kata-analysis] showboard:\n', boardState);
+    } catch (e) {
+      console.log('[kata-analysis] showboard failed:', e instanceof Error ? e.message : String(e));
+    }
 
-    if (analysisSeconds === 0) {
+    if (seconds === 0) {
       // 模式1: kata-raw-nn all（0.04秒完成，输出标准GTP格式=\n\n）
       // 直接输出神经网络策略，不走MCTS搜索树，极速
       const analyzeResponse = await persistentKataGo.sendCommand('kata-raw-nn all', 10000);
-      console.log(`[kata-raw-nn] 分析完成, 响应长度=${analyzeResponse.length}, 前200字=${analyzeResponse.substring(0, 200)}`);
-
-      const result = parseKataRawNN(analyzeResponse, boardSize);
-      if (result) {
-        console.log(`[kata-raw-nn] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
-      } else {
-        console.log(`[kata-raw-nn] 解析返回null, 原始响应前300字=${analyzeResponse.substring(0, 300)}`);
-      }
-      return result;
+      return parseKataRawNN(analyzeResponse, boardSize);
     } else {
       // 模式2: kata-analyze + GTP stop（定时中断方式）
       // 关键发现：kata-analyze无视maxVisits/maxTime/maxPlayouts，会无限搜索
       // 唯一控制方式：发送GTP stop命令中断，获取当前分析结果
-      // analysisSeconds直接控制搜索时长（秒）
-      const durationMs = analysisSeconds * 1000;
-      console.log(`[kata-analyze] 开始分析, ${analysisSeconds}秒后stop`);
+      // seconds直接控制搜索时长（秒）
+      const durationMs = seconds * 1000;
+      console.log(`[kata-analyze] 开始分析, ${seconds}秒后stop`);
 
       // 发送kata-analyze命令（超时设长，实际由stop控制终止）
       const analyzePromise = persistentKataGo.sendCommand('kata-analyze 10', durationMs + 30000);
@@ -695,7 +725,7 @@ async function getKataGoAnalysis(
           const proc = persistentKataGo.getProcess();
           if (proc && !proc.killed && proc.stdin?.writable) {
             proc.stdin.write('stop\n');
-            console.log(`[kata-analyze] 已发送stop（${analysisSeconds}秒后）`);
+            console.log(`[kata-analyze] 已发送stop（${seconds}秒后）`);
           }
         } catch (e) {
           console.log('[kata-analyze] 发送stop失败:', e);
@@ -705,16 +735,9 @@ async function getKataGoAnalysis(
       try {
         const analyzeResponse = await analyzePromise;
         clearTimeout(stopTimer);
-        console.log(`[kata-analyze] 分析完成, 响应长度=${analyzeResponse.length}, 前300字=${analyzeResponse.substring(0, 300)}`);
 
         const isWhiteToMove = moves.length % 2 === 1;
-        const result = parseKataAnalyze(analyzeResponse, boardSize, isWhiteToMove);
-        if (result) {
-          console.log(`[kata-analyze] 解析成功: winRate=${result.winRate}, scoreLead=${result.scoreLead}, actualVisits=${result.actualVisits}, bestMoves=${result.bestMoves.map(m => m.move).join(',')}`);
-        } else {
-          console.log(`[kata-analyze] 解析返回null, 原始响应前500字=${analyzeResponse.substring(0, 500)}`);
-        }
-        return result;
+        return parseKataAnalyze(analyzeResponse, boardSize, isWhiteToMove);
       } catch (err: unknown) {
         clearTimeout(stopTimer);
         throw err;
@@ -763,22 +786,32 @@ function parseKataAnalyze(output: string, boardSize: number, isWhiteToMove: bool
       const moveIdx = parts.indexOf('move') + 1;
       const winrateIdx = parts.indexOf('winrate') + 1;
       const scoreIdx = parts.indexOf('scoreMean') + 1;
+      const scoreLeadIdx = parts.indexOf('scoreLead') + 1;
       const visitsIdx = parts.indexOf('visits') + 1;
 
       if (moveIdx === 0 || !parts[moveIdx]) continue;
 
       const moveStr = parts[moveIdx];
       const winrate = winrateIdx > 0 ? parseFloat(parts[winrateIdx]) : 0;
-      const scoreMean = scoreIdx > 0 ? parseFloat(parts[scoreIdx]) : 0;
+      // KataGo不同版本可能用scoreMean或scoreLead
+      const scoreValue = scoreLeadIdx > 0 ? parseFloat(parts[scoreLeadIdx]) : (scoreIdx > 0 ? parseFloat(parts[scoreIdx]) : 0);
       const visits = visitsIdx > 0 ? parseInt(parts[visitsIdx]) : 0;
 
       // 保留每个move的最新数据（后出现的visits更高）
-      latestMoveInfo.set(moveStr, { winrate, scoreMean, visits });
+      latestMoveInfo.set(moveStr, { winrate, scoreMean: scoreValue, visits });
 
       // 全局胜率/目数取最后一条info行（搜索最深的）
       globalWinRate = winrate;
-      globalScoreLead = scoreMean;
+      globalScoreLead = scoreValue;
       topMoveVisits = visits; // 最后一条info的visits就是搜索最深的
+    }
+    // 诊断：打印第一条info行，看score字段名和值
+    if (infoLines.length > 0) {
+      const firstLine = infoLines[0];
+      const hasScoreMean = firstLine.includes('scoreMean');
+      const hasScoreLead = firstLine.includes('scoreLead');
+      console.log(`[kata-analyze] 首条info行字段: scoreMean=${hasScoreMean}, scoreLead=${hasScoreLead}, sample=${firstLine.substring(0, 120)}`);
+      console.log(`[kata-analyze] 解析结果: globalWinRate=${globalWinRate}, globalScoreLead=${globalScoreLead}, topMoveVisits=${topMoveVisits}`);
     }
 
     // 按visits降序排列，pass排到最后，取前3个推荐落点
@@ -970,7 +1003,7 @@ interface QueueEntry {
   aiColor: 'black' | 'white';
   isAnalysis?: boolean; // 分析请求标记
   analysisResolve?: (v: KataGoAnalysis | null) => void; // 分析结果回调
-
+  analysisSeconds?: number; // 单次分析时长覆盖（秒）
 }
 
 interface EngineQueueResult {
@@ -1062,15 +1095,16 @@ class EngineQueue {
         let analysisResult: KataGoAnalysis | null = null;
         if (isKataGoAvailable()) {
           try {
+            const entrySeconds = entry.analysisSeconds !== undefined ? entry.analysisSeconds : analysisSeconds;
             // 安全超时：analysisSeconds秒 + 30s缓冲（防止getKataGoAnalysis内部stop失败时无限等待）
-            const analysisTimeout = (analysisSeconds || 0) * 1000 + 30000;
+            const analysisTimeout = (entrySeconds || 0) * 1000 + 30000;
             let queueTimeoutId: ReturnType<typeof setTimeout> | null = null;
-            
+
             // 队列溢出监控：analysis期间每2秒检查队列，>8则提前中断
             const ANALYSIS_INTERRUPT_THRESHOLD = 8;
             let interruptCheckInterval: ReturnType<typeof setInterval> | null = null;
             let interruptedByQueue = false;
-            if (analysisSeconds && analysisSeconds > 0) {
+            if (entrySeconds && entrySeconds > 0) {
               interruptCheckInterval = setInterval(() => {
                 const qLen = this.queue.length;
                 if (qLen > ANALYSIS_INTERRUPT_THRESHOLD) {
@@ -1089,9 +1123,9 @@ class EngineQueue {
                 }
               }, 2000);
             }
-            
+
             analysisResult = await Promise.race([
-              getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>),
+              getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>, entrySeconds),
               new Promise<null>(resolve => {
                 queueTimeoutId = setTimeout(() => {
                   console.warn(`[engine-queue] Analysis safety timeout (${Math.round(analysisTimeout/1000)}s) for ${entry.id}`);
@@ -1182,7 +1216,7 @@ class EngineQueue {
   /** 获取KataGo局面分析（通过主队列串行执行，避免与genmove命令冲突）
    *  队列保护：排队数 >= ANALYSIS_QUEUE_THRESHOLD(5) 时拒绝新analysis请求
    */
-  async enqueueAnalysis(userId: number, moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number, isAITest = false): Promise<{ analysis: KataGoAnalysis | null; queueBusy?: boolean; queueLength?: number }> {
+  async enqueueAnalysis(userId: number, moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number, isAITest = false, analysisSeconds?: number): Promise<{ analysis: KataGoAnalysis | null; queueBusy?: boolean; queueLength?: number }> {
     // 检查KataGo是否可用
     if (!isKataGoAvailable()) {
       console.log(`[engine-queue] Analysis rejected: KataGo不可用`);
@@ -1196,7 +1230,7 @@ class EngineQueue {
       return { analysis: null, queueBusy: true, queueLength: currentQueueLen };
     }
     const id = `qe-${++this.entryId}-analysis`;
-    console.log(`[engine-queue] Enqueued analysis: ${id}, user=${userId}, queueLen=${currentQueueLen}, isAITest=${isAITest}`);
+    console.log(`[engine-queue] Enqueued analysis: ${id}, user=${userId}, queueLen=${currentQueueLen}, isAITest=${isAITest}, seconds=${analysisSeconds ?? 'global'}`);
     return new Promise<{ analysis: KataGoAnalysis | null }>((resolve) => {
       this.queue.push({
         id,
@@ -1210,6 +1244,7 @@ class EngineQueue {
         aiColor: 'black',
         isAnalysis: true,
         analysisResolve: (result: KataGoAnalysis | null) => resolve({ analysis: result }),
+        analysisSeconds,
       });
       this.processNext();
     });
@@ -1272,6 +1307,11 @@ export async function POST(request: NextRequest) {
     const { boardSize, moves, difficulty, engine: requestedEngine, aiColor: rawAiColor, action, analysisSeconds: newSeconds } = body;
     const aiColor: 'black' | 'white' = (rawAiColor === 'black' || rawAiColor === 'white') ? rawAiColor : 'white';
 
+    // 内部API调用（AI测试Worker）跳过auth检查
+    const internalKey = request.headers.get('X-Internal-Key');
+    const isInternal = internalKey === process.env.INTERNAL_API_KEY && !!process.env.INTERNAL_API_KEY;
+    const internalUser: JWTPayload | null = isInternal ? { userId: 0, nickname: 'ai-test-worker', isAdmin: true } : null;
+
     // 配置更新请求：修改分析时长（秒）
     if (action === 'setConfig') {
       if (typeof newSeconds === 'number' && newSeconds >= 0 && newSeconds <= 60) {
@@ -1286,9 +1326,10 @@ export async function POST(request: NextRequest) {
     // 按需分析请求：仅当用户点击"提示与教学"时触发（消耗20积分）
     if (action === 'analyze') {
       const authHeader = request.headers.get('Authorization');
-      const user = getUserFromAuthHeader(authHeader);
-      const isAITest = body.isAITest === true;
-      console.log(`[go-engine] POST analyze: user=${user?.userId || 'unknown'}(${user?.nickname || '?'}), board=${boardSize}, moves=${moves?.length || 0}, queue=${engineQueue.getQueueLength()}, isAITest=${isAITest}`);
+      const user = internalUser || getUserFromAuthHeader(authHeader);
+      const isAITest = body.isAITest === true || isInternal;
+      const reqAnalysisSeconds = typeof body.analysisSeconds === 'number' ? body.analysisSeconds : undefined;
+      console.log(`[go-engine] POST analyze: user=${user?.userId || 'unknown'}(${user?.nickname || '?'}), board=${boardSize}, moves=${moves?.length || 0}, queue=${engineQueue.getQueueLength()}, isAITest=${isAITest}, seconds=${reqAnalysisSeconds ?? 'global'}`);
       if (!user || !isKataGoAvailable()) {
         return NextResponse.json({ analysis: null, error: !user ? '请先登录' : 'KataGo不可用' });
       }
@@ -1343,7 +1384,8 @@ export async function POST(request: NextRequest) {
           user.userId,
           moves as Array<{row: number, col: number, color: 'black' | 'white'}>,
           boardSize,
-          isAITest // AI测试模式不受队列限制
+          isAITest, // AI测试模式不受队列限制
+          reqAnalysisSeconds
         );
         if (result.queueBusy) {
           // 队列繁忙时退回积分（非AI测试）
@@ -1387,9 +1429,10 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ analysis: null });
       }
     }
+    const isAutoRun = body.isAutoRun === true || isInternal;
     const authHeader = request.headers.get('Authorization');
-    const user = getUserFromAuthHeader(authHeader);
-    
+    const user = internalUser || getUserFromAuthHeader(authHeader);
+
     if (!user) {
       // 未登录用户：仍允许使用本地AI，其他引擎需要登录
       if (requestedEngine === 'local') {
@@ -1408,8 +1451,8 @@ export async function POST(request: NextRequest) {
     // （GnuGo每次spawn新进程，天然可并行，不阻塞KataGo队列）
     // ============================================================
     if (requestedEngine === 'gnugo') {
-      // GnuGo积分检查和扣除
-      const gnugoCost = ENGINE_POINT_COSTS.gnugo;
+      // GnuGo积分检查和扣除（自动运行模式跳过）
+      const gnugoCost = isAutoRun ? 0 : ENGINE_POINT_COSTS.gnugo;
       const gnugoSupabase = getSupabaseClient();
       if (gnugoCost > 0) {
         const { data: gnugoUserData, error: gnugoUserError } = await gnugoSupabase
@@ -1478,7 +1521,7 @@ export async function POST(request: NextRequest) {
     // ============================================================
     // KataGo/Local引擎：积分扣除 + EngineQueue串行处理
     // ============================================================
-    const cost = getEngineCost(requestedEngine);
+    const cost = isAutoRun ? 0 : getEngineCost(requestedEngine);
     const supabase = getSupabaseClient();
     if (cost > 0) {
       // 读取当前余额

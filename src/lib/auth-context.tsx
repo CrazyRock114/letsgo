@@ -8,6 +8,7 @@ export interface UserInfo {
   points: number;
   totalGames: number;
   wins: number;
+  isAdmin?: boolean;
 }
 
 interface AuthContextType {
@@ -58,6 +59,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           points: data.user.points,
           totalGames: data.user.total_games,
           wins: data.user.wins,
+          isAdmin: data.user.isAdmin,
         };
         setUser(userInfo);
         localStorage.setItem('letsgo_user', JSON.stringify(userInfo));
@@ -94,12 +96,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         points: data.user.points,
         totalGames: data.user.total_games,
         wins: data.user.wins,
+        isAdmin: data.user.isAdmin,
       };
       setUser(userInfo);
       localStorage.setItem('letsgo_token', data.token);
       localStorage.setItem('letsgo_user', JSON.stringify(userInfo));
-      return { 
-        success: true, 
+      return {
+        success: true,
         dailyBonusAwarded: data.dailyBonusAwarded || false,
         dailyBonusAmount: data.dailyBonusAmount || 0,
       };
@@ -125,6 +128,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         points: data.user.points,
         totalGames: data.user.total_games,
         wins: data.user.wins,
+        isAdmin: data.user.isAdmin,
       };
       setUser(userInfo);
       localStorage.setItem('letsgo_token', data.token);
