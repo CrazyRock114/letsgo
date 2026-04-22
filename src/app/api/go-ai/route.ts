@@ -1,12 +1,9 @@
 // AI围棋对弈服务 - 使用LLM进行智能教学，真正的流式输出
-// 支持两种 LLM 后端：
-//   1. Coze SDK（沙箱环境自动注入 COZE_WORKLOAD_IDENTITY_API_KEY）
-//   2. DeepSeek API（设置 DEEPSEEK_API_KEY 环境变量）
+// LLM 后端：DeepSeek API（设置 DEEPSEEK_API_KEY 环境变量）
 //
 // 解说/教学采用 KataGo 分析数据驱动（winrate/scoreLead/bestMoves）
 
 import { NextRequest, NextResponse } from "next/server";
-import { LLMClient, Config, HeaderUtils } from "coze-coding-dev-sdk";
 import { boardToString, positionToCoordinate, getMoveContext, type Stone, type Board } from "@/lib/go-logic";
 import { getCachedAnalysis } from "@/app/api/go-engine/route";
 
@@ -23,13 +20,9 @@ interface KataGoAnalysis {
 
 // LLM 提供者检测
 const LLM_PROVIDER = (() => {
-  if (process.env.COZE_WORKLOAD_IDENTITY_API_KEY) return 'coze' as const;
   if (process.env.DEEPSEEK_API_KEY) return 'deepseek' as const;
   return 'none' as const;
 })();
-
-// Coze 配置（仅 Coze 环境下使用）
-const cozeConfig = new Config();
 
 // DeepSeek 配置
 const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_BASE_URL || 'https://api.deepseek.com';
@@ -544,53 +537,16 @@ export async function POST(request: NextRequest) {
 
     const temperature = type === 'ai-move' ? 0.4 : 0.8;
 
-    // 根据提供者选择流式输出方式
-    if (LLM_PROVIDER === 'coze') {
-      return streamCoze(request, messages, temperature);
-    } else {
+    // 使用 DeepSeek 流式输出
+    if (LLM_PROVIDER === 'deepseek') {
       return streamDeepSeek(messages, temperature);
+    } else {
+      return NextResponse.json({ error: '未配置 LLM API。请设置 DEEPSEEK_API_KEY 环境变量。' }, { status: 503 });
     }
   } catch (error) {
     console.error('API error:', error);
     return NextResponse.json({ error: '处理失败' }, { status: 500 });
   }
-}
-
-// ========== Coze SDK 流式输出 ==========
-async function streamCoze(request: NextRequest, messages: Array<{ role: 'system' | 'user'; content: string }>, temperature: number) {
-  const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
-  const client = new LLMClient(cozeConfig, customHeaders);
-
-  const llmStream = client.stream(messages, {
-    temperature,
-    model: 'doubao-seed-1-6-251015',
-  });
-
-  const encoder = new TextEncoder();
-  const readableStream = new ReadableStream({
-    async start(controller) {
-      try {
-        for await (const chunk of llmStream) {
-          if (chunk.content) {
-            controller.enqueue(encoder.encode(chunk.content.toString()));
-          }
-        }
-      } catch (error) {
-        console.error('Coze LLM stream error:', error);
-      } finally {
-        controller.close();
-      }
-    }
-  });
-
-  return new Response(readableStream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Transfer-Encoding': 'chunked',
-    },
-  });
 }
 
 // ========== DeepSeek API 流式输出（OpenAI 兼容格式） ==========

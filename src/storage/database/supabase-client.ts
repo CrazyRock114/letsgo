@@ -18,51 +18,6 @@ function loadEnv(): void {
       // dotenv not available
     }
 
-    // 尝试从coze_workload_identity获取环境变量（仅Coze平台可用）
-    // Vercel/Railway等平台应通过环境变量面板直接配置
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { execSync } = require('child_process') as typeof import('child_process');
-      const pythonCode = `
-import os
-import sys
-try:
-    from coze_workload_identity import Client
-    client = Client()
-    env_vars = client.get_project_env_vars()
-    client.close()
-    for env_var in env_vars:
-        print(f"{env_var.key}={env_var.value}")
-except Exception as e:
-    print(f"# Error: {e}", file=sys.stderr)
-`;
-
-      const output = execSync(`python3 -c '${pythonCode.replace(/'/g, "'\"'\"'")}'`, {
-        encoding: 'utf-8',
-        timeout: 10000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      const lines = output.trim().split('\n');
-      for (const line of lines) {
-        if (line.startsWith('#')) continue;
-        const eqIndex = line.indexOf('=');
-        if (eqIndex > 0) {
-          const key = line.substring(0, eqIndex);
-          let value = line.substring(eqIndex + 1);
-          if ((value.startsWith("'") && value.endsWith("'")) ||
-              (value.startsWith('"') && value.endsWith('"'))) {
-            value = value.slice(1, -1);
-          }
-          if (!process.env[key]) {
-            process.env[key] = value;
-          }
-        }
-      }
-    } catch {
-      // coze_workload_identity not available (e.g. Vercel), rely on env vars
-    }
-
     envLoaded = true;
   } catch {
     // Silently fail
@@ -71,23 +26,18 @@ except Exception as e:
 
 /**
  * 获取Supabase连接凭证
- * 
- * 优先级：SUPABASE_URL > COZE_SUPABASE_URL
- * - SUPABASE_URL: 用户自建Supabase（Railway部署使用）
- * - COZE_SUPABASE_URL: Coze平台内置Supabase（沙箱开发使用）
  */
 function getSupabaseCredentials(): SupabaseCredentials {
   loadEnv();
 
-  // 优先使用用户自建Supabase配置
-  const url = process.env.SUPABASE_URL || process.env.COZE_SUPABASE_URL;
-  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.COZE_SUPABASE_ANON_KEY;
+  const url = process.env.SUPABASE_URL;
+  const anonKey = process.env.SUPABASE_ANON_KEY;
 
   if (!url) {
-    throw new Error('SUPABASE_URL or COZE_SUPABASE_URL is not set');
+    throw new Error('SUPABASE_URL is not set');
   }
   if (!anonKey) {
-    throw new Error('SUPABASE_ANON_KEY or COZE_SUPABASE_ANON_KEY is not set');
+    throw new Error('SUPABASE_ANON_KEY is not set');
   }
 
   return { url, anonKey };
@@ -95,7 +45,7 @@ function getSupabaseCredentials(): SupabaseCredentials {
 
 function getSupabaseServiceRoleKey(): string | undefined {
   loadEnv();
-  return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.COZE_SUPABASE_SERVICE_ROLE_KEY;
+  return process.env.SUPABASE_SERVICE_ROLE_KEY;
 }
 
 function getSupabaseClient(token?: string): SupabaseClient {

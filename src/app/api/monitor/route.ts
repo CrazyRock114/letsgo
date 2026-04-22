@@ -81,7 +81,7 @@ export async function GET() {
     try {
       const startUsage = process.cpuUsage();
       const startTime = Date.now();
-      await new Promise(r => setTimeout(r, 100)); // 采样100ms
+      await new Promise(r => setTimeout(r, 2000)); // 采样2秒
       const endUsage = process.cpuUsage(startUsage);
       const elapsed = (Date.now() - startTime) * 1000; // 微秒
       cpuUsage = ((endUsage.user + endUsage.system) / elapsed) * 100;

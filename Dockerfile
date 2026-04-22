@@ -11,7 +11,7 @@ RUN apt-get update -qq && \
       ca-certificates curl unzip libzip4 && \
     rm -rf /var/lib/apt/lists/*
 
-ARG KATAGO_VERSION=v1.15.3
+ARG KATAGO_VERSION=v1.16.4
 RUN mkdir -p /usr/local/katago && \
     cd /tmp && \
     KATAGO_URL="https://github.com/lightvector/KataGo/releases/download/${KATAGO_VERSION}/katago-${KATAGO_VERSION}-eigenavx2-linux-x64.zip" && \
@@ -100,15 +100,10 @@ RUN echo "=== Standalone output structure ===" && \
 # ---- Stage 3: 运行时镜像 ----
 FROM node:24-slim AS runner
 
-# 安装 GnuGo + KataGo 运行时依赖 + postgresql-client（用于数据库迁移）
-# KataGo v1.15.3 编译于 Ubuntu 20.04，依赖：
-#   libssl.so.1.1 + libcrypto.so.1.1 → Debian 12 只有 OpenSSL 3.x，从 Debian 11 下载
-#   libzip.so.5 → Debian 12 libzip4 只提供 libzip.so.4，创建 symlink 兼容
+# 安装 GnuGo + KataGo 运行时依赖
+# KataGo v1.16.x 编译于 Ubuntu 22.04，原生支持 OpenSSL 3.x，无需 libssl1.1
 RUN apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends gnugo libgomp1 libzip4 ca-certificates curl postgresql-client && \
-    curl -sSL http://deb.debian.org/debian/pool/main/o/openssl/libssl1.1_1.1.1w-0+deb11u1_amd64.deb -o /tmp/libssl1.1.deb && \
-    dpkg -i /tmp/libssl1.1.deb && \
-    rm -f /tmp/libssl1.1.deb && \
+    apt-get install -y -qq --no-install-recommends gnugo libgomp1 libzip4 ca-certificates && \
     ln -sf /usr/lib/x86_64-linux-gnu/libzip.so.4 /usr/lib/x86_64-linux-gnu/libzip.so.5 && \
     rm -rf /var/lib/apt/lists/*
 

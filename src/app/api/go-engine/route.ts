@@ -138,13 +138,45 @@ const activeSessions: Map<string, ActiveSession> = new Map();
 // >0 = kata-analyze（MCTS搜索N秒后用GTP stop中断）
 let analysisSeconds = 0;
 
-// KataGo分析结果缓存（后台异步分析完成后存储，go-ai API可直接读取）
+// KataGo分析结果缓存（LRU + 过期清理，防止内存泄漏）
 const analysisCache: Map<string, { data: KataGoAnalysis; timestamp: number }> = new Map();
+const ANALYSIS_CACHE_MAX_SIZE = 500;
+const ANALYSIS_CACHE_TTL_MS = 30 * 60 * 1000; // 30分钟过期
+
+function pruneAnalysisCache(): void {
+  // 1. 清理过期条目
+  const now = Date.now();
+  const cutoff = now - ANALYSIS_CACHE_TTL_MS;
+  for (const [key, entry] of analysisCache) {
+    if (entry.timestamp < cutoff) {
+      analysisCache.delete(key);
+    }
+  }
+  // 2. 如果仍超过上限，删除最旧的条目
+  if (analysisCache.size > ANALYSIS_CACHE_MAX_SIZE) {
+    const sorted = Array.from(analysisCache.entries()).sort((a, b) => a[1].timestamp - b[1].timestamp);
+    const toDelete = sorted.slice(0, analysisCache.size - ANALYSIS_CACHE_MAX_SIZE);
+    for (const [key] of toDelete) {
+      analysisCache.delete(key);
+    }
+  }
+}
+
+function setAnalysisCache(moves: Array<{row: number; col: number; color: string}>, data: KataGoAnalysis): void {
+  const cacheKey = moves.map(m => `${m.color[0]}${m.row},${m.col}`).join('|');
+  pruneAnalysisCache();
+  analysisCache.set(cacheKey, { data, timestamp: Date.now() });
+}
 
 // 导出查询分析缓存的方法（供go-ai使用）
 export function getCachedAnalysis(moves: Array<{row: number; col: number; color: string}>): KataGoAnalysis | null {
   const cacheKey = moves.map(m => `${m.color[0]}${m.row},${m.col}`).join('|');
   const cached = analysisCache.get(cacheKey);
+  // 检查是否过期
+  if (cached && Date.now() - cached.timestamp > ANALYSIS_CACHE_TTL_MS) {
+    analysisCache.delete(cacheKey);
+    return null;
+  }
   return cached?.data || null;
 }
 
@@ -1081,6 +1113,9 @@ class EngineQueue {
         }
         if (entry.analysisResolve) {
           entry.analysisResolve(analysisResult);
+        }
+        if (analysisResult && entry.moves) {
+          setAnalysisCache(entry.moves, analysisResult);
         }
         console.log(`[engine-queue] Completed: ${entry.id}, type=analysis, hasResult=${!!analysisResult}, winRate=${analysisResult?.winRate ?? '-'}, scoreLead=${analysisResult?.scoreLead ?? '-'}`);
         // 分析请求不走正常resolve

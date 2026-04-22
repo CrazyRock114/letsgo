@@ -1,5 +1,4 @@
-import { pgTable, serial, timestamp, index, foreignKey, pgPolicy, integer, varchar, jsonb, text, unique } from "drizzle-orm/pg-core"
-import { sql } from "drizzle-orm"
+import { pgTable, serial, timestamp, index, foreignKey, integer, varchar, jsonb, text, unique } from "drizzle-orm/pg-core"
 
 
 
@@ -33,7 +32,6 @@ export const letsgoGames = pgTable("letsgo_games", {
 				foreignColumns: [letsgoUsers.id],
 				name: "letsgo_games_user_id_fkey"
 			}),
-	pgPolicy("service_role_access", { as: "permissive", for: "all", to: ["public"], using: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)`, withCheck: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)` }),
 ]);
 
 export const letsgoUsers = pgTable("letsgo_users", {
@@ -48,7 +46,6 @@ export const letsgoUsers = pgTable("letsgo_users", {
 }, (table) => [
 	index("letsgo_users_nickname_idx").using("btree", table.nickname.asc().nullsLast().op("text_ops")),
 	unique("letsgo_users_nickname_key").on(table.nickname),
-	pgPolicy("service_role_access", { as: "permissive", for: "all", to: ["public"], using: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)`, withCheck: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)` }),
 ]);
 
 export const letsgoPointTransactions = pgTable("letsgo_point_transactions", {
@@ -68,5 +65,4 @@ export const letsgoPointTransactions = pgTable("letsgo_point_transactions", {
 				foreignColumns: [letsgoUsers.id],
 				name: "letsgo_point_transactions_user_id_fkey"
 			}),
-	pgPolicy("service_role_access", { as: "permissive", for: "all", to: ["public"], using: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)`, withCheck: sql`((auth.jwt() ->> 'role'::text) = 'service_role'::text)` }),
 ]);
