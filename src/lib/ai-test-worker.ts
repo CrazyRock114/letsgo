@@ -386,8 +386,8 @@ async function tick(): Promise<void> {
   const moveCommentary = buildMoveCommentary(newMoves.length, result.move, config, isAIPlayerTurn, boardSize, newBoard);
   const newCommentaries = [...existingCommentaries, moveCommentary];
 
-  // 检查胜率结束条件（需要 analyze 数据，且至少下够一定步数才判断，避免开局误触发）
-  const minMovesForWinRateCheck = boardSize * 2;
+  // 检查胜率结束条件（需 analyze 数据 + 最少步数 + 目差 ≥ 2，避免开局误触发）
+  const minMovesForWinRateCheck = boardSize <= 9 ? 40 : boardSize <= 13 ? 80 : 300;
   if (isAIPlayerTurn && result.move.analysis && newMoves.length >= minMovesForWinRateCheck) {
     const winRate = result.move.analysis.winRate;
     const threshold = config.winRateEndCondition;
@@ -395,11 +395,16 @@ async function tick(): Promise<void> {
     const aiWinRate = config.aiPlayer.color === 'black' ? winRate : 100 - winRate;
     if (aiWinRate >= threshold) {
       const scores = calculateFinalScore(newBoard);
-      const endCommentary = buildEndCommentary(scores, `AI胜率${aiWinRate.toFixed(1)}%达到结束阈值`);
-      await saveGame(currentGameId, newMoves, newBoard, 'finished', configTitle(config), [...newCommentaries, endCommentary]);
-      console.log(`[ai-test-worker] Game finished: AI win rate ${aiWinRate.toFixed(1)}% >= ${threshold}%`);
-      await autoRestart(config);
-      return;
+      const aiIsWinner = scores.winner === config.aiPlayer.color;
+      const margin = Math.abs(scores.black - scores.white);
+      if (aiIsWinner && margin >= 2) {
+        const endCommentary = buildEndCommentary(scores, `AI胜率${aiWinRate.toFixed(1)}%且目差+${margin.toFixed(1)}目，达到结束条件`);
+        await saveGame(currentGameId, newMoves, newBoard, 'finished', configTitle(config), [...newCommentaries, endCommentary]);
+        console.log(`[ai-test-worker] Game finished: AI win rate ${aiWinRate.toFixed(1)}% >= ${threshold}%, margin=${margin.toFixed(1)} >= 2`);
+        await autoRestart(config);
+        return;
+      }
+      console.log(`[ai-test-worker] Win rate ${aiWinRate.toFixed(1)}% >= ${threshold}% but margin=${margin.toFixed(1)} < 2 or AI not winner (${scores.winner}), continuing`);
     }
   }
 

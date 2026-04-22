@@ -791,8 +791,8 @@ export function checkGameEnd(
   }
 
   // 步数上限（大幅提高，避免过早结束）
-  // 9路81个交叉点→150步, 13路169→300步, 19路361→500步
-  const maxMoves = size <= 9 ? 150 : size <= 13 ? 300 : 500;
+  // 9路81个交叉点→150步, 13路169→300步, 19路361→700步
+  const maxMoves = size <= 9 ? 150 : size <= 13 ? 300 : 700;
   if (moveCount >= maxMoves) {
     return { ended: true, reason: `已下${moveCount}手，棋局结束` };
   }
