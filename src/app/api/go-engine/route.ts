@@ -181,10 +181,11 @@ function getAvailableModels(): Array<{ name: string; path: string; sizeMB: numbe
 // 获取模型显示名称
 function getModelDisplayName(path: string): string {
   const basename = path.split('/').pop() || path;
+  if (/g170-b6c96/.test(basename)) return 'G170-B6C96 (官方小模型, 3.7MB, 均衡)';
   if (/lionffen/.test(basename)) return 'Lionffen (小模型, 2MB, 快)';
-  if (/rect15-b20c256/.test(basename)) return 'Rect15-B20C256 (中模型, 22MB)';
+  if (/rect15-b20c256/.test(basename)) return 'Rect15-B20C256 (中模型, 87MB, 强)';
   if (/b20c256/.test(basename)) return 'B20C256 (中模型)';
-  if (/b18c384/.test(basename)) return 'B18C384 (大模型)';
+  if (/b18c384/.test(basename)) return 'B18C384 (大模型, 100MB+)';
   if (/b40c256/.test(basename)) return 'B40C256 (超大模型)';
   return basename;
 }

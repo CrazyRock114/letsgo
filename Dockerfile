@@ -54,34 +54,37 @@ logAllGTPCommunication = false
 logSearchInfo = false
 CPUCFG
 
-# 下载神经网络模型（lionffen 2MB 小模型，支持所有棋盘大小）
+# 下载神经网络模型（并行下载多个，供运行时切换选择）
+# 1. lionffen b6c64 (2MB, 快, 支持所有棋盘)
 RUN curl -fSL --retry 3 --max-time 180 -H "Referer: https://katagotraining.org/extra_networks/" \
       -o /usr/local/katago/lionffen_b6c64.txt.gz \
-      "https://media.katagotraining.org/uploaded/networks/models_extra/lionffen_b6c64_3x3_v10.txt.gz" ; \
-    if [ "$(stat -c%s /usr/local/katago/lionffen_b6c64.txt.gz 2>/dev/null || echo 0)" -gt 100000 ]; then \
-      echo "Downloaded lionffen model OK"; \
-    else \
-      echo "lionffen download failed, trying rect15..."; \
-      rm -f /usr/local/katago/lionffen_b6c64.txt.gz; \
-      curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networks/" \
-        -o /usr/local/katago/rect15-b20c256-s343365760-d96847752.bin.gz \
-        "https://media.katagotraining.org/uploaded/networks/models_extra/rect15-b20c256-s343365760-d96847752.bin.gz" ; \
-      if [ "$(stat -c%s /usr/local/katago/rect15-b20c256-s343365760-d96847752.bin.gz 2>/dev/null || echo 0)" -gt 10000000 ]; then \
-        echo "Downloaded rect15 model OK"; \
-      else \
-        echo "All model downloads failed, trying GitHub human SL model..."; \
-        rm -f /usr/local/katago/rect15-b20c256-s343365760-d96847752.bin.gz; \
-        curl -sL --max-time 600 --retry 1 \
-          -o /usr/local/katago/b18c384nbt-humanv0.bin.gz \
-          "https://github.com/lightvector/KataGo/releases/download/v1.15.0/b18c384nbt-humanv0.bin.gz" ; \
-        if [ "$(stat -c%s /usr/local/katago/b18c384nbt-humanv0.bin.gz 2>/dev/null || echo 0)" -gt 10000000 ]; then \
-          echo "Downloaded human SL model OK"; \
+      "https://media.katagotraining.org/uploaded/networks/models_extra/lionffen_b6c64_3x3_v10.txt.gz" && \
+    echo "lionffen download attempted"
+
+# 2. rect15 b20c256 (87MB, 通用, 棋力强)
+RUN curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networks/" \
+      -o /usr/local/katago/rect15-b20c256-s343365760-d96847752.bin.gz \
+      "https://media.katagotraining.org/uploaded/networks/models_extra/rect15-b20c256-s343365760-d96847752.bin.gz" && \
+    echo "rect15 download attempted"
+
+# 3. g170-b6c96 (3.7MB, KataGo官方小模型, 平衡速度与棋力)
+RUN curl -fSL --retry 3 --max-time 300 \
+      -o /usr/local/katago/g170-b6c96-s175395328-d26788732.bin.gz \
+      "https://github.com/lightvector/KataGo/releases/download/v1.12.3/g170-b6c96-s175395328-d26788732.bin.gz" && \
+    echo "g170-b6c96 download attempted"
+
+# 验证各模型是否下载成功
+RUN for f in /usr/local/katago/*.gz; do \
+      if [ -f "$f" ]; then \
+        size=$(stat -c%s "$f" 2>/dev/null || echo 0); \
+        if [ "$size" -gt 100000 ]; then \
+          echo "OK: $f (${size} bytes)"; \
         else \
-          echo "WARNING: All model downloads failed"; \
-          rm -f /usr/local/katago/b18c384nbt-humanv0.bin.gz; \
+          echo "FAIL: $f too small (${size} bytes), removing"; \
+          rm -f "$f"; \
         fi; \
       fi; \
-    fi
+    done
 
 # 验证安装（katago version 必须成功，否则构建失败）
 RUN /usr/local/katago/katago version && \
