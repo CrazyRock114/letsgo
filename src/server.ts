@@ -32,6 +32,13 @@ app.prepare().then(() => {
       }`,
     );
 
+    // 预热KataGo引擎：后台加载模型，避免首个用户请求冷启动
+    import('@/app/api/go-engine/route').then(goEngine => {
+      goEngine.warmupKataGo().catch((err: unknown) => {
+        console.error('[server] KataGo warmup error:', err instanceof Error ? err.message : String(err));
+      });
+    });
+
     // 启动AI测试Worker（常驻后台对弈）
     if (process.env.ENABLE_AI_TEST_WORKER !== 'false') {
       import('@/lib/ai-test-worker').then(worker => {

@@ -649,6 +649,22 @@ class PersistentKataGo {
 // 模块级单例 - Node.js进程内共享
 const persistentKataGo = new PersistentKataGo();
 
+// 预热KataGo进程：服务启动时后台加载模型，避免首个请求冷启动
+export async function warmupKataGo(): Promise<void> {
+  try {
+    if (!isKataGoAvailable()) {
+      console.log('[warmup] KataGo not available (binary/model/config missing), skipping warmup');
+      return;
+    }
+    console.log('[warmup] Starting KataGo warmup...');
+    const start = Date.now();
+    await persistentKataGo.ensureReady();
+    console.log(`[warmup] KataGo ready in ${Date.now() - start}ms`);
+  } catch (err) {
+    console.warn('[warmup] KataGo warmup failed:', err instanceof Error ? err.message : String(err));
+  }
+}
+
 // ============================================================
 // KataGo落子（使用持久化进程）
 // ============================================================
