@@ -454,14 +454,6 @@ class PersistentKataGo {
     this.lastError = "";
     const currentEpoch = this.procEpoch;  // 闭包捕获当前纪元
 
-    // 持续收集stdout数据，按\n\n分割响应并分发到等待的Promise
-    // 只处理与当前纪元匹配的进程数据
-    this.proc.stdout?.on("data", (data: Buffer) => {
-      if (this.procEpoch !== currentEpoch) return;  // 旧进程数据，忽略
-      this.buffer += data.toString();
-      this.dispatchResponses();
-    });
-
     // 收集stderr用于错误诊断
     this.proc.stderr?.on("data", (data: Buffer) => {
       if (this.procEpoch !== currentEpoch) return;
@@ -478,10 +470,10 @@ class PersistentKataGo {
         this.buffer = "";
         // 拒绝所有等待中的命令
         for (const item of this.commandQueue) {
-        clearTimeout(item.timeout);
-        item.reject(new Error(`KataGo process exited (code=${code}): ${this.lastError}`));
-      }
-      this.commandQueue = [];
+          clearTimeout(item.timeout);
+          item.reject(new Error(`KataGo process exited (code=${code}): ${this.lastError}`));
+        }
+        this.commandQueue = [];
         if (code !== 0) this.crashed = true;
       }  // end if procEpoch === currentEpoch
     });
@@ -489,7 +481,9 @@ class PersistentKataGo {
     // 等待进程就绪：发送name命令，成功则表示GTP握手完成
     // 注意：这里不能用 this.sendCommand，因为它会调用 ensureReady() 导致死锁
     // （ensureReady 等待 startProcess 完成，startProcess 等待 sendCommand 完成）
+    // 关键：启动期间只用临时监听器，避免永久监听器把启动响应残留到 this.buffer
     try {
+      let startupBuffer = "";
       const nameResp = await new Promise<string>((resolve, reject) => {
         const timeout = setTimeout(() => {
           reject(new Error('KataGo name command timeout (120s)'));
@@ -497,12 +491,12 @@ class PersistentKataGo {
 
         const onData = (data: Buffer) => {
           if (this.procEpoch !== currentEpoch) return;
-          this.buffer += data.toString();
+          startupBuffer += data.toString();
           // 检查是否有完整的 GTP 响应
-          const endIdx = this.buffer.indexOf('\n\n');
+          const endIdx = startupBuffer.indexOf('\n\n');
           if (endIdx !== -1) {
-            const response = this.buffer.substring(0, endIdx).trim();
-            this.buffer = this.buffer.substring(endIdx + 2);
+            const response = startupBuffer.substring(0, endIdx).trim();
+            startupBuffer = startupBuffer.substring(endIdx + 2);
             // 只处理 name 命令的响应（以 = 开头）
             if (response.startsWith('=') || response.startsWith('?')) {
               clearTimeout(timeout);
@@ -523,6 +517,14 @@ class PersistentKataGo {
       this.killProcess();
       throw new Error(`KataGo startup failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+
+    // 启动握手完成后，再挂接永久监听器
+    // 这样启动期间的输出不会污染 this.buffer
+    this.proc.stdout?.on("data", (data: Buffer) => {
+      if (this.procEpoch !== currentEpoch) return;  // 旧进程数据，忽略
+      this.buffer += data.toString();
+      this.dispatchResponses();
+    });
   }
 
   // 从buffer中提取完整的GTP响应并分发到等待的Promise
