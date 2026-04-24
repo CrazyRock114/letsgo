@@ -1,22 +1,41 @@
 /**
- * 双引擎压力测试脚本 v2
- * 
- * 40个GnuGo用户 + 10个KataGo用户
- * 每个用户每10秒随机下一步棋（19路高级难度）
- * 并发控制：等待AI响应时如果超过10秒，延迟一个周期
- * 统计每个用户的延迟次数
- * 
- * 用法: node scripts/stress-test.js [BASE_URL]
+ * 双引擎压力测试脚本 v3
+ *
+ * 针对线上 letusgoa.cn，测试双引擎常驻架构的并发能力
+ *
+ * 三种测试模式：
+ *   1. genmove  — 纯对弈引擎压力测试
+ *   2. analyze  — 纯分析引擎压力测试（模拟大量用户同时点"教学提示"）
+ *   3. mixed    — 混合压力（对弈 + 分析同时进行），验证两引擎互不阻塞
+ *
+ * 用法:
+ *   node scripts/stress-test.js [模式] [BASE_URL]
+ *
+ * 示例:
+ *   node scripts/stress-test.js genmove
+ *   node scripts/stress-test.js analyze https://letusgoa.cn
+ *   node scripts/stress-test.js mixed
+ *
+ * 环境变量:
+ *   GENMOVE_USERS     对弈并发用户数，默认 10
+ *   ANALYZE_USERS     分析并发用户数，默认 20
+ *   BOARD_SIZE        棋盘大小，默认 19
+ *   DIFFICULTY        easy | medium | hard，默认 hard
+ *   STEP_INTERVAL_MS  每步间隔(ms)，默认 8000
+ *   MAX_STEPS         每局最多步数，默认 15
  */
 
-const BASE_URL = process.argv[2] || 'https://letusgoa.cn';
-const GNUGO_USERS = 40;
-const KATAGO_USERS = 10;
-const STEP_INTERVAL_MS = 10000; // 每10秒下一步
-const MAX_STEPS = 20;           // 最多20步
-const BOARD_SIZE = 19;
-const DIFFICULTY = 'hard';
-const STAGGER_DELAY_MS = 500;   // 用户之间错开启动间隔
+const MODE = process.argv[2] || 'mixed';
+const BASE_URL = process.argv[3] || 'https://letusgoa.cn';
+
+const GENMOVE_USERS = parseInt(process.env.GENMOVE_USERS || '10', 10);
+const ANALYZE_USERS = parseInt(process.env.ANALYZE_USERS || '20', 10);
+const BOARD_SIZE = parseInt(process.env.BOARD_SIZE || '19', 10);
+const DIFFICULTY = process.env.DIFFICULTY || 'hard';
+const STEP_INTERVAL_MS = parseInt(process.env.STEP_INTERVAL_MS || '8000', 10);
+const MAX_STEPS = parseInt(process.env.MAX_STEPS || '15', 10);
+const STAGGER_DELAY_MS = 300;
+const REQUEST_TIMEOUT_MS = 120000;
 
 // ---- 围棋最小逻辑 ----
 function createEmptyBoard(size) {
@@ -93,24 +112,20 @@ function applyMove(board, row, col, color, size) {
   const newBoard = board.map(r => [...r]);
   newBoard[row][col] = color;
   const opponent = color === 1 ? 2 : 1;
-  let captured = 0;
   for (const [nr, nc] of getNeighbors(row, col, size)) {
     if (newBoard[nr][nc] === opponent) {
       const group = getGroup(newBoard, nr, nc, size);
-      if (group.liberties === 0) {
-        captured += group.stones.length;
-        removeGroup(newBoard, group.stones);
-      }
+      if (group.liberties === 0) removeGroup(newBoard, group.stones);
     }
   }
-  return { board: newBoard, captured };
+  return newBoard;
 }
 
 // ---- API 工具 ----
 async function api(method, path, body, token) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const opts = { method, headers, signal: AbortSignal.timeout(120000) }; // 2分钟超时
+  const opts = { method, headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(`${BASE_URL}${path}`, opts);
   return res.json();
@@ -118,268 +133,334 @@ async function api(method, path, body, token) {
 
 // ---- 全局统计 ----
 const stats = {
-  gnugo: { users: 0, moves: 0, errors: 0, passes: 0, totalTime: 0, delays: 0, delayUsers: [] },
-  katago: { users: 0, moves: 0, errors: 0, passes: 0, totalTime: 0, delays: 0, delayUsers: [] },
+  genmove: { requests: 0, success: 0, errors: 0, passes: 0, totalTime: 0, maxTime: 0, delays: 0 },
+  analyze: { requests: 0, success: 0, errors: 0, totalTime: 0, maxTime: 0, delays: 0, totalVisits: 0 },
   startTime: Date.now(),
 };
 
-// 实时进度计数器
-let completedUsers = 0;
-let activeGames = 0;
+let activeGenmove = 0;
+let activeAnalyze = 0;
+let completedGenmove = 0;
+let completedAnalyze = 0;
 
 function printProgress() {
   const elapsed = ((Date.now() - stats.startTime) / 1000).toFixed(0);
-  console.log(`[${elapsed}s] 活跃对弈: ${activeGames} | GnuGo: ${stats.gnugo.moves}步 ${stats.gnugo.errors}错 ${stats.gnugo.delays}延迟 | KataGo: ${stats.katago.moves}步 ${stats.katago.errors}错 ${stats.katago.delays}延迟 | 完成: ${completedUsers}/${GNUGO_USERS + KATAGO_USERS}`);
+  const gm = stats.genmove;
+  const an = stats.analyze;
+  const gmAvg = gm.requests > 0 ? (gm.totalTime / gm.requests / 1000).toFixed(1) : '-';
+  const anAvg = an.requests > 0 ? (an.totalTime / an.requests / 1000).toFixed(1) : '-';
+  console.log(
+    `[${elapsed}s] 活跃: GM=${activeGenmove} AN=${activeAnalyze} | ` +
+    `GM: ${gm.requests}请求 ${gm.success}成功 ${gmAvg}s均耗 ${gm.delays}延迟 | ` +
+    `AN: ${an.requests}请求 ${an.success}成功 ${anAvg}s均耗 ${an.delays}延迟 | ` +
+    `完成: GM=${completedGenmove}/${MODE === 'analyze' ? 0 : GENMOVE_USERS} ` +
+    `AN=${completedAnalyze}/${MODE === 'genmove' ? 0 : ANALYZE_USERS}`
+  );
 }
 
-// ---- 单用户对弈 ----
-async function runUser(engine, userId) {
-  const tag = `[${engine === 'gnugo' ? 'G' : 'K'}${userId}]`;
-  const userDelays = { count: 0 }; // 该用户延迟次数
-  const userIdx = engine === 'gnugo' ? userId : userId + 100; // 确保不重叠
-
+// ---- 对弈压力测试（genmove 引擎） ----
+async function runGenmoveUser(userId) {
+  const tag = `[GM${userId}]`;
+  const userIdx = userId;
+  let token;
   let gameStarted = false;
+
   try {
-    // 注册
     const rid = Math.random().toString(36).slice(2, 5);
-    const nickname = `t${userIdx}_${rid}`;
-    let token;
+    const nickname = `gm${userIdx}_${rid}`;
     let regResult = await api('POST', '/api/auth/register', { nickname, password: 'test1234' });
-    if (regResult.token) {
-      token = regResult.token;
-    } else {
-      // 换名重试
-      const rid2 = Math.random().toString(36).slice(2, 5);
-      const nick2 = `t${userIdx}_${rid2}`;
-      regResult = await api('POST', '/api/auth/register', { nickname: nick2, password: 'test1234' });
-      if (!regResult.token) throw new Error(`注册失败: ${regResult.error}`);
-      token = regResult.token;
+    if (!regResult.token) {
+      regResult = await api('POST', '/api/auth/register', { nickname: nickname + 'x', password: 'test1234' });
     }
+    if (!regResult.token) throw new Error(`注册失败: ${regResult.error}`);
+    token = regResult.token;
 
-    stats[engine].users++;
-    activeGames++;
     gameStarted = true;
-    console.log(`${tag} ✓ 已注册，开始对弈`);
+    activeGenmove++;
+    console.log(`${tag} 开始对弈`);
 
-    // 创建棋局
     const gameResult = await api('POST', '/api/games', {
-      boardSize: BOARD_SIZE,
-      difficulty: DIFFICULTY,
-      engine,
-      title: `${BOARD_SIZE}路 ${DIFFICULTY} ${engine} 压测`,
-      moves: [],
-      status: 'playing',
+      boardSize: BOARD_SIZE, difficulty: DIFFICULTY, engine: 'katago',
+      title: `压测-GM-${BOARD_SIZE}路-${DIFFICULTY}`, moves: [], status: 'playing',
     }, token);
     const gameId = gameResult.game?.id || gameResult.id;
 
     let board = createEmptyBoard(BOARD_SIZE);
     let moves = [];
-    let playerColor = 1; // 黑先
+    let playerColor = 1;
 
     for (let step = 1; step <= MAX_STEPS; step++) {
-      // 玩家落子
       const move = findRandomValidMove(board, playerColor, BOARD_SIZE);
-      if (!move) {
-        console.log(`${tag} 第${step}步 无合法落子，结束`);
-        break;
-      }
-
+      if (!move) break;
       const [row, col] = move;
-      const moveRecord = { row, col, color: playerColor };
-      moves.push(moveRecord);
-      const result = applyMove(board, row, col, playerColor, BOARD_SIZE);
-      board = result.board;
+      moves.push({ row, col, color: playerColor });
+      board = applyMove(board, row, col, playerColor, BOARD_SIZE);
 
-      // 调用引擎，计时
       const t0 = Date.now();
       let engineResult;
       try {
         engineResult = await api('POST', '/api/go-engine', {
-          boardSize: BOARD_SIZE,
-          difficulty: DIFFICULTY,
-          engine,
-          moves,
+          boardSize: BOARD_SIZE, difficulty: DIFFICULTY, engine: 'katago', moves,
         }, token);
       } catch (e) {
-        stats[engine].errors++;
-        console.log(`${tag} 第${step}步 请求异常: ${e.message}`);
+        stats.genmove.errors++;
+        console.log(`${tag} 第${step}步 异常: ${e.message}`);
         break;
       }
-
       const elapsed = Date.now() - t0;
-      const usedEngine = engineResult.engine || (engineResult.noEngine ? 'local' : engine);
 
-      // 判断是否需要延迟（AI响应超过10秒）
-      let delayed = false;
-      if (elapsed > STEP_INTERVAL_MS) {
-        userDelays.count++;
-        stats[engine].delays++;
-        delayed = true;
-      }
+      stats.genmove.requests++;
+      stats.genmove.totalTime += elapsed;
+      if (elapsed > stats.genmove.maxTime) stats.genmove.maxTime = elapsed;
+      if (elapsed > STEP_INTERVAL_MS) stats.genmove.delays++;
 
-      stats[engine].moves++;
-      stats[engine].totalTime += elapsed;
+      const delayMark = elapsed > STEP_INTERVAL_MS ? ' ⏳' : '';
+      console.log(`${tag} #${step} ${elapsed}ms${delayMark}`);
 
-      const delayMark = delayed ? ` ⏳+1延迟(${userDelays.count}次)` : '';
-      const engineMark = usedEngine !== engine ? ` [${usedEngine}]` : '';
-      console.log(`${tag} 第${step}步 ${elapsed}ms${engineMark}${delayMark}`);
-
-      // 错误处理
       if (engineResult.error && !engineResult.insufficientPoints) {
-        stats[engine].errors++;
-        console.log(`${tag} 引擎错误: ${engineResult.error}`);
+        stats.genmove.errors++;
         break;
       }
-
       if (engineResult.insufficientPoints) {
-        console.log(`${tag} 积分不足，退出`);
+        console.log(`${tag} 积分不足`);
         break;
       }
 
-      // AI停手
-      if (engineResult.pass) {
-        stats[engine].passes++;
-        console.log(`${tag} AI停手，结束`);
-        break;
-      }
-
-      // AI落子
       if (engineResult.move) {
         const aiColor = playerColor === 1 ? 2 : 1;
-        const aiResult = applyMove(board, engineResult.move.row, engineResult.move.col, aiColor, BOARD_SIZE);
-        board = aiResult.board;
+        board = applyMove(board, engineResult.move.row, engineResult.move.col, aiColor, BOARD_SIZE);
         moves.push({ row: engineResult.move.row, col: engineResult.move.col, color: aiColor });
+        stats.genmove.success++;
+      } else if (engineResult.pass) {
+        stats.genmove.passes++;
+        stats.genmove.success++;
+        console.log(`${tag} AI停手`);
+        break;
       }
 
-      // 每5步更新棋局（保持活跃对弈状态）
       if (step % 5 === 0 && gameId) {
-        await api('PUT', `/api/games/${gameId}`, {
-          moves,
-          status: 'playing',
-        }, token).catch(() => {});
+        await api('PUT', `/api/games/${gameId}`, { moves, status: 'playing' }, token).catch(() => {});
       }
 
-      // 等待间隔（扣除AI响应时间）
       if (step < MAX_STEPS) {
-        const waitTime = Math.max(0, STEP_INTERVAL_MS - elapsed);
-        await new Promise(r => setTimeout(r, waitTime));
+        await new Promise(r => setTimeout(r, Math.max(0, STEP_INTERVAL_MS - elapsed)));
       }
     }
 
-    // 结束棋局
     if (gameId) {
-      await api('PUT', `/api/games/${gameId}`, {
-        moves,
-        status: 'finished',
-      }, token).catch(() => {});
+      await api('PUT', `/api/games/${gameId}`, { moves, status: 'finished' }, token).catch(() => {});
     }
-
-    // 记录延迟统计
-    if (userDelays.count > 0) {
-      stats[engine].delayUsers.push({ userId, delays: userDelays.count });
-    }
-
   } catch (e) {
-    stats[engine].errors++;
-    console.log(`${tag} 异常退出: ${e.message}`);
+    stats.genmove.errors++;
+    console.log(`${tag} 异常: ${e.message}`);
   } finally {
-    if (gameStarted) activeGames--;
-    completedUsers++;
+    if (gameStarted) activeGenmove--;
+    completedGenmove++;
+  }
+}
+
+// ---- 分析压力测试（analyze 引擎） ----
+async function runAnalyzeUser(userId) {
+  const tag = `[AN${userId}]`;
+  const userIdx = userId + 200;
+  let token;
+  let started = false;
+
+  try {
+    const rid = Math.random().toString(36).slice(2, 5);
+    const nickname = `an${userIdx}_${rid}`;
+    let regResult = await api('POST', '/api/auth/register', { nickname, password: 'test1234' });
+    if (!regResult.token) {
+      regResult = await api('POST', '/api/auth/register', { nickname: nickname + 'x', password: 'test1234' });
+    }
+    if (!regResult.token) throw new Error(`注册失败: ${regResult.error}`);
+    token = regResult.token;
+
+    started = true;
+    activeAnalyze++;
+    console.log(`${tag} 开始分析压测`);
+
+    // 预构造一段棋谱
+    let board = createEmptyBoard(BOARD_SIZE);
+    let moves = [];
+    let color = 1;
+    for (let i = 0; i < 8; i++) {
+      const move = findRandomValidMove(board, color, BOARD_SIZE);
+      if (!move) break;
+      const [row, col] = move;
+      moves.push({ row, col, color });
+      board = applyMove(board, row, col, color, BOARD_SIZE);
+      color = color === 1 ? 2 : 1;
+    }
+
+    // 循环点击"教学提示"，模拟真实用户行为
+    for (let round = 1; round <= MAX_STEPS; round++) {
+      // 每轮追加一手，让局面变化
+      if (round > 1) {
+        const move = findRandomValidMove(board, color, BOARD_SIZE);
+        if (move) {
+          const [row, col] = move;
+          moves.push({ row, col, color });
+          board = applyMove(board, row, col, color, BOARD_SIZE);
+          color = color === 1 ? 2 : 1;
+        }
+      }
+
+      const t0 = Date.now();
+      let result;
+      try {
+        result = await api('POST', '/api/go-engine', {
+          action: 'analyze',
+          boardSize: BOARD_SIZE,
+          moves,
+          difficulty: DIFFICULTY,
+        }, token);
+      } catch (e) {
+        stats.analyze.errors++;
+        console.log(`${tag} #${round} 异常: ${e.message}`);
+        break;
+      }
+      const elapsed = Date.now() - t0;
+
+      stats.analyze.requests++;
+      stats.analyze.totalTime += elapsed;
+      if (elapsed > stats.analyze.maxTime) stats.analyze.maxTime = elapsed;
+      if (elapsed > STEP_INTERVAL_MS) stats.analyze.delays++;
+
+      const visits = result?.analysis?.actualVisits || 0;
+      stats.analyze.totalVisits += visits;
+
+      const ok = !!result?.analysis;
+      if (ok) stats.analyze.success++;
+      else stats.analyze.errors++;
+
+      const delayMark = elapsed > STEP_INTERVAL_MS ? ' ⏳' : '';
+      console.log(`${tag} #${round} ${elapsed}ms visits=${visits} ${ok ? '✓' : '✗'}${delayMark}`);
+
+      if (result?.insufficientPoints) {
+        console.log(`${tag} 积分不足`);
+        break;
+      }
+
+      await new Promise(r => setTimeout(r, Math.max(0, STEP_INTERVAL_MS - elapsed)));
+    }
+  } catch (e) {
+    stats.analyze.errors++;
+    console.log(`${tag} 异常: ${e.message}`);
+  } finally {
+    if (started) activeAnalyze--;
+    completedAnalyze++;
   }
 }
 
 // ---- 主流程 ----
 async function main() {
   console.log('='.repeat(70));
-  console.log('  双引擎压力测试 v2');
-  console.log('='.repeat(70));
-  console.log(`  目标: ${BASE_URL}`);
-  console.log(`  GnuGo用户: ${GNUGO_USERS}  |  KataGo用户: ${KATAGO_USERS}`);
-  console.log(`  每步间隔: ${STEP_INTERVAL_MS / 1000}s  |  最多步数: ${MAX_STEPS}`);
-  console.log(`  棋盘: ${BOARD_SIZE}路 ${DIFFICULTY}`);
-  console.log(`  启动错峰: ${STAGGER_DELAY_MS}ms/用户`);
+  console.log('  双引擎压力测试 v3');
+  console.log('  目标:', BASE_URL);
+  console.log('  模式:', MODE);
+  console.log('  棋盘:', BOARD_SIZE, '路', DIFFICULTY);
+  console.log('  对弈用户:', MODE === 'analyze' ? 0 : GENMOVE_USERS);
+  console.log('  分析用户:', MODE === 'genmove' ? 0 : ANALYZE_USERS);
+  console.log('  每步间隔:', STEP_INTERVAL_MS, 'ms | 最大步数:', MAX_STEPS);
   console.log('='.repeat(70));
 
   // 检查引擎状态
   try {
-    const engineStatus = await api('GET', '/api/go-engine');
-    const kt = engineStatus.engines?.find(e => e.id === 'katago');
-    const gn = engineStatus.engines?.find(e => e.id === 'gnugo');
-    console.log(`  KataGo: ${kt?.available ? '✓ 可用' : '✗ 不可用'}  |  GnuGo: ${gn?.available ? '✓ 可用' : '✗ 不可用'}`);
-    console.log(`  当前队列: ${engineStatus.queueLength}  |  正在处理: ${engineStatus.isProcessing}`);
+    const status = await api('GET', '/api/go-engine');
+    const kt = status.engines?.find(e => e.id === 'katago');
+    console.log(`  KataGo: ${kt?.available ? '✓ 可用' : '✗ 不可用'}`);
+    console.log(`  对弈模型: ${status.katago?.gameModel?.name || '-'}`);
+    console.log(`  分析模型: ${status.katago?.analysisModel?.name || '-'}`);
   } catch (e) {
     console.log(`  无法获取引擎状态: ${e.message}`);
   }
   console.log('');
 
-  // 启动进度监控（每15秒输出一次）
   const progressTimer = setInterval(printProgress, 15000);
-
   const startTime = Date.now();
 
-  // 错峰启动用户
   const allPromises = [];
   let launchIndex = 0;
 
-  // GnuGo 用户 (1-50)
-  for (let i = 1; i <= GNUGO_USERS; i++) {
-    launchIndex++;
-    const delay = launchIndex * STAGGER_DELAY_MS;
-    allPromises.push(
-      new Promise(r => setTimeout(r, delay)).then(() => runUser('gnugo', i))
-    );
+  if (MODE !== 'analyze') {
+    for (let i = 1; i <= GENMOVE_USERS; i++) {
+      launchIndex++;
+      const delay = launchIndex * STAGGER_DELAY_MS;
+      allPromises.push(
+        new Promise(r => setTimeout(r, delay)).then(() => runGenmoveUser(i))
+      );
+    }
   }
 
-  // KataGo 用户 (51-100)
-  for (let i = 51; i <= 50 + KATAGO_USERS; i++) {
-    launchIndex++;
-    const delay = launchIndex * STAGGER_DELAY_MS;
-    allPromises.push(
-      new Promise(r => setTimeout(r, delay)).then(() => runUser('katago', i))
-    );
+  if (MODE !== 'genmove') {
+    for (let i = 1; i <= ANALYZE_USERS; i++) {
+      launchIndex++;
+      const delay = launchIndex * STAGGER_DELAY_MS;
+      allPromises.push(
+        new Promise(r => setTimeout(r, delay)).then(() => runAnalyzeUser(i))
+      );
+    }
   }
 
   console.log(`已调度 ${launchIndex} 个用户，错峰启动中...`);
-  console.log(`预计全部启动完毕: ~${((launchIndex * STAGGER_DELAY_MS) / 1000).toFixed(1)}s`);
+  console.log(`预计全部启动: ~${((launchIndex * STAGGER_DELAY_MS) / 1000).toFixed(1)}s`);
   console.log('');
 
-  // 等待全部完成
   await Promise.allSettled(allPromises);
-
   clearInterval(progressTimer);
 
-  const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  const totalElapsed = (Date.now() - startTime) / 1000;
 
-  // 最终进度
   printProgress();
-
   console.log('');
   console.log('='.repeat(70));
   console.log('  压力测试完成');
   console.log('='.repeat(70));
-  console.log(`  总耗时: ${totalElapsed}s`);
+  console.log(`  总耗时: ${totalElapsed.toFixed(1)}s`);
 
-  for (const eng of ['gnugo', 'katago']) {
-    const s = stats[eng];
-    const total = eng === 'gnugo' ? GNUGO_USERS : KATAGO_USERS;
-    const avgTime = s.moves > 0 ? (s.totalTime / s.moves / 1000).toFixed(2) : 'N/A';
-    const avgDelays = s.delayUsers.length > 0
-      ? (s.delayUsers.reduce((a, b) => a + b.delays, 0) / s.delayUsers.length).toFixed(1)
-      : 0;
-    const maxDelays = s.delayUsers.length > 0
-      ? Math.max(...s.delayUsers.map(u => u.delays))
-      : 0;
-
+  // 对弈统计
+  if (stats.genmove.requests > 0) {
+    const s = stats.genmove;
+    const avg = (s.totalTime / s.requests / 1000).toFixed(2);
+    const p99 = s.maxTime / 1000;
+    const rps = (s.requests / totalElapsed).toFixed(1);
     console.log('');
-    console.log(`  --- ${eng.toUpperCase()} ---`);
-    console.log(`  成功用户: ${s.users}/${total}`);
-    console.log(`  总落子: ${s.moves}  |  错误: ${s.errors}  |  AI停手: ${s.passes}`);
-    console.log(`  平均每步: ${avgTime}s`);
-    console.log(`  延迟统计: 总延迟${s.delays}次 | 涉及${s.delayUsers.length}人 | 人均${avgDelays}次 | 最多${maxDelays}次`);
-    if (s.delayUsers.length > 0 && s.delayUsers.length <= 20) {
-      console.log(`  延迟详情: ${s.delayUsers.map(u => `${eng === 'gnugo' ? 'G' : 'K'}${u.userId}:${u.delays}次`).join(' ')}`);
+    console.log('  --- 对弈引擎 (genmove) ---');
+    console.log(`  请求: ${s.requests} | 成功: ${s.success} | 错误: ${s.errors} | AI停手: ${s.passes}`);
+    console.log(`  平均: ${avg}s | 最大: ${p99.toFixed(1)}s | 延迟: ${s.delays}次 | RPS: ${rps}`);
+    console.log(`  成功率: ${((s.success / s.requests) * 100).toFixed(1)}%`);
+  }
+
+  // 分析统计
+  if (stats.analyze.requests > 0) {
+    const s = stats.analyze;
+    const avg = (s.totalTime / s.requests / 1000).toFixed(2);
+    const p99 = s.maxTime / 1000;
+    const avgVisits = Math.round(s.totalVisits / s.requests);
+    const rps = (s.requests / totalElapsed).toFixed(1);
+    console.log('');
+    console.log('  --- 分析引擎 (analyze) ---');
+    console.log(`  请求: ${s.requests} | 成功: ${s.success} | 错误: ${s.errors}`);
+    console.log(`  平均: ${avg}s | 最大: ${p99.toFixed(1)}s | 延迟: ${s.delays}次 | RPS: ${rps}`);
+    console.log(`  平均 visits: ${avgVisits}`);
+    console.log(`  成功率: ${((s.success / s.requests) * 100).toFixed(1)}%`);
+  }
+
+  // 关键结论
+  console.log('');
+  console.log('  --- 关键结论 ---');
+  if (MODE === 'mixed') {
+    const gmBlocked = stats.genmove.delays > 0;
+    const anBlocked = stats.analyze.delays > 0;
+    if (!gmBlocked && !anBlocked) {
+      console.log('  ✓ 两引擎互不阻塞（无互相延迟）');
+    } else {
+      console.log(`  ${gmBlocked ? '✗' : '✓'} 对弈引擎${gmBlocked ? '有' : '无'}延迟`);
+      console.log(`  ${anBlocked ? '✗' : '✓'} 分析引擎${anBlocked ? '有' : '无'}延迟`);
     }
   }
+  console.log('='.repeat(70));
 }
 
 main().catch(console.error);
