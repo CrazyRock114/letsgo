@@ -88,6 +88,42 @@ else
   rm -f "${KATAGO_DIR}/rect15-b20c256-s343365760-d96847752.bin.gz"
 fi
 
+# 3. lionffen b24c64 (4.8MB, 比b6c64更大更深)
+info "Trying to download lionffen b24c64 model (4.8MB, stronger than b6c64)..."
+if curl -sL --max-time 180 -H "Referer: https://katagotraining.org/extra_networks/" \
+    -o "${KATAGO_DIR}/lionffen_b24c64_3x3_v3_12300.bin.gz" \
+    "https://media.katagotraining.org/uploaded/networks/models_extra/lionffen_b24c64_3x3_v3_12300.bin.gz" \
+    && [ "$(stat -c%s "${KATAGO_DIR}/lionffen_b24c64_3x3_v3_12300.bin.gz" 2>/dev/null || echo 0)" -gt 1000000 ]; then
+  ok "Downloaded lionffen b24c64 model (stronger, ~4.8MB)"
+else
+  warn "lionffen b24c64 download failed"
+  rm -f "${KATAGO_DIR}/lionffen_b24c64_3x3_v3_12300.bin.gz"
+fi
+
+# 4. b18c384nbt-humanv0 (99MB, 人类风格)
+info "Trying to download b18c384nbt-humanv0 model (99MB, human-style)..."
+if curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networks/" \
+    -o "${KATAGO_DIR}/b18c384nbt-humanv0.bin.gz" \
+    "https://media.katagotraining.org/uploaded/networks/models_extra/b18c384nbt-humanv0.bin.gz" \
+    && [ "$(stat -c%s "${KATAGO_DIR}/b18c384nbt-humanv0.bin.gz" 2>/dev/null || echo 0)" -gt 50000000 ]; then
+  ok "Downloaded human-style model (~99MB)"
+else
+  warn "humanv0 download failed"
+  rm -f "${KATAGO_DIR}/b18c384nbt-humanv0.bin.gz"
+fi
+
+# 5. kata9x9-b18c384nbt (97MB, 9x9专用)
+info "Trying to download kata9x9-b18c384nbt model (97MB, 9x9 specialist)..."
+if curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networks/" \
+    -o "${KATAGO_DIR}/kata9x9-b18c384nbt-20231025.bin.gz" \
+    "https://media.katagotraining.org/uploaded/networks/models_extra/kata9x9-b18c384nbt-20231025.bin.gz" \
+    && [ "$(stat -c%s "${KATAGO_DIR}/kata9x9-b18c384nbt-20231025.bin.gz" 2>/dev/null || echo 0)" -gt 50000000 ]; then
+  ok "Downloaded 9x9 specialist model (~97MB)"
+else
+  warn "kata9x9 download failed"
+  rm -f "${KATAGO_DIR}/kata9x9-b18c384nbt-20231025.bin.gz"
+fi
+
 # 最后尝试从 GitHub releases 下载 human SL 模型 (较慢但可靠)
 if ! ls "${KATAGO_DIR}"/*.bin.gz 1>/dev/null 2>&1 && ! ls "${KATAGO_DIR}"/*.txt.gz 1>/dev/null 2>&1; then
   info "No models downloaded yet, trying human SL model from GitHub (slow, ~100MB)..."

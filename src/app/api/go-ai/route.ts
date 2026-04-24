@@ -195,7 +195,8 @@ function buildBoardDescription(
   lastMove?: { row: number; col: number },
   moveColor?: Stone,
   captured?: number,
-  moveHistory?: Array<{ position: { row: number; col: number }; color: Stone }>
+  moveHistory?: Array<{ position: { row: number; col: number }; color: Stone; isPass?: boolean }>,
+  isPass?: boolean
 ): string {
   const boardStr = boardToString(board);
   const size = board.length;
@@ -205,15 +206,21 @@ function buildBoardDescription(
   if (moveHistory && moveHistory.length > 0) {
     const historyStr = moveHistory.slice(-10).map((m, i) => {
       const idx = moveHistory.length - Math.min(moveHistory.length, 10) + i + 1;
-      const coord = positionToCoordinate(m.position.row, m.position.col, size);
       const color = m.color === 'black' ? '黑' : '白';
+      if (m.isPass) {
+        return `第${idx}手: ${color}方 停一手`;
+      }
+      const coord = positionToCoordinate(m.position.row, m.position.col, size);
       return `第${idx}手: ${color}方 ${coord}`;
     }).join('\n');
     desc += `\n\n最近落子记录：\n${historyStr}`;
   }
 
   // 最后一手详细上下文
-  if (lastMove) {
+  if (isPass) {
+    const color = moveColor === 'black' ? '黑方' : '白方';
+    desc += `\n\n最后一手：${color}选择停一手（pass），没有落子。`;
+  } else if (lastMove) {
     const coord = positionToCoordinate(lastMove.row, lastMove.col, size);
     const color = moveColor === 'black' ? '黑方' : '白方';
     desc += `\n\n最后一手：${color}下在${coord}`;
@@ -474,6 +481,7 @@ export async function POST(request: NextRequest) {
       moveHistory,
       hintPosition,
       analysis: rawAnalysis, // KataGo分析数据
+      isPass,
     } = await request.json();
 
     // 标准化棋盘：前端用"empty"字符串表示空位，但围棋逻辑用null
@@ -494,15 +502,22 @@ export async function POST(request: NextRequest) {
     }
 
     let messages: Array<{ role: 'system' | 'user'; content: string }> = [];
-    const boardDesc = buildBoardDescription(board, currentPlayer, lastMove, moveColor, captured, moveHistory);
+    const boardDesc = buildBoardDescription(board, currentPlayer, lastMove, moveColor, captured, moveHistory, isPass);
     const analysisDesc = formatAnalysisForPrompt(analysis, currentPlayer, board.length);
 
     if (type === 'commentary') {
       // 第三方观赛者解说（结合KataGo分析数据）
-      messages = [
-        { role: 'system', content: COMMENTARY_SYSTEM },
-        { role: 'user', content: `${boardDesc}\n\n${analysisDesc}\n\n用1句话简短解说这步棋，严格依据"局面事实"和"引擎分析"数据。不要提气数，除非是打吃或提子。` }
-      ];
+      if (isPass) {
+        messages = [
+          { role: 'system', content: COMMENTARY_SYSTEM },
+          { role: 'user', content: `${boardDesc}\n\n${analysisDesc}\n\n这步棋是"停一手"（pass，没有落子）。用1句话简短解说为什么选择停一手，或者停一手对局面的影响。` }
+        ];
+      } else {
+        messages = [
+          { role: 'system', content: COMMENTARY_SYSTEM },
+          { role: 'user', content: `${boardDesc}\n\n${analysisDesc}\n\n用1句话简短解说这步棋，严格依据"局面事实"和"引擎分析"数据。不要提气数，除非是打吃或提子。` }
+        ];
+      }
     } else if (type === 'teach') {
       let teachPrompt = '';
       if (hintPosition) {

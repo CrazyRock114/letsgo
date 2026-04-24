@@ -1,12 +1,14 @@
-// GTP桥接API - 与KataGo/GnuGo围棋AI引擎通信
-// KataGo使用持久化进程（避免每步重新加载模型），GnuGo每次spawn
-// 引擎通过GTP(Go Text Protocol)协议交互
+// Go 引擎 API - 与 KataGo/GnuGo 围棋 AI 引擎通信
+// KataGo 使用 Analysis Engine JSON 协议（单进程 + 按需切换模型）
+// GnuGo 仍使用 GTP 协议（每次 spawn 新进程）
 
 import { NextRequest, NextResponse } from "next/server";
 import { spawn, ChildProcess } from "child_process";
 import fs from "fs";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 import { getUserFromAuthHeader, type JWTPayload } from "@/lib/auth";
+import { logAiEvent } from "@/lib/ai-logger";
+import { getEnginePool, KataGoAnalysisManager, MODEL_PATHS } from "@/lib/katago-analysis-client";
 
 // KataGo分析结果类型
 interface KataGoAnalysis {
@@ -19,80 +21,6 @@ interface KataGoAnalysis {
     scoreMean: number;   // 该点目数领先（黑方视角）
     visits: number;      // 该点搜索次数
   }[];
-}
-
-// 解析kata-raw-nn输出
-// 格式: "= whiteWin 0.5432 ... whiteLead 3.5 ... policy D4:0.123 Q16:0.045 ..."
-// kata-raw-nn 只需0.04秒，输出标准GTP格式（= ...\n\n），与dispatchResponses完全兼容
-function parseKataRawNN(output: string, boardSize: number): KataGoAnalysis | null {
-  try {
-    const lines = output.trim().split('\n');
-    console.log(`[kata-raw-nn] Parsing output, ${lines.length} lines, boardSize=${boardSize}`);
-    console.log(`[kata-raw-nn] First 10 lines:`, lines.slice(0, 10).join(' | '));
-    
-    // Parse whiteWin
-    let whiteWin = 0.5;
-    const wwLine = lines.find(l => l.trim().startsWith('whiteWin '));
-    if (wwLine) {
-      whiteWin = parseFloat(wwLine.trim().split(/\s+/)[1]);
-    }
-    
-    // Parse whiteLead
-    let whiteLead = 0;
-    const wlLine = lines.find(l => l.trim().startsWith('whiteLead '));
-    if (wlLine) {
-      whiteLead = parseFloat(wlLine.trim().split(/\s+/)[1]);
-    }
-    
-    // Convert to black perspective
-    const blackWinRate = (1 - whiteWin) * 100;
-    const blackScoreLead = -whiteLead;
-    
-    // Parse policy grid
-    const policyIdx = lines.findIndex(l => l.trim() === 'policy');
-    const bestMoves: KataGoAnalysis['bestMoves'] = [];
-    
-    if (policyIdx !== -1) {
-      const policyEntries: { row: number; col: number; prob: number }[] = [];
-      
-      for (let row = 0; row < boardSize; row++) {
-        const lineIdx = policyIdx + 1 + row;
-        if (lineIdx >= lines.length) break;
-        const values = lines[lineIdx].trim().split(/\s+/);
-        for (let col = 0; col < Math.min(values.length, boardSize); col++) {
-          const prob = parseFloat(values[col]);
-          if (!isNaN(prob) && prob > 0.001) {
-            policyEntries.push({ row, col, prob });
-          }
-        }
-      }
-      
-      // Sort by probability descending, take top 3
-      policyEntries.sort((a, b) => b.prob - a.prob);
-      const GTP_LETTERS = 'ABCDEFGHJKLMNOPQRST';
-      
-      for (const entry of policyEntries.slice(0, 5)) {
-        const move = GTP_LETTERS[entry.col] + (boardSize - entry.row);
-        bestMoves.push({
-          move,
-          winrate: Math.round(blackWinRate * 10) / 10,
-          scoreMean: Math.round(blackScoreLead * 10) / 10,
-          visits: 0,
-        });
-      }
-    }
-    
-    console.log(`[kata-raw-nn] Parsed OK: winRate=${Math.round(blackWinRate * 10) / 10}, scoreLead=${Math.round(blackScoreLead * 10) / 10}, bestMoves=${bestMoves.length}`);
-    return {
-      winRate: Math.round(blackWinRate * 10) / 10,
-      scoreLead: Math.round(blackScoreLead * 10) / 10,
-      actualVisits: 0,
-      bestMoves,
-    };
-  } catch (e) {
-    console.error('[kata-raw-nn] Parse error:', e instanceof Error ? e.message : String(e));
-    return null;
-  }
 }
 
 // 防止 EPIPE 等管道错误导致进程崩溃（仅注册一次）
@@ -128,6 +56,15 @@ const KATAGO_PATHS = findKataGoPaths();
 const KATAGO_PATH = KATAGO_PATHS.path;
 const KATAGO_DIR = KATAGO_PATHS.dir;
 const KATAGO_CONFIG = KATAGO_PATHS.config;
+
+// 引擎落子类型（支持pass）
+interface EngineMove {
+  row: number;
+  col: number;
+  color: string;
+  isPass?: boolean;
+}
+
 // GnuGo：优先项目捆绑版本（生产环境），备选系统安装路径（开发环境）
 const GNUGO_PATHS = [
   process.cwd() + "/bin/gnugo",  // 项目捆绑，生产环境可用
@@ -159,6 +96,36 @@ const activeSessions: Map<string, ActiveSession> = new Map();
 let analysisSeconds = 3;
 let currentModelPath: string | null = null;
 
+// ============================================================
+// 双引擎常驻配置（方案B：按功能区分 2 进程）
+// 时间戳: 2026-04-25 02:47:01
+// ============================================================
+
+interface EngineConfig {
+  gameModel: string;       // 对弈专用模型
+  gameVisits: { easy: number; medium: number; hard: number };
+  analysisModel: string;   // 分析专用模型
+  analysisVisits: { easy: number; medium: number; hard: number };
+}
+
+const DEFAULT_GAME_MODEL = 'rect15';
+const DEFAULT_ANALYSIS_MODEL = 'b24c64';
+
+let engineConfig: EngineConfig = {
+  gameModel: DEFAULT_GAME_MODEL,
+  gameVisits: { easy: 50, medium: 100, hard: 200 },
+  analysisModel: DEFAULT_ANALYSIS_MODEL,
+  analysisVisits: { easy: 30, medium: 60, hard: 120 },
+};
+
+function getGameEngine(): KataGoAnalysisManager {
+  return getEnginePool().getEngine(engineConfig.gameModel);
+}
+
+function getAnalysisEngine(): KataGoAnalysisManager {
+  return getEnginePool().getEngine(engineConfig.analysisModel);
+}
+
 // 获取所有可用的KataGo模型列表
 function getAvailableModels(): Array<{ name: string; path: string; sizeMB: number }> {
   try {
@@ -181,13 +148,41 @@ function getAvailableModels(): Array<{ name: string; path: string; sizeMB: numbe
 // 获取模型显示名称
 function getModelDisplayName(path: string): string {
   const basename = path.split('/').pop() || path;
+  if (/kata9x9/.test(basename)) return 'Kata9x9-B18C384 (9x9专用, 97MB, 小棋盘极强)';
+  if (/b18c384nbt-humanv0/.test(basename)) return 'HumanV0-B18C384 (人类风格, 99MB, 自然)';
+  if (/rect15-b20c256/.test(basename)) return 'Rect15-B20C256 (通用, 87MB, 强)';
+  if (/lionffen_b24c64/.test(basename)) return 'Lionffen-B24C64 (较大, 4.8MB, 比b6c64强)';
+  if (/lionffen/.test(basename)) return 'Lionffen-B6C64 (小模型, 2MB, 快)';
   if (/g170-b6c96/.test(basename)) return 'G170-B6C96 (官方小模型, 3.7MB, 均衡)';
-  if (/lionffen/.test(basename)) return 'Lionffen (小模型, 2MB, 快)';
-  if (/rect15-b20c256/.test(basename)) return 'Rect15-B20C256 (中模型, 87MB, 强)';
   if (/b20c256/.test(basename)) return 'B20C256 (中模型)';
   if (/b18c384/.test(basename)) return 'B18C384 (大模型, 100MB+)';
   if (/b40c256/.test(basename)) return 'B40C256 (超大模型)';
   return basename;
+}
+
+// 将文件路径映射为 Analysis Engine 模型名（用于 switchModel）
+function getModelKeyFromPath(path: string): string | null {
+  const basename = path.split('/').pop() || path;
+  if (/kata9x9/.test(basename)) return 'kata9x9';
+  if (/b18c384nbt-humanv0/.test(basename)) return 'humanv0';
+  if (/rect15-b20c256/.test(basename)) return 'rect15';
+  if (/lionffen_b24c64/.test(basename)) return 'b24c64';
+  if (/lionffen_b6c64/.test(basename)) return 'b6c64';
+  if (/g170-b6c96/.test(basename)) return 'g170';
+  return null;
+}
+
+// 将 Analysis Engine 模型名映射为显示用的路径（兼容旧格式）
+function getModelPathFromKey(key: string): string | null {
+  const map: Record<string, string> = {
+    rect15: '/usr/local/katago/rect15-b20c256-s343365760-d96847752.bin.gz',
+    kata9x9: '/usr/local/katago/kata9x9-b18c384nbt-20231025.bin.gz',
+    humanv0: '/usr/local/katago/b18c384nbt-humanv0.bin.gz',
+    g170: '/usr/local/katago/g170-b6c96-s175395328-d26788732.bin.gz',
+    b6c64: '/usr/local/katago/lionffen_b6c64.txt.gz',
+    b24c64: '/usr/local/katago/lionffen_b24c64_3x3_v3_12300.bin.gz',
+  };
+  return map[key] || null;
 }
 
 // KataGo分析结果缓存（LRU + 过期清理，防止内存泄漏）
@@ -214,14 +209,14 @@ function pruneAnalysisCache(): void {
   }
 }
 
-function setAnalysisCache(moves: Array<{row: number; col: number; color: string}>, data: KataGoAnalysis): void {
+function setAnalysisCache(moves: EngineMove[], data: KataGoAnalysis): void {
   const cacheKey = moves.map(m => `${m.color[0]}${m.row},${m.col}`).join('|');
   pruneAnalysisCache();
   analysisCache.set(cacheKey, { data, timestamp: Date.now() });
 }
 
 // 导出查询分析缓存的方法（供go-ai使用）
-export function getCachedAnalysis(moves: Array<{row: number; col: number; color: string}>): KataGoAnalysis | null {
+export function getCachedAnalysis(moves: EngineMove[]): KataGoAnalysis | null {
   const cacheKey = moves.map(m => `${m.color[0]}${m.row},${m.col}`).join('|');
   const cached = analysisCache.get(cacheKey);
   // 检查是否过期
@@ -246,7 +241,8 @@ function trackActiveSession(userId: number, nickname: string, engine: string, bo
 export function getEngineMonitorData() {
   const currentInfo = engineQueue.getCurrentEntryInfo();
   const available = getAvailableModels();
-  const currentModel = persistentKataGo.getCurrentModel();
+  const gameModelPath = getModelPathFromKey(engineConfig.gameModel);
+  const analysisModelPath = getModelPathFromKey(engineConfig.analysisModel);
   return {
     kataGo: {
       queueLength: engineQueue.getQueueLength(),
@@ -254,7 +250,9 @@ export function getEngineMonitorData() {
       currentTask: currentInfo ? { id: currentInfo.id, userId: currentInfo.userId, isAnalysis: currentInfo.isAnalysis, engine: currentInfo.engine } : null,
       analysisSeconds,  // 当前分析配置
       queueEntries: engineQueue.getQueueEntries(),  // 队列中每个任务的详情
-      currentModel: currentModel ? { path: currentModel, name: getModelDisplayName(currentModel) } : null,
+      gameModel: gameModelPath ? { path: gameModelPath, name: getModelDisplayName(gameModelPath), key: engineConfig.gameModel } : null,
+      analysisModel: analysisModelPath ? { path: analysisModelPath, name: getModelDisplayName(analysisModelPath), key: engineConfig.analysisModel } : null,
+      engineConfig,
       availableModels: available.map(m => ({ ...m, displayName: getModelDisplayName(m.path) })),
     },
     gnugo: { queueLength: 0, processing: false, note: '独立并行，不走EngineQueue' },
@@ -278,13 +276,16 @@ function findKataGoModel(): string | null {
     return currentModelPath;
   }
 
-  // 优先级顺序：lionffen(小,快,支持所有棋盘) > g170-b6c96 > rect15(通用,大) > 其他
+  // 优先级顺序：lionffen_b24c64(4.8MB,较强) > rect15(87MB,通用最强) > humanv0(99MB,人类风格)
+  // > kata9x9(97MB,9x9专用) > g170-b6c96(3.7MB) > lionffen_b6c64(2MB,最快) > 其他
   const priorityPatterns = [
-    /lionffen/,           // lionffen小模型(2MB)，实测支持所有棋盘
-    /g170-b6c96/,         // 小模型(3.7MB)，支持所有棋盘
+    /lionffen_b24c64/,    // lionffen较大版本(4.8MB)，比b6c64强
+    /rect15/,             // rect15通用模型(87MB)，支持所有棋盘，棋力强
+    /b18c384nbt-humanv0/, // 人类风格模型(99MB)
+    /kata9x9/,            // 9x9专用模型(97MB)
+    /g170-b6c96/,         // 官方小模型(3.7MB)，支持所有棋盘
+    /lionffen/,           // lionffen最小模型(2MB)，最快
     /b6c96/,              // 通用小模型
-    /rect15/,             // rect15通用模型(87MB)，支持所有棋盘
-    /b18c384nbt-human/,   // Human SL模型
     /b20c256/,            // b20系列
   ];
 
@@ -309,7 +310,7 @@ function findKataGoModel(): string | null {
 
 // 检查KataGo是否可用（二进制+模型+配置都存在）
 function isKataGoAvailable(): boolean {
-  return fs.existsSync(KATAGO_PATH) && findKataGoModel() !== null && fs.existsSync(KATAGO_CONFIG);
+  return fs.existsSync(KATAGO_PATH) && findKataGoModel() !== null;
 }
 
 // 查找可用的GnuGo路径
@@ -350,15 +351,28 @@ function gtpToBoardCoord(gtpCoord: string, boardSize: number): { row: number; co
 }
 
 // 获取贴目值
+// 来源: KataGo 官方 9x9 opening book (katagobooks.org)
+// 这些是 fair komi (让黑白均势的贴目值)，偏离会扭曲 KataGo 胜率评估
 function getKomi(boardSize: number): number {
-  return boardSize <= 9 ? 2.5 : boardSize <= 13 ? 3.5 : 6.5;
+  if (boardSize <= 9) return 7;     // 9x9 fair komi = 7
+  if (boardSize <= 13) return 7.5;  // 13x13 标准
+  return 7.5;                       // 19x19 标准
 }
 
-// KataGo难度映射 - 通过maxVisits控制
-function getKataGoVisits(difficulty: string): number {
+// KataGo 难度映射 - 通过 maxVisits 控制棋力
+// gameVisits / analysisVisits 分别配置
+function getKataGoVisits(difficulty: string, engineType: 'game' | 'analysis' = 'game'): number {
+  const visits = engineType === 'game' ? engineConfig.gameVisits : engineConfig.analysisVisits;
+  if (difficulty === "easy") return visits.easy;
+  if (difficulty === "medium") return visits.medium;
+  return visits.hard;
+}
+
+// JS 层超时保护（秒）
+function getKataGoMaxTime(difficulty: string): number {
   if (difficulty === "easy") return 15;
-  if (difficulty === "medium") return 50;
-  return 150;
+  if (difficulty === "medium") return 20;
+  return 30;
 }
 
 // GnuGo难度映射
@@ -368,677 +382,140 @@ function getGnuGoLevel(difficulty: string): number {
   return 10;
 }
 
-// ============================================================
-// 持久化KataGo进程管理器
-// 核心思路：进程启动后保持运行，每次落子只发送GTP命令，不再重新加载模型
-// ============================================================
-class PersistentKataGo {
-  private proc: ChildProcess | null = null;
-  private buffer = "";
-  private starting: Promise<void> | null = null;
-  private commandQueue: Array<{
-    resolve: (value: string) => void;
-    reject: (reason: unknown) => void;
-    timeout: ReturnType<typeof setTimeout>;
-  }> = [];
-  private crashed = false;
-  private lastError = "";
-  private procEpoch = 0;  // 进程纪元，用于区分新旧进程
-  private currentModel: string | null = null;
 
-  isAvailable(): boolean {
-    return !!(this.proc && !this.proc.killed && this.proc.exitCode === null);
-  }
-
-  getProcess(): ChildProcess | null {
-    return this.proc;
-  }
-
-  getCurrentModel(): string | null {
-    return this.currentModel;
-  }
-
-  // 切换KataGo模型：杀掉当前进程，用新模型重启
-  async switchModel(modelPath: string): Promise<void> {
-    if (this.currentModel === modelPath && this.isAvailable()) {
-      console.log(`[KataGo] Model already active: ${modelPath}`);
-      return;
-    }
-    console.log(`[KataGo] Switching model: ${this.currentModel ?? 'auto'} -> ${modelPath}`);
-    this.killProcess();
-    this.currentModel = modelPath;
-    // 进程会在下一次 ensureReady 时自动用新模型启动
-    await this.ensureReady();
-    console.log(`[KataGo] Model switched successfully: ${modelPath}`);
-  }
-
-  // 确保进程已启动并就绪
-  async ensureReady(): Promise<void> {
-    // 进程存活则直接返回
-    if (this.proc && !this.proc.killed && this.proc.exitCode === null) return;
-
-    // 正在启动则等待
-    if (this.starting) return this.starting;
-
-    // 开始启动
-    this.starting = this.startProcess();
-    try {
-      await this.starting;
-    } finally {
-      this.starting = null;
-    }
-  }
-
-  private async startProcess(): Promise<void> {
-    const model = findKataGoModel();
-    if (!model) throw new Error("KataGo model not found");
-    if (!fs.existsSync(KATAGO_PATH)) throw new Error("KataGo binary not found");
-    if (!fs.existsSync(KATAGO_CONFIG)) throw new Error("KataGo config not found");
-
-    this.currentModel = model;
-    console.log(`[KataGo] Starting persistent process with model: ${model}`);
-
-    // Kill any old process
-    this.killProcess();
-    this.procEpoch++;  // 递增纪元，旧进程的onData会被忽略
-
-    this.proc = spawn(KATAGO_PATH, [
-      "gtp",
-      "-model", model,
-      "-config", KATAGO_CONFIG,
-    ], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    this.buffer = "";
-    this.crashed = false;
-    this.lastError = "";
-    const currentEpoch = this.procEpoch;  // 闭包捕获当前纪元
-
-    // 收集stderr用于错误诊断
-    this.proc.stderr?.on("data", (data: Buffer) => {
-      if (this.procEpoch !== currentEpoch) return;
-      const text = data.toString().trim();
-      if (text) this.lastError = text;
-    });
-
-    // 进程退出处理
-    this.proc.on("exit", (code) => {
-      console.log(`[KataGo] Process exited with code ${code}, epoch=${currentEpoch}`);
-      // 只有当前纪元的进程退出才清理
-      if (this.procEpoch === currentEpoch) {
-        this.proc = null;
-        this.buffer = "";
-        // 拒绝所有等待中的命令
-        for (const item of this.commandQueue) {
-          clearTimeout(item.timeout);
-          item.reject(new Error(`KataGo process exited (code=${code}): ${this.lastError}`));
-        }
-        this.commandQueue = [];
-        if (code !== 0) this.crashed = true;
-      }  // end if procEpoch === currentEpoch
-    });
-
-    // 等待进程就绪：发送name命令，成功则表示GTP握手完成
-    // 注意：这里不能用 this.sendCommand，因为它会调用 ensureReady() 导致死锁
-    // （ensureReady 等待 startProcess 完成，startProcess 等待 sendCommand 完成）
-    // 关键：启动期间只用临时监听器，避免永久监听器把启动响应残留到 this.buffer
-    try {
-      let startupBuffer = "";
-      const nameResp = await new Promise<string>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('KataGo name command timeout (120s)'));
-        }, 120000);
-
-        const onData = (data: Buffer) => {
-          if (this.procEpoch !== currentEpoch) return;
-          startupBuffer += data.toString();
-          // 检查是否有完整的 GTP 响应
-          const endIdx = startupBuffer.indexOf('\n\n');
-          if (endIdx !== -1) {
-            const response = startupBuffer.substring(0, endIdx).trim();
-            startupBuffer = startupBuffer.substring(endIdx + 2);
-            // 只处理 name 命令的响应（以 = 开头）
-            if (response.startsWith('=') || response.startsWith('?')) {
-              clearTimeout(timeout);
-              this.proc?.stdout?.off('data', onData);
-              resolve(response);
-            } else {
-              // 不是 name 的响应，可能是启动时的其他输出，继续等待
-              console.log(`[KataGo] startup output: ${response.substring(0, 100)}`);
-            }
-          }
-        };
-
-        this.proc?.stdout?.on('data', onData);
-        this.proc?.stdin?.write('name\n');
-      });
-      console.log(`[KataGo] Process ready: ${nameResp}`);
-    } catch (err) {
-      this.killProcess();
-      throw new Error(`KataGo startup failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    // 启动握手完成后，再挂接永久监听器
-    // 这样启动期间的输出不会污染 this.buffer
-    this.proc.stdout?.on("data", (data: Buffer) => {
-      if (this.procEpoch !== currentEpoch) return;  // 旧进程数据，忽略
-      this.buffer += data.toString();
-      this.dispatchResponses();
-    });
-  }
-
-  // 从buffer中提取完整的GTP响应并分发到等待的Promise
-  // GTP协议：响应以"= "或"? "开头，以"\n\n"结束
-  // kata-analyze特殊：多行info后跟"= "行，整体以"\n\n"结束
-  private dispatchResponses(): void {
-    while (this.commandQueue.length > 0) {
-      const endIdx = this.buffer.indexOf("\n\n");
-      if (endIdx === -1) break;
-
-      const response = this.buffer.substring(0, endIdx).trim();
-      this.buffer = this.buffer.substring(endIdx + 2);
-
-      const item = this.commandQueue.shift()!;
-      clearTimeout(item.timeout);
-      item.resolve(response);
-    }
-  }
-
-  // 发送单条GTP命令并等待响应
-  async sendCommand(command: string, timeoutMs: number = 30000): Promise<string> {
-    await this.ensureReady();
-
-    return new Promise((resolve, reject) => {
-      if (!this.proc || this.proc.killed) {
-        reject(new Error("KataGo process not available"));
-        return;
-      }
-
-      const timeout = setTimeout(() => {
-        const idx = this.commandQueue.findIndex(i => i.resolve === resolve);
-        if (idx !== -1) this.commandQueue.splice(idx, 1);
-        reject(new Error(`GTP command timeout: ${command}`));
-      }, timeoutMs);
-
-      this.commandQueue.push({ resolve, reject, timeout });
-      try {
-        this.proc.stdin?.write(command + "\n");
-      } catch (writeErr) {
-        // 进程已退出，stdin 写入会 EPIPE，清理超时并拒绝
-        clearTimeout(timeout);
-        const idx = this.commandQueue.findIndex(i => i.resolve === resolve);
-        if (idx !== -1) this.commandQueue.splice(idx, 1);
-        reject(new Error(`KataGo stdin write failed (process may have exited): ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`));
-      }
-    });
-  }
-
-  // 批量发送GTP命令
-  async sendCommands(commands: string[], timeoutMs: number = 30000): Promise<string[]> {
-    const results: string[] = [];
-    for (const cmd of commands) {
-      const resp = await this.sendCommand(cmd, timeoutMs);
-      if (resp.trim().startsWith('?')) {
-        throw new Error(`GTP command failed: ${cmd} -> ${resp.trim()}`);
-      }
-      results.push(resp);
-    }
-    return results;
-  }
-
-  // 进程是否曾经崩溃
-  hasCrashed(): boolean {
-    return this.crashed;
-  }
-
-  // 杀掉进程
-  private killProcess(): void {
-    if (this.proc && !this.proc.killed) {
-      try {
-        this.proc.stdin?.write("quit\n");
-      } catch {
-        // ignore
-      }
-      setTimeout(() => {
-        try { this.proc?.kill(); } catch { /* ignore */ }
-      }, 500);
-    }
-    this.procEpoch++;  // 递增纪元，旧进程的onData会被忽略
-    this.proc = null;
-    this.buffer = "";
-    this.commandQueue = [];
-  }
-
-  /** 中断正在进行的KataGo分析（发送GTP stop命令，不杀进程） */
-  async stopAnalysis(): Promise<void> {
-    if (!this.proc || this.proc.killed) return;
-    console.log(`[KataGo] stopAnalysis - sending GTP stop to interrupt analysis`);
-    try {
-      // 拒绝所有等待中的命令（分析命令的回调会被reject）
-      for (const item of this.commandQueue) {
-        clearTimeout(item.timeout);
-        item.reject(new Error("KataGo analysis interrupted for genmove priority"));
-      }
-      this.commandQueue = [];
-      this.buffer = "";
-      
-      // 发送GTP stop命令（优雅中断kata-analyze，进程不重启）
-      // stop会让kata-analyze立即返回当前分析结果，进程回到空闲状态
-      this.proc.stdin?.write('stop\n');
-      
-      // 彻底清理残留数据，防止影响下一个任务
-      await this.thoroughFlush();
-    } catch (e) {
-      console.log(`[KataGo] stopAnalysis error:`, e);
-    }
-  }
-
-  // 完全关闭（进程退出时调用）
-  /** 清除buffer中可能残留的旧数据 */
-  clearBuffer(): void {
-    this.buffer = "";
-  }
-
-  /** 轻量级清理（仅清buffer，不发送同步命令，用于processNext预处理） */
-  async throughFlushLite(): Promise<void> {
-    this.buffer = "";
-    await new Promise(resolve => setTimeout(resolve, 50));
-    this.buffer = "";
-  }
-
-  // 彻底清理：清空buffer+commandQueue，发送轻量命令同步进程状态
-  async thoroughFlush(): Promise<void> {
-    this.commandQueue = [];
-    this.buffer = "";
-    // 等待KataGo进程输出所有残留数据（stop后的分析结果等）
-    await new Promise(resolve => setTimeout(resolve, 500));
-    this.buffer = "";
-    
-    // 用sendCommand发送轻量命令同步：收到响应说明进程已回到空闲状态
-    // 使用正常的onData handler（已在startProcess中注册），不需要额外handler
-    try {
-      if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
-        await this.sendCommand("name", 5000);
-      }
-    } catch {
-      // 同步失败不报错，下一个ensureReady会处理
-    }
-    this.buffer = "";
-  }
-
-  shutdown(): void {
-    this.killProcess();
-  }
-
-  resetCrashState(): void {
-    this.killProcess();
-  }
-}
-
-// 模块级单例 - Node.js进程内共享
-const persistentKataGo = new PersistentKataGo();
-
-// 预热KataGo进程：服务启动时后台加载模型，避免首个请求冷启动
+// 预热KataGo双引擎：服务启动时后台加载对弈+分析模型，避免首个请求冷启动
 export async function warmupKataGo(): Promise<void> {
   try {
     if (!isKataGoAvailable()) {
       console.log('[warmup] KataGo not available (binary/model/config missing), skipping warmup');
       return;
     }
-    console.log('[warmup] Starting KataGo warmup...');
+    console.log('[warmup] Starting KataGo dual-engine warmup...');
     const start = Date.now();
-    await persistentKataGo.ensureReady();
-    console.log(`[warmup] KataGo ready in ${Date.now() - start}ms`);
+    const pool = getEnginePool();
+    // 预热对弈引擎
+    const gameEngine = pool.getEngine(engineConfig.gameModel);
+    await gameEngine.start();
+    // 预热分析引擎
+    const analysisEngine = pool.getEngine(engineConfig.analysisModel);
+    await analysisEngine.start();
+    console.log(`[warmup] KataGo dual-engine ready in ${Date.now() - start}ms (game=${engineConfig.gameModel}, analysis=${engineConfig.analysisModel})`);
   } catch (err) {
     console.warn('[warmup] KataGo warmup failed:', err instanceof Error ? err.message : String(err));
   }
 }
 
-// 向一次性KataGo子进程发送单条GTP命令并等待响应
-function sendOneShotCommand(
-  proc: ChildProcess,
-  command: string,
-  timeoutMs: number = 30000
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    if (!proc || proc.killed) {
-      reject(new Error("KataGo process not available"));
-      return;
-    }
-
-    let buffer = "";
-    const onData = (data: Buffer) => {
-      buffer += data.toString();
-      const endIdx = buffer.indexOf("\n\n");
-      if (endIdx !== -1) {
-        const response = buffer.substring(0, endIdx).trim();
-        buffer = buffer.substring(endIdx + 2);
-        proc.stdout?.off("data", onData);
-        clearTimeout(timeout);
-        resolve(response);
-      }
-    };
-
-    const timeout = setTimeout(() => {
-      proc.stdout?.off("data", onData);
-      reject(new Error(`GTP command timeout: ${command}`));
-    }, timeoutMs);
-
-    proc.stdout?.on("data", onData);
-    try {
-      proc.stdin?.write(command + "\n");
-    } catch (writeErr) {
-      proc.stdout?.off("data", onData);
-      clearTimeout(timeout);
-      reject(new Error(`KataGo stdin write failed: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`));
-    }
-  });
-}
-
 // ============================================================
-// KataGo落子（每次spawn新进程，通过-override-config确保visits生效）
+// KataGo 落子（Analysis Engine JSON 协议）
+// 替代 GTP genmove，每请求自带完整局面，无状态污染
 // ============================================================
 async function getKataGoMove(
   boardSize: number,
-  moves: Array<{ row: number; col: number; color: string }>,
+  moves: EngineMove[],
   difficulty: string,
   aiColor: 'black' | 'white' = 'white'
-): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string; engineError?: boolean }> {
-  const komi = getKomi(boardSize);
-  const maxVisits = getKataGoVisits(difficulty);
-  const model = findKataGoModel();
+): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string; engineError?: boolean; actualVisits?: number; modelUsed?: string; warning?: string }> {
+  const manager = getGameEngine();
+  const maxVisits = getKataGoVisits(difficulty, 'game');
+  const maxTime = getKataGoMaxTime(difficulty);
+  const modelUsed = engineConfig.gameModel;
 
-  if (!model) {
-    throw new Error("KataGo model not found");
-  }
-
-  console.log(`[KataGo] getKataGoMove START (one-shot): board=${boardSize}, diff=${difficulty}, maxVisits=${maxVisits}, aiColor=${aiColor}, moves=${moves.length}, model=${model.split('/').pop()}`);
+  console.log(`[KataGo] getKataGoMove START (game engine): board=${boardSize}, diff=${difficulty}, maxVisits=${maxVisits}, maxTime=${maxTime}s, aiColor=${aiColor}, moves=${moves.length}, model=${modelUsed}`);
 
   const startTime = Date.now();
 
-  // 启动新进程，-override-config 在进程启动时就锁定 visits
-  const proc = spawn(KATAGO_PATH, [
-    "gtp",
-    "-model", model,
-    "-config", KATAGO_CONFIG,
-    "-override-config", `maxVisits=${maxVisits},komi=${komi}`,
-  ], {
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-
-  // 等待进程启动（模型加载需要时间）
-  await new Promise(r => setTimeout(r, 100));
-
-  // 先发送 name 命令消耗启动输出，确保后续响应对齐
   try {
-    const nameResp = await sendOneShotCommand(proc, 'name', 10000);
-    console.log(`[KataGo] one-shot process ready: ${nameResp}`);
-  } catch (nameErr) {
-    console.warn(`[KataGo] name command failed, continuing anyway:`, nameErr instanceof Error ? nameErr.message : String(nameErr));
+    await manager.start();
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[KataGo] Game Engine start failed:`, errMsg);
+    return { move: null, engineError: true, engine: 'katago' };
   }
 
-  // 构建GTP命令序列
-  const gtpCommands: string[] = [
-    `boardsize ${boardSize}`,
-    "clear_board",
-  ];
-
-  if (moves && Array.isArray(moves)) {
-    for (const move of moves) {
-      const color = move.color === "black" ? "B" : "W";
-      const coord = boardToGTPCoord(move.row, move.col, boardSize);
-      gtpCommands.push(`play ${color} ${coord}`);
-    }
-  }
-
-  gtpCommands.push(`genmove ${aiColor === 'black' ? 'B' : 'W'}`);
-
   try {
-    const results: string[] = [];
-    for (const cmd of gtpCommands) {
-      const resp = await sendOneShotCommand(proc, cmd, 60000);
-      if (resp.trim().startsWith('?')) {
-        throw new Error(`GTP command failed: ${cmd} -> ${resp.trim()}`);
+    const result = await manager.genmove(boardSize, moves as Array<{ row: number; col: number; color: "black" | "white"; isPass?: boolean }>, aiColor, {
+      maxVisits,
+      maxTime: maxTime + 10, // JS 层超时 = 预期时间 + 10s 缓冲
+      komi: getKomi(boardSize),
+      rules: 'chinese',
+    });
+
+    const elapsed = Date.now() - startTime;
+    const common = { engine: 'katago' as const, actualVisits: result.actualVisits, modelUsed };
+    if (result.pass) {
+      const nonPassCount = moves.filter(m => !m.isPass).length;
+      const isEarlyGame = nonPassCount < boardSize * 2;
+      if (isEarlyGame) {
+        const warning = `AI 在开局第 ${nonPassCount + 1} 手选择了 pass（棋盘还很空），这通常是模型/配置问题！model=${modelUsed}, visits=${result.actualVisits}`;
+        console.error(`[KataGo] EARLY PASS BUG: ${warning}`);
+        logAiEvent({ type: 'pass_bug', engine: 'katago', model: modelUsed, boardSize, difficulty, coord: 'pass', isPass: true, durationMs: elapsed });
+        return { move: null, engineError: true, engine: 'katago', modelUsed, warning };
       }
-      results.push(resp);
+      console.log(`[KataGo] PASS (game) ${elapsed}ms visits=${result.actualVisits ?? '-'}`);
+      return { move: null, pass: true, ...common };
+    }
+    if (result.resign) {
+      console.log(`[KataGo] RESIGN (game) ${elapsed}ms visits=${result.actualVisits ?? '-'}`);
+      return { move: null, resign: true, ...common };
+    }
+    if (!result.move) {
+      console.warn(`[KataGo] No move returned (game) ${elapsed}ms`);
+      return { move: null, engineError: true, ...common };
     }
 
-    const lastResponse = results[results.length - 1];
-    const moveMatch = lastResponse.match(/=\s*([A-HJ-T]\d+|PASS|resign)/i);
-
-    if (!moveMatch) {
-      console.warn(`[KataGo] Unexpected genmove response: "${lastResponse}"`);
-      return { move: null, pass: false, engineError: true, engine: "katago" };
-    }
-
-    const moveStr = moveMatch[1].toUpperCase();
-
-    if (moveStr === "PASS") {
-      console.log(`[KataGo] PASS (${Date.now() - startTime}ms)`);
-      return { move: null, pass: true, engine: "katago" };
-    }
-
-    if (moveStr === "RESIGN") {
-      console.log(`[KataGo] RESIGN (${Date.now() - startTime}ms)`);
-      return { move: null, resign: true, engine: "katago" };
-    }
-
-    const position = gtpToBoardCoord(moveStr, boardSize);
-    if (!position) {
-      console.error(`[KataGo] Cannot parse coord: ${moveStr}`);
-      throw new Error("无法解析KataGo落子坐标");
-    }
-
-    console.log(`[KataGo] MOVE: ${moveStr} -> (${position.row},${position.col}) (${Date.now() - startTime}ms)`);
-    return { move: position, engine: "katago" };
-  } finally {
-    // 确保进程被清理
-    if (proc && !proc.killed) {
-      try { proc.stdin?.write("quit\n"); } catch { /* ignore */ }
-      setTimeout(() => {
-        if (!proc.killed) proc.kill();
-      }, 500);
-    }
+    console.log(`[KataGo] MOVE (game): (${result.move.row},${result.move.col}) ${elapsed}ms visits=${result.actualVisits ?? '-'}`);
+    return { move: result.move, ...common };
+  } catch (err) {
+    const elapsed = Date.now() - startTime;
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[KataGo] genmove failed after ${elapsed}ms:`, errMsg);
+    return { move: null, engineError: true, engine: 'katago', modelUsed };
   }
 }
 
 // ============================================================
-// KataGo分析（支持两种模式）
-// analysisSeconds=0: kata-raw-nn（0.04秒，纯神经网络直出）
-// analysisSeconds>0: kata-analyze（MCTS搜索N秒后用GTP stop中断）
+// KataGo 分析（Analysis Engine JSON 协议）
+// 替代 GTP kata-analyze / kata-raw-nn
 // ============================================================
 async function getKataGoAnalysis(
   boardSize: number,
-  moves: Array<{ row: number; col: number; color: "black" | "white" }>,
-  overrideSeconds?: number
+  moves: Array<{ row: number; col: number; color: "black" | "white"; isPass?: boolean }>,
+  overrideSeconds?: number,
+  difficulty?: string
 ): Promise<KataGoAnalysis | null> {
-  const seconds = overrideSeconds !== undefined ? overrideSeconds : analysisSeconds;
+  const manager = getAnalysisEngine();
+  const modelUsed = engineConfig.analysisModel;
+
   try {
-    await persistentKataGo.ensureReady();
-  } catch {
-    console.log('[kata-analysis] KataGo进程未就绪，跳过分析');
+    await manager.start();
+  } catch (e) {
+    console.log('[kata-analysis] Analysis Engine 启动失败:', e instanceof Error ? e.message : String(e));
     return null;
   }
 
-  // 彻底清理残留数据（前一个任务完成后buffer中可能有残余输出）
-  await persistentKataGo.thoroughFlush();
-
   try {
-    // 准备棋盘（boardsize + clear_board + komi + 重放所有落子）
-    const setupCommands = [
-      `boardsize ${boardSize}`,
-      'clear_board',
-      `komi ${getKomi(boardSize)}`,
-    ];
-    for (const m of moves) {
-      const colChar = String.fromCharCode(65 + (m.col >= 8 ? m.col + 1 : m.col));
-      const coord = `${colChar}${boardSize - m.row}`;
-      const color = m.color === "black" ? "B" : "W";
-      setupCommands.push(`play ${color} ${coord}`);
-    }
-    console.log(`[kata-analysis] 准备棋盘: ${moves.length}步, boardSize=${boardSize}, mode=${seconds === 0 ? 'raw-nn' : `analyze(${seconds}s)`}`);
-    const setupResponses = await persistentKataGo.sendCommands(setupCommands, 30000);
-    const failedSetup = setupResponses.filter((r: string) => r.trim().startsWith('?'));
-    if (failedSetup.length > 0) {
-      console.error('[kata-analysis] Setup commands failed:', failedSetup);
-    }
-    // 调试用：打印当前棋盘状态
-    try {
-      const boardState = await persistentKataGo.sendCommand('showboard', 5000);
-      console.log('[kata-analysis] showboard:\n', boardState);
-    } catch (e) {
-      console.log('[kata-analysis] showboard failed:', e instanceof Error ? e.message : String(e));
-    }
-
-    if (seconds === 0) {
-      // 模式1: kata-raw-nn all（0.04秒完成，输出标准GTP格式=\n\n）
-      // 直接输出神经网络策略，不走MCTS搜索树，极速
-      const analyzeResponse = await persistentKataGo.sendCommand('kata-raw-nn all', 10000);
-      return parseKataRawNN(analyzeResponse, boardSize);
+    // 优先使用 difficulty 映射 visits；兼容旧版 overrideSeconds
+    let maxVisits: number;
+    if (difficulty) {
+      maxVisits = getKataGoVisits(difficulty, 'analysis');
+    } else if (overrideSeconds !== undefined) {
+      const seconds = overrideSeconds;
+      maxVisits = seconds === 0 ? 1 : Math.min(2000, Math.max(30, seconds * 50));
     } else {
-      // 模式2: kata-analyze + GTP stop（定时中断方式）
-      // 关键发现：kata-analyze无视maxVisits/maxTime/maxPlayouts，会无限搜索
-      // 唯一控制方式：发送GTP stop命令中断，获取当前分析结果
-      // seconds直接控制搜索时长（秒）
-      const durationMs = seconds * 1000;
-      console.log(`[kata-analyze] 开始分析, ${seconds}秒后stop`);
-
-      // 发送kata-analyze命令（超时设长，实际由stop控制终止）
-      const analyzePromise = persistentKataGo.sendCommand('kata-analyze 1', durationMs + 30000);
-
-      // 定时发送stop中断分析
-      const stopTimer = setTimeout(() => {
-        try {
-          const proc = persistentKataGo.getProcess();
-          if (proc && !proc.killed && proc.stdin?.writable) {
-            proc.stdin.write('stop\n');
-            console.log(`[kata-analyze] 已发送stop（${seconds}秒后）`);
-          }
-        } catch (e) {
-          console.log('[kata-analyze] 发送stop失败:', e);
-        }
-      }, durationMs);
-
-      try {
-        const analyzeResponse = await analyzePromise;
-        clearTimeout(stopTimer);
-
-        const isWhiteToMove = moves.length % 2 === 1;
-        return parseKataAnalyze(analyzeResponse, boardSize, isWhiteToMove);
-      } catch (err: unknown) {
-        clearTimeout(stopTimer);
-        throw err;
-      }
+      maxVisits = getKataGoVisits('medium', 'analysis');
     }
+    const jsTimeout = Math.max(30, maxVisits * 0.5) + 10; // JS 层超时保护
+    const result = await manager.analyze(boardSize, moves, {
+      maxVisits,
+      maxTime: jsTimeout,
+      komi: getKomi(boardSize),
+      rules: 'chinese',
+    });
+    console.log(`[kata-analysis] Analysis Engine 完成: board=${boardSize}, moves=${moves.length}, difficulty=${difficulty || '-'}, visits=${result?.actualVisits ?? '-'}`);
+    return result;
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    if (errMsg.includes('interrupted')) {
-      console.log('[kata-analysis] 分析被中断（同一用户落子优先）');
-    } else {
-      console.error('[kata-analysis] 分析失败:', err);
-    }
-    return null;
-  }
-}
-
-// 解析kata-analyze输出（stop后的完整响应）
-// 格式: 多轮info行 + "= \n\n"结束
-// 每行: "info move D4 visits 50 winrate 0.52 scoreMean 3.5 scoreStdev 1.2 prior 0.08 order 0 pv D4 Q16 C3 ..."
-// kata-analyze会持续输出中间结果，每轮info行代表一个搜索深度
-// 同一move会出现多次（不同visits），取最后一次（visits最高）
-// winrate范围: 0-1，从"side-to-move"（当前行棋方）视角
-//   - 黑方行棋时: winrate=黑方胜率（0=黑必输, 1=黑必赢）
-//   - 白方行棋时: winrate=白方胜率（0=白必输, 1=白必赢）→ 需反转为黑方胜率
-// scoreMean/scoreLead: 始终是黑方视角（正值=黑方领先），无需转换
-function parseKataAnalyze(output: string, boardSize: number, isWhiteToMove: boolean = false): KataGoAnalysis | null {
-  try {
-    // 提取所有info行（以"info move"开头）
-    const lines = output.split('\n');
-    const infoLines = lines.filter(l => l.trim().startsWith('info move'));
-    
-    if (infoLines.length === 0) {
-      console.log('[kata-analyze] 无info行，原始输出:', output.substring(0, 200));
-      return null;
-    }
-
-    // kata-analyze每轮搜索都输出所有候选手的info行
-    // 同一move会出现多次，后面的visits更高，取最后一次
-    const latestMoveInfo = new Map<string, { winrate: number; scoreMean: number; visits: number }>();
-    let globalWinRate = 0;
-    let globalScoreLead = 0;
-    let topMoveVisits = 0;
-
-    for (const line of infoLines) {
-      const parts = line.trim().split(/\s+/);
-      const moveIdx = parts.indexOf('move') + 1;
-      const winrateIdx = parts.indexOf('winrate') + 1;
-      const scoreIdx = parts.indexOf('scoreMean') + 1;
-      const scoreLeadIdx = parts.indexOf('scoreLead') + 1;
-      const visitsIdx = parts.indexOf('visits') + 1;
-
-      if (moveIdx === 0 || !parts[moveIdx]) continue;
-
-      const moveStr = parts[moveIdx];
-      const winrate = winrateIdx > 0 ? parseFloat(parts[winrateIdx]) : 0;
-      // KataGo不同版本可能用scoreMean或scoreLead
-      const scoreValue = scoreLeadIdx > 0 ? parseFloat(parts[scoreLeadIdx]) : (scoreIdx > 0 ? parseFloat(parts[scoreIdx]) : 0);
-      const visits = visitsIdx > 0 ? parseInt(parts[visitsIdx]) : 0;
-
-      // 保留每个move的最新数据（后出现的visits更高）
-      latestMoveInfo.set(moveStr, { winrate, scoreMean: scoreValue, visits });
-
-      // 全局胜率/目数取最后一条info行（搜索最深的）
-      globalWinRate = winrate;
-      globalScoreLead = scoreValue;
-      topMoveVisits = visits; // 最后一条info的visits就是搜索最深的
-    }
-    // 诊断：打印第一条info行，看score字段名和值
-    if (infoLines.length > 0) {
-      const firstLine = infoLines[0];
-      const hasScoreMean = firstLine.includes('scoreMean');
-      const hasScoreLead = firstLine.includes('scoreLead');
-      console.log(`[kata-analyze] 首条info行字段: scoreMean=${hasScoreMean}, scoreLead=${hasScoreLead}, sample=${firstLine.substring(0, 120)}`);
-      console.log(`[kata-analyze] 解析结果: globalWinRate=${globalWinRate}, globalScoreLead=${globalScoreLead}, topMoveVisits=${topMoveVisits}`);
-    }
-
-    // 按visits降序排列，pass排到最后，取前3个推荐落点
-    const sortedMoves = [...latestMoveInfo.entries()]
-      .sort((a, b) => {
-        // pass排到最后
-        if (a[0] === 'pass') return 1;
-        if (b[0] === 'pass') return -1;
-        return b[1].visits - a[1].visits;
-      });
-
-    const bestMoves: KataGoAnalysis['bestMoves'] = sortedMoves.slice(0, 5).map(([move, data]) => {
-      // bestMoves的winrate也是side-to-move视角，白方行棋时需反转
-      const rawWinrate = isWhiteToMove ? (1 - data.winrate) : data.winrate;
-      return {
-        move,
-        winrate: Math.round(rawWinrate * 1000) / 10, // 0-1 → 0-100（黑方胜率）
-        scoreMean: Math.round(data.scoreMean * 10) / 10, // 黑方视角
-        visits: data.visits,
-      };
-    });
-
-    // winrate: KataGo输出0-1范围，从"side-to-move"视角
-    // 白方行棋时需反转为黑方胜率，与parseKataRawNN保持一致
-    const rawGlobalWinRate = isWhiteToMove ? (1 - globalWinRate) : globalWinRate;
-    const blackWinRate = Math.round(rawGlobalWinRate * 1000) / 10;
-
-    // scoreLead: scoreMean/scoreLead为黑方视角（正值=黑方领先）
-    // 注意：KataGo在搜索量极少时可能输出0，这是KataGo的行为，不做假估算
-    const blackScoreLead = Math.round(globalScoreLead * 10) / 10;
-
-    return {
-      winRate: blackWinRate,
-      scoreLead: blackScoreLead,
-      actualVisits: topMoveVisits,
-      bestMoves,
-    };
-  } catch {
-    console.error('[kata-analyze] 解析异常');
+    console.error('[kata-analysis] 分析失败:', errMsg);
     return null;
   }
 }
@@ -1048,7 +525,7 @@ function parseKataAnalyze(output: string, boardSize: number, isWhiteToMove: bool
 // ============================================================
 async function getGnuGoMove(
   boardSize: number,
-  moves: Array<{ row: number; col: number; color: string }>,
+  moves: EngineMove[],
   difficulty: string,
   aiColor: 'black' | 'white' = 'white'
 ): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engineError?: boolean; engine: string }> {
@@ -1078,8 +555,12 @@ async function getGnuGoMove(
   if (moves && Array.isArray(moves)) {
     for (const move of moves) {
       const color = move.color === "black" ? "B" : "W";
-      const coord = boardToGTPCoord(move.row, move.col, boardSize);
-      gtpCommands.push(`play ${color} ${coord}`);
+      if (move.isPass) {
+        gtpCommands.push(`play ${color} pass`);
+      } else {
+        const coord = boardToGTPCoord(move.row, move.col, boardSize);
+        gtpCommands.push(`play ${color} ${coord}`);
+      }
     }
   }
 
@@ -1206,7 +687,7 @@ interface QueueEntry {
   resolve: (result: EngineQueueResult) => void;
   reject: (error: Error) => void;
   boardSize: number;
-  moves: Array<{ row: number; col: number; color: string }>;
+  moves: EngineMove[];
   difficulty: string;
   engine: string;
   aiColor: 'black' | 'white';
@@ -1224,6 +705,8 @@ interface EngineQueueResult {
   errorDetail?: string;
   noEngine?: boolean;
   analysis?: KataGoAnalysis | null; // genmove+analysis时返回
+  actualVisits?: number;
+  modelUsed?: string;
 }
 
 class EngineQueue {
@@ -1254,7 +737,7 @@ class EngineQueue {
     userId: number,
     engine: string,
     boardSize: number,
-    moves: Array<{ row: number; col: number; color: string }>,
+    moves: EngineMove[],
     difficulty: string,
     aiColor: 'black' | 'white' = 'white',
 
@@ -1264,22 +747,6 @@ class EngineQueue {
 
     // 下棋请求优先：取消该用户排队中的分析请求
     this.cancelPendingAnalysis(userId);
-
-    // 只有同一用户的genmove可以中断自己的分析（用户隔离原则）
-    // 其他用户的genmove需要等待分析完成，按队列排队
-    if (this.processing && this.currentEntry?.isAnalysis && this.currentEntry.userId === userId) {
-      console.log(`[engine-queue] Genmove arrived while own analysis is running - sending stop`);
-      await persistentKataGo.stopAnalysis();
-      // stopAnalysis会拒绝当前分析的command，导致processNext结束
-      const waitStart = Date.now();
-      while (this.processing && Date.now() - waitStart < 5000) {
-        await new Promise(r => setTimeout(r, 100));
-      }
-      if (this.processing) {
-        console.warn(`[engine-queue] Analysis still processing after stop, forcing processing=false`);
-        this.processing = false;
-      }
-    }
 
     return new Promise<EngineQueueResult>((resolve, reject) => {
       this.queue.push({ id, userId, resolve, reject, boardSize, moves, difficulty, engine, aiColor });
@@ -1295,10 +762,6 @@ class EngineQueue {
     console.log(`[engine-queue] Processing: ${entry.id}, engine=${entry.engine}, isAnalysis=${!!entry.isAnalysis}`);
 
     try {
-      // 每次处理前先彻底清理 KataGo 进程 buffer 残留，避免响应错位
-      if (entry.engine === "katago" && isKataGoAvailable()) {
-        await persistentKataGo.throughFlushLite();
-      }
       // 分析请求：只使用KataGo，不影响下棋结果
       if (entry.isAnalysis) {
         let analysisResult: KataGoAnalysis | null = null;
@@ -1309,49 +772,19 @@ class EngineQueue {
             const analysisTimeout = (entrySeconds || 0) * 1000 + 30000;
             let queueTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
-            // 队列溢出监控：analysis期间每2秒检查队列，>8则提前中断
-            const ANALYSIS_INTERRUPT_THRESHOLD = 8;
-            let interruptCheckInterval: ReturnType<typeof setInterval> | null = null;
-            let interruptedByQueue = false;
-            if (entrySeconds && entrySeconds > 0) {
-              interruptCheckInterval = setInterval(() => {
-                const qLen = this.queue.length;
-                if (qLen > ANALYSIS_INTERRUPT_THRESHOLD) {
-                  console.warn(`[engine-queue] Analysis interrupted: 队列过长(${qLen} > ${ANALYSIS_INTERRUPT_THRESHOLD}), 中断analysis ${entry.id}`);
-                  interruptedByQueue = true;
-                  try {
-                    const proc = persistentKataGo.getProcess();
-                    if (proc && !proc.killed && proc.stdin?.writable) {
-                      proc.stdin.write('stop\n');
-                      console.log(`[engine-queue] 已发送stop中断analysis（队列溢出保护）`);
-                    }
-                  } catch (e) {
-                    console.log('[engine-queue] 发送interrupt stop失败:', e);
-                  }
-                  if (interruptCheckInterval) clearInterval(interruptCheckInterval);
-                }
-              }, 2000);
-            }
-
             analysisResult = await Promise.race([
               getKataGoAnalysis(entry.boardSize, entry.moves as Array<{row: number; col: number; color: 'black' | 'white'}>, entrySeconds),
               new Promise<null>(resolve => {
                 queueTimeoutId = setTimeout(() => {
                   console.warn(`[engine-queue] Analysis safety timeout (${Math.round(analysisTimeout/1000)}s) for ${entry.id}`);
-                  persistentKataGo.stopAnalysis();
                   resolve(null);
                 }, analysisTimeout);
               }),
             ]);
-            // 关键：分析完成后立即清除队列超时计时器和中断检查，防止双重stop
+            // 清除队列超时计时器
             if (queueTimeoutId !== null) clearTimeout(queueTimeoutId);
-            if (interruptCheckInterval !== null) clearInterval(interruptCheckInterval);
-            if (interruptedByQueue) {
-              console.log(`[engine-queue] Analysis ${entry.id} was interrupted by queue overflow, partial results used`);
-            }
           } catch (err) {
             console.warn(`[engine-queue] Analysis failed:`, err instanceof Error ? err.message : String(err));
-            persistentKataGo.resetCrashState();
           }
         }
         if (entry.analysisResolve) {
@@ -1374,7 +807,7 @@ class EngineQueue {
           } catch (katagoError) {
             const errMsg = katagoError instanceof Error ? katagoError.message : String(katagoError);
             console.error(`[engine-queue] KataGo FAILED: ${entry.id}, error=${errMsg}`);
-            persistentKataGo.resetCrashState();
+            // Analysis Engine errors are per-request, no crash state to reset
             result = {
               move: null, engine: "katago", engineError: true,
               errorDetail: errMsg,
@@ -1434,7 +867,7 @@ class EngineQueue {
   /** 获取KataGo局面分析（通过主队列串行执行，避免与genmove命令冲突）
    *  队列保护：排队数 >= ANALYSIS_QUEUE_THRESHOLD(5) 时拒绝新analysis请求
    */
-  async enqueueAnalysis(userId: number, moves: Array<{row: number, col: number, color: "black" | "white"}>, boardSize: number, isAITest = false, analysisSeconds?: number): Promise<{ analysis: KataGoAnalysis | null; queueBusy?: boolean; queueLength?: number }> {
+  async enqueueAnalysis(userId: number, moves: Array<{row: number, col: number, color: "black" | "white"; isPass?: boolean}>, boardSize: number, isAITest = false, analysisSeconds?: number): Promise<{ analysis: KataGoAnalysis | null; queueBusy?: boolean; queueLength?: number }> {
     // 检查KataGo是否可用
     if (!isKataGoAvailable()) {
       console.log(`[engine-queue] Analysis rejected: KataGo不可用`);
@@ -1530,11 +963,12 @@ export async function POST(request: NextRequest) {
     const isInternal = internalKey === process.env.INTERNAL_API_KEY && !!process.env.INTERNAL_API_KEY;
     const internalUser: JWTPayload | null = isInternal ? { userId: 0, nickname: 'ai-test-worker', isAdmin: true } : null;
 
-    // 配置更新请求：修改分析时长（秒）
+    // 配置更新请求：修改双引擎配置
+    // 时间戳: 2026-04-25 02:50:17
     if (action === 'setConfig') {
       const updates: Record<string, unknown> = {};
 
-      // 更新分析时长
+      // 更新分析时长（向后兼容）
       if (typeof newSeconds === 'number' && newSeconds >= 0 && newSeconds <= 60) {
         const oldSeconds = analysisSeconds;
         analysisSeconds = newSeconds;
@@ -1542,26 +976,82 @@ export async function POST(request: NextRequest) {
         console.log(`[go-engine] analysisSeconds updated: ${oldSeconds}s → ${analysisSeconds}s`);
       }
 
-      // 切换KataGo模型
+      // 辅助函数：验证并切换模型
+      const validateAndSetModel = (key: 'gameModel' | 'analysisModel', value: string) => {
+        const modelKey = getModelKeyFromPath(value) || (MODEL_PATHS[value] ? value : null);
+        if (modelKey && MODEL_PATHS[modelKey]) {
+          engineConfig[key] = modelKey;
+          return modelKey;
+        }
+        return null;
+      };
+
+      // 切换对弈引擎模型
+      if (typeof body.gameModel === 'string') {
+        const gameKey = validateAndSetModel('gameModel', body.gameModel);
+        if (gameKey) {
+          updates.gameModel = { key: gameKey, name: getModelDisplayName(MODEL_PATHS[gameKey]) };
+          console.log(`[go-engine] Game model updated: ${engineConfig.gameModel}`);
+          // 预热新对弈引擎（后台）
+          getEnginePool().getEngine(gameKey).start().catch(() => {});
+        } else {
+          return NextResponse.json({ error: 'Invalid gameModel', available: Object.keys(MODEL_PATHS) }, { status: 400 });
+        }
+      }
+
+      // 切换分析引擎模型
+      if (typeof body.analysisModel === 'string') {
+        const analysisKey = validateAndSetModel('analysisModel', body.analysisModel);
+        if (analysisKey) {
+          updates.analysisModel = { key: analysisKey, name: getModelDisplayName(MODEL_PATHS[analysisKey]) };
+          console.log(`[go-engine] Analysis model updated: ${engineConfig.analysisModel}`);
+          // 预热新分析引擎（后台）
+          getEnginePool().getEngine(analysisKey).start().catch(() => {});
+        } else {
+          return NextResponse.json({ error: 'Invalid analysisModel', available: Object.keys(MODEL_PATHS) }, { status: 400 });
+        }
+      }
+
+      // 更新对弈引擎 visits
+      if (body.gameVisits && typeof body.gameVisits === 'object') {
+        const gv = body.gameVisits as Record<string, number>;
+        if (typeof gv.easy === 'number') engineConfig.gameVisits.easy = Math.max(1, Math.min(5000, gv.easy));
+        if (typeof gv.medium === 'number') engineConfig.gameVisits.medium = Math.max(1, Math.min(5000, gv.medium));
+        if (typeof gv.hard === 'number') engineConfig.gameVisits.hard = Math.max(1, Math.min(5000, gv.hard));
+        updates.gameVisits = { ...engineConfig.gameVisits };
+        console.log(`[go-engine] Game visits updated:`, engineConfig.gameVisits);
+      }
+
+      // 更新分析引擎 visits
+      if (body.analysisVisits && typeof body.analysisVisits === 'object') {
+        const av = body.analysisVisits as Record<string, number>;
+        if (typeof av.easy === 'number') engineConfig.analysisVisits.easy = Math.max(1, Math.min(5000, av.easy));
+        if (typeof av.medium === 'number') engineConfig.analysisVisits.medium = Math.max(1, Math.min(5000, av.medium));
+        if (typeof av.hard === 'number') engineConfig.analysisVisits.hard = Math.max(1, Math.min(5000, av.hard));
+        updates.analysisVisits = { ...engineConfig.analysisVisits };
+        console.log(`[go-engine] Analysis visits updated:`, engineConfig.analysisVisits);
+      }
+
+      // 向后兼容：单个 model 字段同时设置两个引擎（过渡期）
       const newModel = body.model;
       if (typeof newModel === 'string') {
-        const available = getAvailableModels();
-        const modelEntry = available.find(m => m.path === newModel);
-        if (modelEntry) {
-          currentModelPath = newModel;
-          await persistentKataGo.switchModel(newModel);
-          updates.currentModel = { path: newModel, name: getModelDisplayName(newModel) };
-          console.log(`[go-engine] Model switched to: ${getModelDisplayName(newModel)}`);
+        const modelKey = getModelKeyFromPath(newModel) || (MODEL_PATHS[newModel] ? newModel : null);
+        if (modelKey && MODEL_PATHS[modelKey]) {
+          engineConfig.gameModel = modelKey;
+          engineConfig.analysisModel = modelKey;
+          updates.legacyModel = { key: modelKey, name: getModelDisplayName(MODEL_PATHS[modelKey]) };
+          console.log(`[go-engine] Both engines set to: ${modelKey}`);
+          getEnginePool().getEngine(modelKey).start().catch(() => {});
         } else {
-          return NextResponse.json({ error: 'Model not found', available: available.map(m => ({ path: m.path, name: getModelDisplayName(m.path) })) }, { status: 400 });
+          return NextResponse.json({ error: 'Model not found', available: Object.keys(MODEL_PATHS) }, { status: 400 });
         }
       }
 
       if (Object.keys(updates).length === 0) {
-        return NextResponse.json({ error: 'Invalid config (expected analysisSeconds or model)' }, { status: 400 });
+        return NextResponse.json({ error: 'Invalid config (expected gameModel, analysisModel, gameVisits, analysisVisits, analysisSeconds, or model)' }, { status: 400 });
       }
 
-      return NextResponse.json({ success: true, ...updates });
+      return NextResponse.json({ success: true, engineConfig, ...updates });
     }
 
     // 按需分析请求：仅当用户点击"提示与教学"时触发（消耗20积分）
@@ -1570,7 +1060,8 @@ export async function POST(request: NextRequest) {
       const user = internalUser || getUserFromAuthHeader(authHeader);
       const isAITest = body.isAITest === true || isInternal;
       const reqAnalysisSeconds = typeof body.analysisSeconds === 'number' ? body.analysisSeconds : undefined;
-      console.log(`[go-engine] POST analyze: user=${user?.userId || 'unknown'}(${user?.nickname || '?'}), board=${boardSize}, moves=${moves?.length || 0}, queue=${engineQueue.getQueueLength()}, isAITest=${isAITest}, seconds=${reqAnalysisSeconds ?? 'global'}`);
+      const reqDifficulty = typeof body.difficulty === 'string' ? body.difficulty : undefined;
+      console.log(`[go-engine] POST analyze: user=${user?.userId || 'unknown'}(${user?.nickname || '?'}), board=${boardSize}, moves=${moves?.length || 0}, isAITest=${isAITest}, difficulty=${reqDifficulty || '-'}, seconds=${reqAnalysisSeconds ?? 'global'}`);
       if (!user || !isKataGoAvailable()) {
         return NextResponse.json({ analysis: null, error: !user ? '请先登录' : 'KataGo不可用' });
       }
@@ -1619,40 +1110,38 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ analysis: null, error: '积分处理失败' }, { status: 500 });
       }
       } // end non-AI-test teach logic
-      // AI测试模式 或 积分扣除成功后：执行分析
+      // AI测试模式 或 积分扣除成功后：执行分析（直接调用分析引擎，无队列）
       try {
-        const result = await engineQueue.enqueueAnalysis(
-          user.userId,
-          moves as Array<{row: number, col: number, color: 'black' | 'white'}>,
+        const analysisStart = Date.now();
+        const analysisResult = await getKataGoAnalysis(
           boardSize,
-          isAITest, // AI测试模式不受队列限制
-          reqAnalysisSeconds
+          moves as Array<{row: number, col: number, color: 'black' | 'white'}>,
+          reqAnalysisSeconds,
+          reqDifficulty
         );
-        if (result.queueBusy) {
-          // 队列繁忙时退回积分（非AI测试）
-          if (!isAITest) {
-            try {
-              const refundSupabase = getSupabaseClient();
-              const { data: refundData } = await refundSupabase.from('letsgo_users').select('points').eq('id', user.userId).single();
-              if (refundData) {
-                await refundSupabase.from('letsgo_users').update({ points: refundData.points + TEACH_COST }).eq('id', user.userId);
-                await refundSupabase.from('letsgo_point_transactions').insert({
-                  user_id: user.userId, amount: TEACH_COST, type: 'teach_refund', description: '提示与教学-队列繁忙退回'
-                });
-                console.log(`[go-engine] Teach: Refunded ${TEACH_COST} points to user ${user.userId} (queue busy)`);
-              }
-            } catch { /* ignore refund error */ }
-          }
-          return NextResponse.json({ 
-            analysis: null, 
-            queueBusy: true, 
-            queueLength: result.queueLength,
-            error: `当前AI任务队列超过5（实际${result.queueLength}），请稍后再试` 
-          });
+        const analysisElapsed = Date.now() - analysisStart;
+
+        if (!analysisResult) {
+          throw new Error('Analysis returned null');
         }
-        return NextResponse.json({ analysis: result.analysis, pointsUsed: isAITest ? 0 : TEACH_COST });
+
+        // 缓存分析结果
+        setAnalysisCache(moves as EngineMove[], analysisResult);
+
+        // 分析日志
+        const modelName = engineConfig.analysisModel;
+        logAiEvent({ type: 'analyze', model: modelName, boardSize, metadata: { visits: analysisResult.actualVisits, bestMovesCount: analysisResult.bestMoves?.length } });
+        return NextResponse.json({
+          analysis: analysisResult,
+          pointsUsed: isAITest ? 0 : TEACH_COST,
+          komi: getKomi(boardSize),
+          rules: 'chinese',
+          actualVisits: analysisResult.actualVisits,
+          modelUsed: modelName,
+        });
       } catch (err) {
         console.error('[go-engine] Analysis error:', err);
+        logAiEvent({ type: 'engine_error', engine: 'katago', error: err instanceof Error ? err.message : String(err) });
         // 分析失败也退回积分（非AI测试）
         if (!isAITest) {
           try {
@@ -1685,11 +1174,11 @@ export async function POST(request: NextRequest) {
 
     // 追踪活跃对弈
     trackActiveSession(user.userId, user.nickname, requestedEngine, boardSize, difficulty, moves?.length || 0);
-    console.log(`[go-engine] POST genmove: user=${user.userId}(${user.nickname}), engine=${requestedEngine}, board=${boardSize}, diff=${difficulty}, moves=${moves?.length || 0}, queue=${engineQueue.getQueueLength()}`);
+    console.log(`[go-engine] POST genmove: user=${user.userId}(${user.nickname}), engine=${requestedEngine}, board=${boardSize}, diff=${difficulty}, moves=${moves?.length || 0}`);
 
     // ============================================================
-    // GnuGo引擎：直接spawn进程执行，不走EngineQueue
-    // （GnuGo每次spawn新进程，天然可并行，不阻塞KataGo队列）
+    // GnuGo引擎：直接spawn进程执行
+    // （GnuGo每次spawn新进程，天然可并行）
     // ============================================================
     if (requestedEngine === 'gnugo') {
       // GnuGo积分检查和扣除（自动运行模式跳过）
@@ -1760,7 +1249,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ============================================================
-    // KataGo/Local引擎：积分扣除 + EngineQueue串行处理
+    // KataGo/Local引擎：积分扣除 + 直接调用（双引擎常驻，无需队列）
     // ============================================================
     const cost = isAutoRun ? 0 : getEngineCost(requestedEngine);
     const supabase = getSupabaseClient();
@@ -1777,8 +1266,8 @@ export async function POST(request: NextRequest) {
       }
 
       if (userData.points < cost) {
-        return NextResponse.json({ 
-          error: `积分不足（需要${cost}积分，当前${userData.points}积分）`, 
+        return NextResponse.json({
+          error: `积分不足（需要${cost}积分，当前${userData.points}积分）`,
           insufficientPoints: true,
           required: cost,
           current: userData.points,
@@ -1808,14 +1297,34 @@ export async function POST(request: NextRequest) {
       console.log(`[go-engine] Deducted ${cost} points from user ${user.userId} for ${requestedEngine}`);
     }
 
-    // 加入引擎队列（KataGo串行处理，支持多人排队；local也走队列保持一致）
-    const queueInfo = engineQueue.getQueuePosition(user.userId);
-    const queueStart = Date.now();
-    const result = await engineQueue.enqueue(
-      user.userId, requestedEngine, boardSize, moves, difficulty, aiColor
-    );
-    const queueElapsed = Date.now() - queueStart;
-    console.log(`[go-engine] ${requestedEngine}完成: user=${user.userId}, move=${result.pass ? 'pass' : result.move ? `(${result.move.row},${result.move.col})` : 'null'}, engine=${result.engine}, queueWait=${queueElapsed}ms${result.noEngine ? ' [noEngine]' : ''}${result.engineError ? ' [error]' : ''}`);
+    // 直接调用引擎（KataGo 双引擎常驻，local 直接返回）
+    const callStart = Date.now();
+    let result: { move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string; engineError?: boolean; errorDetail?: string; noEngine?: boolean; actualVisits?: number; modelUsed?: string };
+
+    if (requestedEngine === 'katago' && isKataGoAvailable()) {
+      try {
+        result = await getKataGoMove(boardSize, moves, difficulty, aiColor);
+      } catch (katagoError) {
+        const errMsg = katagoError instanceof Error ? katagoError.message : String(katagoError);
+        console.error(`[go-engine] KataGo direct call failed:`, errMsg);
+        result = { move: null, engine: 'katago', engineError: true, errorDetail: errMsg };
+      }
+    } else if (requestedEngine === 'local') {
+      result = { move: null, engine: 'local', noEngine: true };
+    } else {
+      result = { move: null, engine: requestedEngine || 'local', noEngine: true };
+    }
+
+    const callElapsed = Date.now() - callStart;
+    console.log(`[go-engine] ${requestedEngine}完成: user=${user.userId}, move=${result.pass ? 'pass' : result.move ? `(${result.move.row},${result.move.col})` : 'null'}, engine=${result.engine}, elapsed=${callElapsed}ms${result.noEngine ? ' [noEngine]' : ''}${result.engineError ? ' [error]' : ''}`);
+
+    // 结构化日志记录
+    const modelName = engineConfig.gameModel;
+    if (result.engineError || result.noEngine) {
+      logAiEvent({ type: 'engine_error', engine: requestedEngine, model: modelName, boardSize, difficulty, error: result.noEngine ? 'noEngine' : 'engineError', durationMs: callElapsed });
+    } else {
+      logAiEvent({ type: result.pass ? 'pass_bug' : 'genmove', engine: requestedEngine, model: modelName, boardSize, difficulty, coord: result.pass ? 'pass' : result.move ? `${result.move.row},${result.move.col}` : undefined, isPass: result.pass, durationMs: callElapsed });
+    }
 
     // 获取最新积分余额并附加到响应中
     let remainingPoints: number | undefined;
@@ -1828,7 +1337,7 @@ export async function POST(request: NextRequest) {
       remainingPoints = latestUser?.points;
     }
 
-    return NextResponse.json({ ...result, pointsUsed: cost, remainingPoints, queueInfo });
+    return NextResponse.json({ ...result, pointsUsed: cost, remainingPoints, komi: getKomi(boardSize), rules: 'chinese' });
   } catch (error) {
     console.error("Go engine API error:", error);
     return NextResponse.json({ error: "引擎错误" }, { status: 500 });
@@ -1888,6 +1397,10 @@ export async function GET(request: NextRequest) {
     cachedDiagnosis = diag;
   }
 
+  const availableModels = getAvailableModels();
+  const gameModelPath = getModelPathFromKey(engineConfig.gameModel);
+  const analysisModelPath = getModelPathFromKey(engineConfig.analysisModel);
+
   return NextResponse.json({
     engines: [
       {
@@ -1902,10 +1415,14 @@ export async function GET(request: NextRequest) {
       },
       { id: "local", name: "本地AI", available: true, desc: "内置启发式AI，随时可用", cost: ENGINE_COSTS.local },
     ],
-    queueLength,              // 顶层字段，队列中等待的任务数
-    isProcessing,             // 顶层字段，是否有任务正在处理
-    analysisSeconds,           // 当前分析配置（0=raw-nn, >0=kata-analyze搜索N秒）
-    userQueuePosition: userQueueInfo.userPosition,  // 该用户在队列中的位置（1-based，-1=不在队列中）
+    queueLength,
+    isProcessing,
+    analysisSeconds,
+    userQueuePosition: userQueueInfo.userPosition,
     queue: { length: queueLength, processing: isProcessing },
+    availableModels: availableModels.map(m => ({ ...m, displayName: getModelDisplayName(m.path) })),
+    gameModel: gameModelPath ? { path: gameModelPath, name: getModelDisplayName(gameModelPath), key: engineConfig.gameModel } : null,
+    analysisModel: analysisModelPath ? { path: analysisModelPath, name: getModelDisplayName(analysisModelPath), key: engineConfig.analysisModel } : null,
+    engineConfig,
   });
 }

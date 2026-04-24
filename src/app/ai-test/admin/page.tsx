@@ -31,7 +31,7 @@ interface AITestConfig {
   winRateEndCondition: number;
   aiPlayer: {
     color: 'black' | 'white';
-    analysisSeconds: number;
+    analysisDifficulty: Difficulty;
   };
   opponent: {
     engine: EngineId;
@@ -43,7 +43,7 @@ const DEFAULT_CONFIG: AITestConfig = {
   boardSize: 9,
   stepInterval: 15000,
   winRateEndCondition: 99,
-  aiPlayer: { color: 'black', analysisSeconds: 5 },
+  aiPlayer: { color: 'black', analysisDifficulty: 'medium' },
   opponent: { engine: 'katago', difficulty: 'medium' },
 };
 
@@ -77,7 +77,16 @@ export default function AITestAdminPage() {
       const saved = localStorage.getItem('ai-test-config');
       if (saved) {
         const parsed = JSON.parse(saved);
-        setConfig({ ...DEFAULT_CONFIG, ...parsed });
+        // 向后兼容：旧配置使用 analysisSeconds，新配置使用 analysisDifficulty
+        const migrated: AITestConfig = {
+          ...DEFAULT_CONFIG,
+          ...parsed,
+          aiPlayer: {
+            color: parsed.aiPlayer?.color || 'black',
+            analysisDifficulty: parsed.aiPlayer?.analysisDifficulty || 'medium',
+          },
+        };
+        setConfig(migrated);
       }
     } catch {
       // ignore
@@ -282,26 +291,28 @@ export default function AITestAdminPage() {
                   </div>
                 </div>
 
-                {/* Analysis Seconds */}
+                {/* Analysis Difficulty */}
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-2">
-                    分析时间: {config.aiPlayer.analysisSeconds === 0 ? 'kata-raw-nn（瞬时）' : `${config.aiPlayer.analysisSeconds}秒`}
+                    分析深度
                   </label>
-                  <input
-                    type="range"
-                    min={0}
-                    max={60}
-                    step={1}
-                    value={config.aiPlayer.analysisSeconds}
-                    onChange={e => setConfig(prev => ({ ...prev, aiPlayer: { ...prev.aiPlayer, analysisSeconds: Number(e.target.value) } }))}
-                    className="w-full"
-                  />
-                  <div className="flex justify-between text-xs text-gray-500 mt-1">
-                    <span>0（瞬时NN）</span>
-                    <span>60秒</span>
+                  <div className="flex gap-2">
+                    {DIFFICULTIES.map(({ key, label, emoji }) => (
+                      <button
+                        key={key}
+                        onClick={() => setConfig(prev => ({ ...prev, aiPlayer: { ...prev.aiPlayer, analysisDifficulty: key } }))}
+                        className={`flex-1 px-3 py-2 rounded-lg border-2 text-center transition-colors ${
+                          config.aiPlayer.analysisDifficulty === key
+                            ? 'border-purple-500 bg-purple-50 text-purple-700'
+                            : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <div className="font-semibold text-sm">{emoji} {label}</div>
+                      </button>
+                    ))}
                   </div>
                   <p className="text-xs text-gray-400 mt-1">
-                    0 = kata-raw-nn 纯神经网络瞬时输出；1-60 = kata-analyze 搜索N秒
+                    初级/中级/高级 对应分析引擎的 visits 配置（可在 Monitor 调整）
                   </p>
                 </div>
               </div>
@@ -503,7 +514,7 @@ export default function AITestAdminPage() {
             <p>2. 后台Worker将在服务器上持续运行AI对弈，每步间隔按配置执行。</p>
             <p>3. 展示页 (/ai-test) 所有人看到同一盘正在进行的棋局。</p>
             <p>4. 如果暂时没有棋局，展示页会显示&quot;暂无进行中的棋局&quot;。</p>
-            <p>5. 分析时间设为0时使用kata-raw-nn瞬时输出，1-60秒时使用kata-analyze搜索。</p>
+            <p>5. AI玩家的分析深度可选择初级/中级/高级，对应分析引擎的不同 visits 配置。</p>
           </CardContent>
         </Card>
 

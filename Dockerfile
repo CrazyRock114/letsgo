@@ -42,6 +42,7 @@ RUN mkdir -p /usr/local/katago && \
 # 直接生成最小化 CPU 配置（不依赖官方配置模板）
 RUN cat > /usr/local/katago/gtp.cfg << 'CPUCFG'
 # KataGo CPU 专用最小配置 - 小围棋乐园
+rules = chinese
 koRule = SIMPLE
 scoringRule = AREA
 taxRule = NONE
@@ -52,7 +53,46 @@ nnMaxBatchSize = 8
 maxVisits = 1000
 logAllGTPCommunication = false
 logSearchInfo = false
+# 人类风格模型需要此配置
+humanSLProfile = preaz_5k
 CPUCFG
+
+# Analysis Engine 专用配置（JSON 异步协议）
+RUN cat > /usr/local/katago/analysis.cfg << 'ANALYSISCFG'
+# KataGo Analysis Engine 配置 - 小围棋乐园
+# Railway Hobby plan: ~2 vCPU / ~1GB 内存优化
+
+# 规则
+rules = chinese
+koRule = SIMPLE
+scoringRule = AREA
+taxRule = NONE
+multiStoneSuicideLegal = false
+
+# 搜索线程（Hobby plan 2 CPU）
+numSearchThreads = 2
+
+# 分析引擎设置
+reportAnalysisWinratesAs = BLACK
+analysisPVLen = 15
+
+# 内存优化（默认 nnCacheSizePowerOfTwo=20 约 1.5GB → 18 约 375MB）
+nnCacheSizePowerOfTwo = 18
+nnMutexPoolSizePowerOfTwo = 14
+nnMaxBatchSize = 4
+
+# 友好 pass（中国规则）
+conservativePass = true
+friendlyPassOk = true
+enablePassingHacks = true
+
+# 人类风格模型预留（仅 humanv0 生效，其他模型忽略）
+humanSLProfile = preaz_5k
+
+# 日志控制
+logAllGTPCommunication = false
+logSearchInfo = false
+ANALYSISCFG
 
 # 下载神经网络模型（并行下载多个，供运行时切换选择）
 # 1. lionffen b6c64 (2MB, 快, 支持所有棋盘)
@@ -75,6 +115,24 @@ RUN curl -sL --max-time 300 \
       -o /usr/local/katago/g170-b6c96-s175395328-d26788732.bin.gz \
       "https://github.com/lightvector/KataGo/releases/download/v1.12.3/g170-b6c96-s175395328-d26788732.bin.gz" || \
     echo "g170-b6c96 download failed, skipping"
+
+# 4. lionffen b24c64 (4.8MB, 比b6c64更大更深, 棋力更强)
+RUN curl -fSL --retry 3 --max-time 180 -H "Referer: https://katagotraining.org/extra_networks/" \
+      -o /usr/local/katago/lionffen_b24c64_3x3_v3_12300.bin.gz \
+      "https://media.katagotraining.org/uploaded/networks/models_extra/lionffen_b24c64_3x3_v3_12300.bin.gz" && \
+    echo "lionffen_b24c64 download attempted"
+
+# 5. b18c384nbt-humanv0 (99MB, 人类风格模型, 下法更自然)
+RUN curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networks/" \
+      -o /usr/local/katago/b18c384nbt-humanv0.bin.gz \
+      "https://media.katagotraining.org/uploaded/networks/models_extra/b18c384nbt-humanv0.bin.gz" && \
+    echo "humanv0 download attempted"
+
+# 6. kata9x9-b18c384nbt (97MB, 9x9专用模型, 小棋盘极强)
+RUN curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networks/" \
+      -o /usr/local/katago/kata9x9-b18c384nbt-20231025.bin.gz \
+      "https://media.katagotraining.org/uploaded/networks/models_extra/kata9x9-b18c384nbt-20231025.bin.gz" && \
+    echo "kata9x9 download attempted"
 
 # 验证各模型是否下载成功
 RUN for f in /usr/local/katago/*.gz; do \

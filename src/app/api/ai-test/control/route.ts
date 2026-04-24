@@ -8,7 +8,7 @@ interface SpectatorConfig {
   winRateEndCondition: number;
   aiPlayer: {
     color: 'black' | 'white';
-    analysisSeconds: number;
+    analysisDifficulty: 'easy' | 'medium' | 'hard';
   };
   opponent: {
     engine: 'katago' | 'gnugo' | 'local';

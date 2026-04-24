@@ -34,7 +34,7 @@ interface SpectatorConfig {
   winRateEndCondition: number;
   aiPlayer: {
     color: 'black' | 'white';
-    analysisSeconds: number;
+    analysisDifficulty: 'easy' | 'medium' | 'hard';
   };
   opponent: {
     engine: 'katago' | 'gnugo' | 'local';
@@ -51,7 +51,7 @@ interface MoveEntry {
     scoreLead: number;
     actualVisits: number;
     bestMoves: Array<{ move: string; winrate: number; scoreMean: number; visits: number }>;
-    analysisSeconds: number;
+    analysisDifficulty: 'easy' | 'medium' | 'hard';
     timestamp: string;
   };
 }
@@ -126,7 +126,7 @@ function rebuildBoard(size: number, moves: MoveEntry[]): Board {
 async function makeAIPlayerMove(
   boardSize: number,
   moves: MoveEntry[],
-  analysisSeconds: number
+  analysisDifficulty: 'easy' | 'medium' | 'hard'
 ): Promise<{ move: MoveEntry; board: Board } | null> {
   const movesForEngine = moves.map(m => ({
     row: m.position.row,
@@ -139,7 +139,7 @@ async function makeAIPlayerMove(
     boardSize,
     moves: movesForEngine,
     isAITest: true,
-    analysisSeconds,
+    difficulty: analysisDifficulty,
   }) as { analysis?: { winRate: number; scoreLead: number; actualVisits?: number; bestMoves: Array<{ move: string; winrate: number; scoreMean: number; visits?: number }> } | null; error?: string };
 
   if (!data.analysis) {
@@ -177,7 +177,7 @@ async function makeAIPlayerMove(
       scoreMean: m.scoreMean,
       visits: m.visits ?? 0,
     })),
-    analysisSeconds,
+    analysisDifficulty,
     timestamp: new Date().toISOString(),
   };
 
@@ -333,7 +333,7 @@ async function tick(): Promise<void> {
     boardSize: 9,
     stepInterval: 15000,
     winRateEndCondition: 99,
-    aiPlayer: { color: 'black', analysisSeconds: 5 },
+    aiPlayer: { color: 'black', analysisDifficulty: 'medium' },
     opponent: { engine: 'katago', difficulty: 'medium' },
   };
 
@@ -350,7 +350,7 @@ async function tick(): Promise<void> {
   try {
     if (isAIPlayerTurn) {
       console.log(`[ai-test-worker] AI player (${config.aiPlayer.color}) move #${moves.length + 1}`);
-      result = await makeAIPlayerMove(boardSize, moves, config.aiPlayer.analysisSeconds);
+      result = await makeAIPlayerMove(boardSize, moves, config.aiPlayer.analysisDifficulty);
     } else {
       console.log(`[ai-test-worker] Opponent (${config.opponent.engine}) move #${moves.length + 1}`);
       result = await makeOpponentMove(
@@ -453,7 +453,8 @@ function scheduleNext(delay: number): void {
 }
 
 function configTitle(config: SpectatorConfig): string {
-  return `${config.boardSize}路 AI对战 ${config.aiPlayer.color === 'black' ? 'AI黑' : 'AI白'}(分析${config.aiPlayer.analysisSeconds}s) vs ${config.opponent.engine}(${config.opponent.difficulty})`;
+  const diffLabel = { easy: '初级', medium: '中级', hard: '高级' }[config.aiPlayer.analysisDifficulty] || config.aiPlayer.analysisDifficulty;
+  return `${config.boardSize}路 AI对战 ${config.aiPlayer.color === 'black' ? 'AI黑' : 'AI白'}(分析${diffLabel}) vs ${config.opponent.engine}(${config.opponent.difficulty})`;
 }
 
 function positionToCoord(pos: { row: number; col: number }, boardSize: number): string {
@@ -482,7 +483,8 @@ function buildMoveCommentary(
       scoreLead = actual.black - actual.white;
     }
     const topMoves = a.bestMoves.slice(0, 3).map(m => `${m.move}(${m.winrate.toFixed(1)}%,${m.visits}v)`).join(', ');
-    text = `第${moveIndex}手 ${color === 'black' ? '黑' : '白'} ${coord} | AI玩家(${config.aiPlayer.analysisSeconds === 0 ? 'kata-raw-nn瞬时' : config.aiPlayer.analysisSeconds + '秒分析'}) | 胜率${a.winRate.toFixed(1)}% | 目差${scoreLead >= 0 ? '+' : ''}${scoreLead.toFixed(1)} | visits:${a.actualVisits} | 推荐:${topMoves}`;
+    const diffLabel = { easy: '初级', medium: '中级', hard: '高级' }[config.aiPlayer.analysisDifficulty] || config.aiPlayer.analysisDifficulty;
+    text = `第${moveIndex}手 ${color === 'black' ? '黑' : '白'} ${coord} | AI玩家(${diffLabel}分析) | 胜率${a.winRate.toFixed(1)}% | 目差${scoreLead >= 0 ? '+' : ''}${scoreLead.toFixed(1)} | visits:${a.actualVisits} | 推荐:${topMoves}`;
   } else {
     const who = isAIPlayer ? 'AI玩家' : `对手(${config.opponent.engine}/${config.opponent.difficulty})`;
     text = `第${moveIndex}手 ${color === 'black' ? '黑' : '白'} ${coord} | ${who}落子`;

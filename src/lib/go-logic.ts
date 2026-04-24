@@ -821,8 +821,12 @@ export function checkGameEnd(
 }
 
 // 获取贴目值（根据棋盘大小）
+// 来源: KataGo 官方 9x9 opening book (katagobooks.org)
+// 这些是 fair komi (让黑白均势的贴目值)，偏离会扭曲 KataGo 胜率评估
 export function getKomi(boardSize: number): number {
-  return boardSize <= 9 ? 2.5 : boardSize <= 13 ? 3.5 : 6.5;
+  if (boardSize <= 9) return 7;     // 9x9 fair komi = 7
+  if (boardSize <= 13) return 7.5;  // 13x13 标准
+  return 7.5;                       // 19x19 标准
 }
 
 // 计算最终得分（含贴目，根据棋盘大小调整）

@@ -89,6 +89,7 @@ interface CommentaryEntry {
   color: Stone;
   position: Position;
   commentary: string;
+  isPass?: boolean;
 }
 
 // 棋局历史步
@@ -96,6 +97,7 @@ interface MoveEntry {
   position: Position;
   color: Stone;
   captured: number;
+  isPass?: boolean;
 }
 
 // 保存的棋局
@@ -142,6 +144,10 @@ export default function GoGamePage() {
   const [playerColor, setPlayerColor] = useState<Stone>('black'); // 玩家执子颜色
   const [availableEngines, setAvailableEngines] = useState<Record<EngineId, boolean>>({ katago: false, gnugo: false, local: true });
   const [enginesLoading, setEnginesLoading] = useState(true);
+  // KataGo 模型选择
+  const [availableKataGoModels, setAvailableKataGoModels] = useState<Array<{ path: string; name: string; sizeMB: number; displayName: string }>>([]);
+  const [selectedKataGoModel, setSelectedKataGoModel] = useState<string>('');
+  const [modelSwitching, setModelSwitching] = useState(false);
   const [board, setBoard] = useState<Board>(() => createEmptyBoard(9));
   const [currentPlayer, setCurrentPlayer] = useState<Stone>('black');
   const [history, setHistory] = useState<MoveEntry[]>([]);
@@ -164,11 +170,17 @@ export default function GoGamePage() {
   // 同步history长度到ref，供useCallback闭包使用最新值
   useEffect(() => { historyLengthRef.current = history.length; }, [history.length]);
 
-  // 每次落子历史变化时，强制同步lastMove标记到最新一手（防止残留）
+  // 每次落子历史变化时，强制同步lastMove标记到最新一手（防止残留，跳过pass）
   useEffect(() => {
     if (history.length > 0) {
-      const last = history[history.length - 1];
-      setLastMove({ row: last.position.row, col: last.position.col });
+      // 从后往前找第一个非pass的落子
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (!history[i].isPass) {
+          setLastMove({ row: history[i].position.row, col: history[i].position.col });
+          return;
+        }
+      }
+      setLastMove(null);
     } else {
       setLastMove(null);
     }
@@ -176,6 +188,7 @@ export default function GoGamePage() {
   const [score, setScore] = useState({ black: 0, white: 0 });
   const [isAIThinking, setIsAIThinking] = useState(false);
   const [queuePosition, setQueuePosition] = useState(0); // 0=无排队，>0=排队位置
+  const [lastEngineInfo, setLastEngineInfo] = useState<{ modelUsed?: string; actualVisits?: number; engine?: string } | null>(null);
   const queuePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [savedGameId, setSavedGameId] = useState<number | null>(null);
   // 同步savedGameId到ref，供自动保存useEffect闭包使用最新值
@@ -372,6 +385,13 @@ export default function GoGamePage() {
             avail[e.id as EngineId] = e.available;
           }
           setAvailableEngines(avail);
+          // 加载可用模型列表
+          if (data.availableModels) {
+            setAvailableKataGoModels(data.availableModels);
+          }
+          if (data.currentModel?.path) {
+            setSelectedKataGoModel(data.currentModel.path);
+          }
           // 自动选择最高可用引擎（未登录只能用本地AI）
           if (!user) {
             setEngine('local');
@@ -468,7 +488,8 @@ export default function GoGamePage() {
     moveColor: Stone,
     capturedCount: number,
     moveIdx: number,
-    currentHistory: MoveEntry[]
+    currentHistory: MoveEntry[],
+    isPass = false
   ) => {
     // 每次新请求递增ID，仅用于控制流式文本显示（不阻止旧解说保存）
     const thisRequestId = ++commentaryRequestId.current;
@@ -486,7 +507,8 @@ export default function GoGamePage() {
     const thisAbortSignal = commentaryAbortRef.current?.signal;
 
     // 兜底解说（API失败时使用）
-    const fallbackCommentary = `${moveColor === 'black' ? '黑方' : '白方'}下在${positionToCoordinate(movePos.row, movePos.col, boardSize)}`;
+    const moveDesc = isPass ? '停一手' : `下在${positionToCoordinate(movePos.row, movePos.col, boardSize)}`;
+    const fallbackCommentary = `${moveColor === 'black' ? '黑方' : '白方'}${moveDesc}`;
 
     try {
       const response = await fetch('/api/go-ai', {
@@ -501,6 +523,7 @@ export default function GoGamePage() {
           moveColor,
           captured: capturedCount,
           moveHistory: currentHistory,
+          isPass,
         }),
       });
       if (response.ok) {
@@ -518,6 +541,7 @@ export default function GoGamePage() {
               color: moveColor,
               position: movePos,
               commentary: fullText || fallbackCommentary,
+              isPass,
             };
             const next = [...prev, newEntry];
             next.sort((a, b) => a.moveIndex - b.moveIndex);
@@ -535,6 +559,7 @@ export default function GoGamePage() {
               color: moveColor,
               position: movePos,
               commentary: fallbackCommentary,
+              isPass,
             };
             const next = [...prev, newEntry];
             next.sort((a, b) => a.moveIndex - b.moveIndex);
@@ -659,6 +684,7 @@ export default function GoGamePage() {
               row: m.position.row,
               col: m.position.col,
               color: m.color,
+              ...(m.isPass ? { isPass: true } : {}),
             }));
             const res = await fetch('/api/go-engine', {
               method: 'POST',
@@ -676,10 +702,13 @@ export default function GoGamePage() {
               const data = await res.json();
               // 检查epoch：引擎响应可能很慢，用户可能已重新开始
               if (gameEpochRef.current !== epochAtStart) { isProcessingMoveRef.current = false; return; }
-              console.log(`[engine] ${engine} response:`, JSON.stringify(data));
               // 更新前端积分
               if (data.pointsUsed > 0) {
                 deductPoints(data.pointsUsed);
+              }
+              // 记录引擎信息（modelUsed + actualVisits）
+              if (data.modelUsed || data.actualVisits) {
+                setLastEngineInfo({ modelUsed: data.modelUsed, actualVisits: data.actualVisits, engine });
               }
               // 如果genmove返回了analysis数据，保存供解说/教学使用
               if (data.analysis) {
@@ -690,10 +719,16 @@ export default function GoGamePage() {
                 aiMove = data.move;
                 usedEngine = true;
               } else if (data.pass && !data.engineError) {
-                // 引擎主动停手（非错误），计入连续停手
+                // 引擎主动停手（非错误），记录到历史并计入连续停手
+                const passEntry = { position: { row: 0, col: 0 }, color: aiColor as Stone, captured: 0, isPass: true };
+                const historyWithPass = [...historyWithThisMove, passEntry];
+                setHistory(historyWithPass);
+                // AI停手解说
+                requestCommentary(newBoard, { row: 0, col: 0 }, aiColor, 0, moveIdx + 1, historyWithPass, true);
+
                 const newPasses = consecutivePasses + 1;
                 setConsecutivePasses(newPasses);
-                const endCheck = checkGameEnd(newBoard, newPasses, history.length + 1);
+                const endCheck = checkGameEnd(newBoard, newPasses, historyWithPass.length);
                 if (endCheck.ended) {
                   const result = calculateFinalScore(newBoard);
                   setGameEnded(true);
@@ -859,13 +894,15 @@ export default function GoGamePage() {
     const newHistory = history.slice(0, -stepsToUndo);
     let newBoard = createEmptyBoard(boardSize);
     for (const move of newHistory) {
-      const result = playMove(newBoard, move.position.row, move.position.col, move.color);
-      newBoard = result.newBoard;
+      if (!move.isPass) {
+        const result = playMove(newBoard, move.position.row, move.position.col, move.color);
+        newBoard = result.newBoard;
+      }
     }
     setBoard(newBoard);
     setHistory(newHistory);
     setCurrentPlayer(playerColor);
-    setLastMove(newHistory.length > 0 ? newHistory[newHistory.length - 1].position : null);
+    setLastMove(newHistory.length > 0 && !newHistory[newHistory.length - 1].isPass ? newHistory[newHistory.length - 1].position : null);
     setCommentaries(prev => prev.slice(0, -stepsToUndo));
   }, [history, boardSize, isReplayMode, playerColor]);
 
@@ -978,6 +1015,30 @@ export default function GoGamePage() {
     }
   }, [boardSize, playerColor, difficulty, engine, token, requestCommentary]);
 
+  // ===== 切换 KataGo 模型 =====
+  const handleSwitchModel = useCallback(async (modelPath: string) => {
+    if (!token || modelPath === selectedKataGoModel) return;
+    setModelSwitching(true);
+    try {
+      const res = await fetch('/api/go-engine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: 'setConfig', model: modelPath }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSelectedKataGoModel(modelPath);
+        toast.success('AI 引擎已切换', { description: data.currentModel?.name || modelPath });
+      } else {
+        toast.error('引擎切换失败', { description: data.error || '未知错误' });
+      }
+    } catch (err) {
+      toast.error('引擎切换失败', { description: err instanceof Error ? err.message : '网络错误' });
+    } finally {
+      setModelSwitching(false);
+    }
+  }, [token, selectedKataGoModel]);
+
   // ===== 停手 =====
   const passMove = useCallback(async () => {
     if (gameEnded) { toast.info('棋局已结束'); return; }
@@ -987,10 +1048,17 @@ export default function GoGamePage() {
     const aiColor: 'black' | 'white' = playerColor === 'black' ? 'white' : 'black';
     const epochAtStart = gameEpochRef.current;
 
+    // 记录玩家停手到历史
+    const passEntry = { position: { row: 0, col: 0 }, color: playerColor, captured: 0, isPass: true };
+    const historyWithPass = [...history, passEntry];
+    setHistory(historyWithPass);
+    const passMoveIdx = history.length;
+    requestCommentary(board, { row: 0, col: 0 }, playerColor, 0, passMoveIdx, historyWithPass, true);
+
     const newPasses = consecutivePasses + 1;
     setConsecutivePasses(newPasses);
 
-    const endCheck = checkGameEnd(board, newPasses, history.length);
+    const endCheck = checkGameEnd(board, newPasses, historyWithPass.length);
     if (endCheck.ended) {
       // 满足严格结束条件
       const result = calculateFinalScore(board);
@@ -1032,10 +1100,11 @@ export default function GoGamePage() {
 
     if (engine !== 'local') {
       try {
-        const moveHistoryForEngine = history.map(m => ({
+        const moveHistoryForEngine = historyWithPass.map(m => ({
           row: m.position.row,
           col: m.position.col,
           color: m.color,
+          ...(m.isPass ? { isPass: true } : {}),
         }));
         const res = await fetch('/api/go-engine', {
           method: 'POST',
@@ -1053,15 +1122,19 @@ export default function GoGamePage() {
           const data = await res.json();
           // 检查epoch
           if (gameEpochRef.current !== epochAtStart) return;
-          console.log(`[engine-restart] ${engine} response:`, JSON.stringify(data));
           if (data.move && isValidMove(board, data.move.row, data.move.col, aiColor)) {
             aiMove = data.move;
             usedEngine = true;
           } else if (data.pass) {
-            // 引擎也停手，计入连续停手
+            // 引擎也停手，记录到历史并计入连续停手
+            const aiPassEntry = { position: { row: 0, col: 0 }, color: aiColor, captured: 0, isPass: true };
+            const historyWithAIPass = [...historyWithPass, aiPassEntry];
+            setHistory(historyWithAIPass);
+            requestCommentary(board, { row: 0, col: 0 }, aiColor, 0, historyWithPass.length, historyWithAIPass, true);
+
             const newPasses2 = consecutivePasses + 2; // 玩家+AI都停手
             setConsecutivePasses(newPasses2);
-            const endCheck = checkGameEnd(board, newPasses2, history.length + 1);
+            const endCheck = checkGameEnd(board, newPasses2, historyWithAIPass.length);
             if (endCheck.ended) {
               const result = calculateFinalScore(board);
               setGameEnded(true);
@@ -1169,7 +1242,8 @@ export default function GoGamePage() {
         try {
           setTeachingMessage('正在请求KataGo分析...');
           const movesForAnalysis = history.map(h => ({
-            row: h.position.row, col: h.position.col, color: h.color
+            row: h.position.row, col: h.position.col, color: h.color,
+            ...(h.isPass ? { isPass: true } : {}),
           }));
           const analyzeController = new AbortController();
           const analyzeTimeout = setTimeout(() => analyzeController.abort(), 95000);
@@ -1340,7 +1414,10 @@ export default function GoGamePage() {
       let chatAnalysis: typeof latestAnalysisRef.current = null;
       if (engine !== 'local' && board && history.length > 0) {
         try {
-          const cacheMoves = history.map(m => ({ row: m.position.row, col: m.position.col, color: m.color }));
+          const cacheMoves = history.map(m => ({
+            row: m.position.row, col: m.position.col, color: m.color,
+            ...(m.isPass ? { isPass: true } : {}),
+          }));
           const analyzeRes = await fetch('/api/go-engine', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -1525,12 +1602,14 @@ export default function GoGamePage() {
     const newIdx = Math.max(0, Math.min(replayMoves.length, replayIndex + direction));
     setReplayIndex(newIdx);
 
-    // 重放到指定步数
+    // 重放到指定步数（跳过pass）
     let newBoard = createEmptyBoard(boardSize);
     for (let i = 0; i < newIdx; i++) {
       const move = replayMoves[i];
-      const result = playMove(newBoard, move.position.row, move.position.col, move.color);
-      newBoard = result.newBoard;
+      if (!move.isPass) {
+        const result = playMove(newBoard, move.position.row, move.position.col, move.color);
+        newBoard = result.newBoard;
+      }
     }
     setBoard(newBoard);
     setLastMove(newIdx > 0 ? replayMoves[newIdx - 1].position : null);
@@ -1556,12 +1635,14 @@ export default function GoGamePage() {
     const truncatedMoves = replayMoves.slice(0, replayIndex);
     const truncatedCommentaries = commentaries.filter(c => c.moveIndex < replayIndex);
 
-    // 重放到当前步的棋盘状态
+    // 重放到当前步的棋盘状态（跳过pass）
     let newBoard = createEmptyBoard(boardSize);
     for (let i = 0; i < truncatedMoves.length; i++) {
       const move = truncatedMoves[i];
-      const result = playMove(newBoard, move.position.row, move.position.col, move.color);
-      newBoard = result.newBoard;
+      if (!move.isPass) {
+        const result = playMove(newBoard, move.position.row, move.position.col, move.color);
+        newBoard = result.newBoard;
+      }
     }
 
     // 判断下一步是谁：偶数步=黑方，奇数步=白方
@@ -1571,7 +1652,7 @@ export default function GoGamePage() {
     setBoard(newBoard);
     setHistory(truncatedMoves);
     setCommentaries(truncatedCommentaries);
-    setLastMove(replayIndex > 0 ? replayMoves[replayIndex - 1].position : null);
+    setLastMove(replayIndex > 0 && !replayMoves[replayIndex - 1].isPass ? replayMoves[replayIndex - 1].position : null);
     setGameEnded(false);
     setShowGameEndDialog(false);
     setConsecutivePasses(0);
@@ -1602,32 +1683,34 @@ export default function GoGamePage() {
               row: m.position.row,
               col: m.position.col,
               color: m.color,
+              ...(m.isPass ? { isPass: true } : {}),
             }));
             let aiMove: Position | null = null;
             let usedEngine = false;
 
             if (engine !== 'local') {
               try {
-                console.log(`[frontend] Sending engine request: engine=${engine}, difficulty=${difficulty}, moves=${moveHistoryForEngine.length}`);
                 const res = await fetch('/api/go-engine', {
                   method: 'POST',
                   signal: createAbortableFetch(),
                   headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
                   body: JSON.stringify({ boardSize, difficulty, engine, moves: moveHistoryForEngine, aiColor: aiColorCalc }),
                 });
-                console.log(`[frontend] Engine response status: ${res.status}`);
                 const data = await res.json();
-                console.log(`[frontend] Engine response data:`, JSON.stringify(data));
                 if (data.move && isValidMove(newBoard, data.move.row, data.move.col, aiColorCalc)) {
                   aiMove = data.move;
                   usedEngine = true;
-                  console.log(`[frontend] Engine move accepted: (${aiMove?.row},${aiMove?.col})`);
                 } else if (data.pass) {
-                  console.log(`[frontend] Engine pass`);
-                  // AI停手
+                  console.log(`[frontend] Engine pass (replay resume)`);
+                  // AI停手，记录到历史
+                  const aiPassEntry = { position: { row: 0, col: 0 }, color: aiColorCalc as Stone, captured: 0, isPass: true };
+                  const historyWithAIPass = [...truncatedMoves, aiPassEntry];
+                  setHistory(historyWithAIPass);
+                  requestCommentary(newBoard, { row: 0, col: 0 }, aiColorCalc, 0, truncatedMoves.length, historyWithAIPass, true);
+
                   setConsecutivePasses(prev => {
                     const newPasses = prev + 1;
-                    const endCheck = checkGameEnd(newBoard, newPasses, replayIndex + 2);
+                    const endCheck = checkGameEnd(newBoard, newPasses, historyWithAIPass.length);
                     if (endCheck.ended) {
                       const result = calculateFinalScore(newBoard);
                       setGameEnded(true);
@@ -1812,6 +1895,47 @@ export default function GoGamePage() {
             })}
           </div>
 
+          {/* KataGo 模型选择 - 短期禁用：单进程架构下模型切换会导致全局冷启动 */}
+          {false && engine === 'katago' && availableEngines.katago && availableKataGoModels.length > 0 && user && (
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] text-amber-600 mr-0.5">引擎模型</span>
+              <select
+                value={selectedKataGoModel}
+                onChange={e => {
+                  const path = e.target.value;
+                  if (path === selectedKataGoModel) return;
+                  if (history.length > 0 && !gameEnded) {
+                    setRestartConfirmMsg('切换 AI 模型将重新开始一局棋，当前棋局不会保存。');
+                    setPendingRestartAction(() => () => {
+                      void handleSwitchModel(path);
+                      restartGame();
+                    });
+                    setShowRestartConfirm(true);
+                  } else {
+                    void handleSwitchModel(path);
+                  }
+                }}
+                disabled={modelSwitching || isReplayMode}
+                className={`
+                  h-7 px-2 text-xs rounded-md border transition-colors focus:outline-none focus:ring-1 focus:ring-amber-400
+                  ${modelSwitching
+                    ? 'bg-amber-50 border-amber-200 text-amber-500 cursor-wait'
+                    : isReplayMode
+                      ? 'bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed'
+                      : 'bg-white border-gray-200 hover:border-amber-400 text-gray-700'
+                  }
+                `}
+              >
+                {availableKataGoModels.map(m => (
+                  <option key={m.path} value={m.path}>
+                    {m.displayName.split(' (')[0]} ({m.sizeMB}MB)
+                  </option>
+                ))}
+              </select>
+              {modelSwitching && <Spinner className="w-3 h-3" />}
+            </div>
+          )}
+
           {/* 难度 */}
           {DIFFICULTIES.map(({ key, label, emoji }) => (
             <Button
@@ -1958,17 +2082,26 @@ export default function GoGamePage() {
                     color: replayMoves[replayIndex - 1]?.color === 'black' ? '#fff' : '#374151',
                     border: replayMoves[replayIndex - 1]?.color === 'white' ? '1px solid #d1d5db' : 'none',
                   }}>
-                    复盘 {replayIndex}/{replayMoves.length}手 {replayMoves[replayIndex - 1]?.color === 'black' ? '黑' : '白'} {positionToCoordinate(replayMoves[replayIndex - 1].position.row, replayMoves[replayIndex - 1].position.col, boardSize)}
+                    复盘 {replayIndex}/{replayMoves.length}手 {replayMoves[replayIndex - 1]?.color === 'black' ? '黑' : '白'} {replayMoves[replayIndex - 1]?.isPass ? '停一手' : positionToCoordinate(replayMoves[replayIndex - 1].position.row, replayMoves[replayIndex - 1].position.col, boardSize)}
                   </Badge>
                 ) : isReplayMode ? (
                   <Badge variant="secondary" className="text-xs px-3">
                     复盘 0/{replayMoves.length}手
                   </Badge>
                 ) : (
-                  <Badge variant={currentPlayer === playerColor ? 'default' : 'secondary'} className={`text-xs px-3 ${isAIThinking ? 'animate-pulse bg-amber-500 text-white' : ''}`}>
-                    {gameEnded ? '棋局结束' : isAIThinking ? (queuePosition > 0 ? `AI排队中，你在第${queuePosition}位` : 'AI思考中，请等待...') : currentPlayer === playerColor ? `轮到你落子（已下${history.length}手）` : 'AI回合'}
-                    {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
-                  </Badge>
+                  <div className="flex flex-col items-center gap-0.5">
+                    <Badge variant={currentPlayer === playerColor ? 'default' : 'secondary'} className={`text-xs px-3 ${isAIThinking ? 'animate-pulse bg-amber-500 text-white' : ''}`}>
+                      {gameEnded ? '棋局结束' : isAIThinking ? (queuePosition > 0 ? `AI排队中，你在第${queuePosition}位` : 'AI思考中，请等待...') : currentPlayer === playerColor ? `轮到你落子（已下${history.length}手）` : 'AI回合'}
+                      {isAIThinking && <Spinner className="w-3 h-3 ml-1 inline" />}
+                    </Badge>
+                    {lastEngineInfo && lastEngineInfo.modelUsed && (
+                      <span className="text-[10px] text-gray-400">
+                        {lastEngineInfo.engine === 'katago' ? 'KataGo' : lastEngineInfo.engine === 'gnugo' ? 'GnuGo' : '本地AI'}
+                        {lastEngineInfo.modelUsed ? ` · ${lastEngineInfo.modelUsed}` : ''}
+                        {lastEngineInfo.actualVisits ? ` · ${lastEngineInfo.actualVisits} visits` : ''}
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
             </CardContent>
@@ -2076,7 +2209,7 @@ export default function GoGamePage() {
                   <div className="flex items-center justify-center gap-2 mb-2">
                     <div className={`w-5 h-5 rounded-full ${replayMoves[replayIndex - 1].color === 'black' ? 'bg-gray-800' : 'bg-white border border-gray-300'}`} />
                     <span className="text-sm font-medium text-blue-800">
-                      {replayMoves[replayIndex - 1].color === 'black' ? '黑' : '白'} {positionToCoordinate(replayMoves[replayIndex - 1].position.row, replayMoves[replayIndex - 1].position.col, boardSize)}
+                      {replayMoves[replayIndex - 1].color === 'black' ? '黑' : '白'} {replayMoves[replayIndex - 1].isPass ? '停一手' : positionToCoordinate(replayMoves[replayIndex - 1].position.row, replayMoves[replayIndex - 1].position.col, boardSize)}
                     </span>
                   </div>
                 )}
@@ -2225,7 +2358,7 @@ export default function GoGamePage() {
                       <div className="flex items-center gap-1.5 mb-0.5">
                         <div className={`w-4 h-4 rounded-full ${displayColor === 'black' ? 'bg-gray-800' : 'bg-white border border-gray-300'}`} />
                         <span className="text-xs font-medium text-gray-600">
-                          第{entry.moveIndex + 1}手 | {displayColor === 'black' ? '黑方' : '白方'} {positionToCoordinate(entry.position.row, entry.position.col, boardSize)}
+                          第{entry.moveIndex + 1}手 | {displayColor === 'black' ? '黑方' : '白方'} {entry.isPass ? '停一手' : positionToCoordinate(entry.position.row, entry.position.col, boardSize)}
                         </span>
                       </div>
                       <p className="text-xs text-gray-700 leading-relaxed">{entry.commentary}</p>
