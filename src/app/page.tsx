@@ -415,12 +415,15 @@ export default function GoGamePage() {
     }
   }, [user]);
 
-  // 计算比分（白方含贴目）
+  // 计算比分（中国规则：子数+地盘+提子，白方再加贴目）
   useEffect(() => {
     const evaluation = evaluateBoard(board);
     const komi = getKomi(boardSize);
-    setScore({ black: evaluation.black, white: Math.round((evaluation.white + komi) * 10) / 10 });
-  }, [board, boardSize]);
+    setScore({
+      black: Math.round((evaluation.black + captures.black) * 10) / 10,
+      white: Math.round((evaluation.white + captures.white + komi) * 10) / 10,
+    });
+  }, [board, boardSize, captures.black, captures.white]);
 
   // 聊天滚到底部（仅滚动内部容器，不影响页面）
   useEffect(() => {
@@ -2064,15 +2067,14 @@ export default function GoGamePage() {
                   <div className="w-7 h-7 rounded-full bg-gray-800 shadow mb-1" />
                   <span className="text-xs text-gray-500">黑方{playerColor === 'black' ? '(你)' : '(AI)'}</span>
                   <span className="text-lg font-bold">{score.black}</span>
-                  <span className="text-[10px] text-amber-600">提{captures.black}子</span>
+                  <span className="text-[9px] text-gray-400">提{captures.black}子</span>
                 </div>
                 <div className="flex items-center text-gray-300 text-xs">VS</div>
                 <div className="flex flex-col items-center">
                   <div className="w-7 h-7 rounded-full bg-white border-2 border-gray-300 shadow mb-1" />
                   <span className="text-xs text-gray-500">白方{playerColor === 'white' ? '(你)' : '(AI)'}</span>
                   <span className="text-lg font-bold">{score.white}</span>
-                  <span className="text-[9px] text-gray-400">含贴目{getKomi(boardSize)}</span>
-                  <span className="text-[10px] text-amber-600">提{captures.white}子</span>
+                  <span className="text-[9px] text-gray-400">贴目{getKomi(boardSize)} 提{captures.white}子</span>
                 </div>
               </div>
               <div className="mt-2 text-center">
