@@ -1130,7 +1130,7 @@ export async function POST(request: NextRequest) {
 
         // 分析日志
         const modelName = engineConfig.analysisModel;
-        logAiEvent({ type: 'analyze', model: modelName, boardSize, metadata: { visits: analysisResult.actualVisits, bestMovesCount: analysisResult.bestMoves?.length } });
+        logAiEvent({ type: 'analyze', model: modelName, boardSize, durationMs: analysisElapsed, metadata: { visits: analysisResult.actualVisits, bestMovesCount: analysisResult.bestMoves?.length } });
         return NextResponse.json({
           analysis: analysisResult,
           pointsUsed: isAITest ? 0 : TEACH_COST,

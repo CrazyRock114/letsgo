@@ -36,6 +36,7 @@ async function exportGames() {
     .is('user_id', null)
     .eq('board_size', 9)
     .eq('status', 'finished')
+    .gte('created_at', '2026-04-24T19:00:00Z')
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -45,7 +46,7 @@ async function exportGames() {
 
   console.log(`[导出] 共 ${data.length} 局 finished 棋局`);
 
-  const outputPath = path.join(REPORTS_DIR, 'ai-test-games-raw.json');
+  const outputPath = path.join(REPORTS_DIR, 'ai-test-games', 'ai-test-games-raw.json');
   fs.writeFileSync(outputPath, JSON.stringify(data, null, 2));
   console.log(`[导出] 已写入 ${outputPath} (${(fs.statSync(outputPath).size / 1024).toFixed(1)} KB)`);
 
@@ -56,13 +57,15 @@ function analyzeAiEvents() {
   const logsDir = path.join(__dirname, '..', 'logs', 'ai-events');
   const files = fs.readdirSync(logsDir).filter(f => f.endsWith('.jsonl')).sort();
 
+  const CUTOFF_TIME = '2026-04-24T19:00:00Z';
   const allEvents = [];
   for (const file of files) {
     const content = fs.readFileSync(path.join(logsDir, file), 'utf-8');
     const lines = content.split('\n').filter(l => l.trim());
     for (const line of lines) {
       try {
-        allEvents.push(JSON.parse(line));
+        const evt = JSON.parse(line);
+        if (evt.ts >= CUTOFF_TIME) allEvents.push(evt);
       } catch {}
     }
   }
@@ -75,6 +78,7 @@ function analyzeAiEvents() {
   const byDifficulty = {};
   const genmoveDurations = [];
   const analyzeDurations = [];
+  const analyzeVisits = [];
   const errors = [];
   const modelSwitches = [];
 
@@ -96,9 +100,12 @@ function analyzeAiEvents() {
       if (e.type === 'engine_error') byDifficulty[e.difficulty].errors++;
     }
 
-    // durations
+    // durations & visits
     if (e.type === 'genmove' && e.durationMs) genmoveDurations.push(e.durationMs);
-    if (e.type === 'analyze' && e.durationMs) analyzeDurations.push(e.durationMs);
+    if (e.type === 'analyze') {
+      if (e.durationMs) analyzeDurations.push(e.durationMs);
+      if (e.metadata?.visits) analyzeVisits.push(e.metadata.visits);
+    }
 
     // errors
     if (e.type === 'engine_error') {
@@ -146,6 +153,14 @@ function analyzeAiEvents() {
       p95: analyzeDurations.length > 0 ? percentile(analyzeDurations, 0.95) : 0,
       p99: analyzeDurations.length > 0 ? percentile(analyzeDurations, 0.99) : 0,
       maxMs: analyzeDurations.length > 0 ? Math.max(...analyzeDurations) : 0,
+      hasDurationData: analyzeDurations.length > 0,
+    },
+    analyzeVisits: {
+      count: analyzeVisits.length,
+      avg: analyzeVisits.length > 0 ? Math.round(analyzeVisits.reduce((a, b) => a + b, 0) / analyzeVisits.length) : 0,
+      min: analyzeVisits.length > 0 ? Math.min(...analyzeVisits) : 0,
+      max: analyzeVisits.length > 0 ? Math.max(...analyzeVisits) : 0,
+      p50: analyzeVisits.length > 0 ? percentile(analyzeVisits, 0.5) : 0,
     },
     errors: {
       count: errors.length,
@@ -166,7 +181,7 @@ function analyzeAiEvents() {
     },
   };
 
-  const outputPath = path.join(REPORTS_DIR, 'ai-events-summary.json');
+  const outputPath = path.join(REPORTS_DIR, 'ai-test-games', 'ai-events-summary.json');
   fs.writeFileSync(outputPath, JSON.stringify(summary, null, 2));
   console.log(`[日志] 已写入 ${outputPath} (${(fs.statSync(outputPath).size / 1024).toFixed(1)} KB)`);
 
@@ -235,15 +250,13 @@ async function analyzeGames(games) {
         boardState[row][col] = color;
       }
 
-      // 统计 visits
-      if (move.analysis) {
-        if (color === aiColor) {
-          totalVisitsAI += move.analysis.actualVisits || 0;
-          aiMoveCount++;
-        } else {
-          totalVisitsOpponent += move.analysis.actualVisits || 0;
-          opponentMoveCount++;
-        }
+      // 统计手数 + visits
+      if (color === aiColor) {
+        aiMoveCount++;
+        if (move.analysis) totalVisitsAI += move.analysis.actualVisits || 0;
+      } else {
+        opponentMoveCount++;
+        if (move.analysis) totalVisitsOpponent += move.analysis.actualVisits || 0;
       }
     }
 
@@ -309,7 +322,7 @@ async function analyzeGames(games) {
     sampleScoreLeadTrajectories: scoreLeadTrajectories.slice(0, 5),
   };
 
-  const outputPath = path.join(REPORTS_DIR, 'ai-test-game-analysis.json');
+  const outputPath = path.join(REPORTS_DIR, 'ai-test-games', 'ai-test-game-analysis.json');
   fs.writeFileSync(outputPath, JSON.stringify(gameAnalysis, null, 2));
   console.log(`[分析] 已写入 ${outputPath} (${(fs.statSync(outputPath).size / 1024).toFixed(1)} KB)`);
 
@@ -374,11 +387,21 @@ ${Object.entries(eventSummary.byType).map(([k, v]) => `| ${k} | ${v} |`).join('\
 | 指标 | 数值 |
 |------|------|
 | 总次数 | ${eventSummary.analyze.count} |
-| 平均耗时 | ${eventSummary.analyze.avgMs}ms |
-| P50 | ${eventSummary.analyze.p50}ms |
-| P95 | ${eventSummary.analyze.p95}ms |
-| P99 | ${eventSummary.analyze.p99}ms |
-| 最大耗时 | ${eventSummary.analyze.maxMs}ms |
+| 平均耗时 | ${eventSummary.analyze.hasDurationData ? eventSummary.analyze.avgMs + 'ms' : '未记录（旧日志缺少durationMs）'} |
+| P50 | ${eventSummary.analyze.hasDurationData ? eventSummary.analyze.p50 + 'ms' : '-'} |
+| P95 | ${eventSummary.analyze.hasDurationData ? eventSummary.analyze.p95 + 'ms' : '-'} |
+| P99 | ${eventSummary.analyze.hasDurationData ? eventSummary.analyze.p99 + 'ms' : '-'} |
+| 最大耗时 | ${eventSummary.analyze.hasDurationData ? eventSummary.analyze.maxMs + 'ms' : '-'} |
+
+### 3.3b Analyze Visits 分布（替代性能指标）
+
+| 指标 | 数值 |
+|------|------|
+| 记录数 | ${eventSummary.analyzeVisits.count} |
+| 平均 visits | ${eventSummary.analyzeVisits.avg} |
+| P50 | ${eventSummary.analyzeVisits.p50} |
+| 最小 | ${eventSummary.analyzeVisits.min} |
+| 最大 | ${eventSummary.analyzeVisits.max} |
 
 ### 3.4 按模型统计
 
@@ -471,7 +494,7 @@ ${JSON.stringify(gameAnalysis.sampleScoreLeadTrajectories, null, 2)}
 ## 五、关键发现
 
 1. **引擎稳定性**: ${eventSummary.errors.count === 0 ? '无错误记录，引擎运行稳定。' : `共 ${eventSummary.errors.count} 次引擎错误，需关注。`}
-2. **响应延迟**: genmove P95 = ${eventSummary.genmove.p95}ms，analyze P95 = ${eventSummary.analyze.p95}ms
+2. **响应延迟**: genmove P95 = ${eventSummary.genmove.p95}ms，analyze ${eventSummary.analyze.hasDurationData ? 'P95 = ' + eventSummary.analyze.p95 + 'ms' : '耗时未记录（visits平均' + eventSummary.analyzeVisits.avg + '）'}
 3. **对弈时长**: 平均 ${gameAnalysis.avgMovesPerGame} 手/局，${gameAnalysis.moveCountDistribution['very_short(<20)']} 局过早结束（<20手）
 4. **胜负平衡**: 黑胜 ${gameAnalysis.blackWins} vs 白胜 ${gameAnalysis.whiteWins}，${Math.abs(gameAnalysis.blackWins - gameAnalysis.whiteWins) <= 3 ? '胜负较为均衡' : '胜负有偏'}
 5. **模型切换**: ${eventSummary.modelSwitches.count > 0 ? `共 ${eventSummary.modelSwitches.count} 次模型切换，旧架构痕迹。` : '无模型切换，常驻架构稳定。'}
@@ -497,7 +520,7 @@ ${JSON.stringify(gameAnalysis.sampleScoreLeadTrajectories, null, 2)}
     return lines.join('\n');
   }
 
-  const outputPath = path.join(REPORTS_DIR, 'ai-test-analysis-report.md');
+  const outputPath = path.join(REPORTS_DIR, 'ai-test-games', 'ai-test-analysis-report.md');
   fs.writeFileSync(outputPath, report);
   console.log(`[报告] 已写入 ${outputPath} (${(fs.statSync(outputPath).size / 1024).toFixed(1)} KB)`);
 }
@@ -521,9 +544,10 @@ async function main() {
 
   console.log('\n========================================');
   console.log('全部完成！');
-  console.log(`棋局数据: reports/ai-test-games-raw.json (${games.length} 局)`);
-  console.log('引擎日志: reports/ai-events-summary.json');
-  console.log('分析报告: reports/ai-test-analysis-report.md');
+  console.log(`棋局数据: reports/ai-test-games/ai-test-games-raw.json (${games.length} 局)`);
+  console.log('引擎日志: reports/ai-test-games/ai-events-summary.json');
+  console.log('棋局分析: reports/ai-test-games/ai-test-game-analysis.json');
+  console.log('分析报告: reports/ai-test-games/ai-test-analysis-report.md');
   console.log('========================================');
 }
 
