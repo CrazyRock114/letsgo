@@ -1019,7 +1019,14 @@ export async function POST(request: NextRequest) {
       // === 切换对弈引擎模型 ===
       if (typeof body.gameModel === 'string') {
         const gameKey = validateModelKey(body.gameModel);
-        if (gameKey) {
+        if (!gameKey) {
+          return NextResponse.json({ error: 'Invalid gameModel', available: Object.keys(MODEL_PATHS) }, { status: 400 });
+        }
+
+        // 同步等待对弈引擎启动验证（失败不修改配置）
+        try {
+          const testEngine = getEnginePool().getEngine(gameKey);
+          await testEngine.start();
           engineConfig.gameModel = gameKey;
           updates.gameModel = { key: gameKey, name: getModelDisplayName(MODEL_PATHS[gameKey]) };
           console.log(`[go-engine] Game model updated: ${engineConfig.gameModel}`);
@@ -1028,10 +1035,14 @@ export async function POST(request: NextRequest) {
             engineConfig.analysisModel = gameKey;
             updates.analysisModel = { key: gameKey, name: getModelDisplayName(MODEL_PATHS[gameKey]) };
           }
-          // 预热新对弈引擎（后台，不阻塞）
-          getEnginePool().getEngine(gameKey).start().catch(() => {});
-        } else {
-          return NextResponse.json({ error: 'Invalid gameModel', available: Object.keys(MODEL_PATHS) }, { status: 400 });
+        } catch (startErr) {
+          const errMsg = startErr instanceof Error ? startErr.message : String(startErr);
+          console.error(`[go-engine] Game engine startup failed: ${errMsg}`);
+          return NextResponse.json({
+            error: `对弈引擎启动失败: ${errMsg}`,
+            rollback: true,
+            currentConfig: engineConfig,
+          }, { status: 500 });
         }
       }
 

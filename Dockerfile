@@ -75,6 +75,9 @@ multiStoneSuicideLegal = false
 # 搜索线程（Railway Hobby 内存限制，降为 1 线程降低内存）
 numSearchThreads = 1
 
+# Analysis 模式必需：同时处理多少个并行分析请求
+numAnalysisThreads = 1
+
 # 分析引擎设置
 reportAnalysisWinratesAs = BLACK
 analysisPVLen = 15
