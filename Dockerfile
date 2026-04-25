@@ -51,6 +51,9 @@ hasResignedRule = true
 numSearchThreads = 2
 nnMaxBatchSize = 8
 maxVisits = 1000
+
+# 内存优化（默认 nnCacheSizePowerOfTwo=20 约 1.5GB → 15 约 49MB）
+nnCacheSizePowerOfTwo = 15
 logAllGTPCommunication = false
 logSearchInfo = false
 # 人类风格模型需要此配置
@@ -76,8 +79,8 @@ numSearchThreads = 2
 reportAnalysisWinratesAs = BLACK
 analysisPVLen = 15
 
-# 内存优化（默认 nnCacheSizePowerOfTwo=20 约 1.5GB → 18 约 375MB）
-nnCacheSizePowerOfTwo = 18
+# 内存优化（默认 nnCacheSizePowerOfTwo=20 约 1.5GB → 15 约 49MB）
+nnCacheSizePowerOfTwo = 15
 nnMutexPoolSizePowerOfTwo = 14
 nnMaxBatchSize = 4
 
