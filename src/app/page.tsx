@@ -1224,6 +1224,8 @@ export default function GoGamePage() {
       toast.error('请先登录', { description: '提示与教学需要登录' });
       return;
     }
+    // 用户已点击按钮，立即计数（避免分析失败导致不计数）
+    setTeachUsedCount(prev => prev + 1);
     setIsTeachStreaming(true);
     setTeachingMessage('');
     setTeachHistory(prev => prev.map(e => ({ ...e, faded: true })));
@@ -1280,8 +1282,6 @@ export default function GoGamePage() {
             if (analyzeData.analysis) {
               analysisData = analyzeData.analysis;
               latestAnalysisRef.current = analysisData;
-              // 积分扣除成功，增加使用次数
-              setTeachUsedCount(prev => prev + 1);
               // 更新前端积分显示
               if (user && analyzeData.pointsUsed) {
                 deductPoints(analyzeData.pointsUsed);

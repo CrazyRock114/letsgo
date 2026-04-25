@@ -106,12 +106,14 @@ export class KataGoAnalysisManager {
   private rl: ReturnType<typeof createInterface> | null = null;
   private pending = new Map<string, PendingQuery>();
   private started = false;
+  private starting = false;
+  private startPromise: Promise<void> | null = null;
   private stderrBuf: string[] = [];
 
   constructor(private readonly model: string) {}
 
   isAvailable(): boolean {
-    return this.started && !!this.proc && !this.proc.killed;
+    return this.started && !!this.proc && this.proc.exitCode === null && this.proc.signalCode === null;
   }
 
   getCurrentModel(): string {
@@ -120,6 +122,27 @@ export class KataGoAnalysisManager {
 
   // 启动绑定的模型
   async start(): Promise<void> {
+    if (this.started && this.isAvailable()) {
+      return;
+    }
+
+    // 防止并发启动：如果已经有启动在进行中，等待它完成
+    if (this.starting && this.startPromise) {
+      return this.startPromise;
+    }
+
+    this.starting = true;
+    this.startPromise = this.doStart();
+    try {
+      await this.startPromise;
+    } finally {
+      this.starting = false;
+      this.startPromise = null;
+    }
+  }
+
+  private async doStart(): Promise<void> {
+    // 二次检查：可能在等待锁期间其他调用已经启动成功
     if (this.started && this.isAvailable()) {
       return;
     }
@@ -135,22 +158,28 @@ export class KataGoAnalysisManager {
 
     console.log(`[AnalysisEngine] Starting with model: ${this.model} (${modelPath})`);
 
-    this.proc = spawn(KATAGO_BIN, [
+    const proc = spawn(KATAGO_BIN, [
       "analysis",
       "-config", CONFIG_PATH,
       "-model", modelPath,
     ], {
       stdio: ["pipe", "pipe", "pipe"],
     });
+    this.proc = proc;
 
-    this.rl = createInterface({ input: this.proc.stdout! });
+    this.rl = createInterface({ input: proc.stdout! });
     this.rl.on("line", (line) => this.handleLine(line));
 
-    createInterface({ input: this.proc.stderr! }).on("line", (line) => {
+    createInterface({ input: proc.stderr! }).on("line", (line) => {
       this.stderrBuf.push(line);
     });
 
-    this.proc.on("exit", (code) => {
+    proc.on("exit", (code) => {
+      // 只有当前进程退出时才清理状态，防止旧进程的 exit 事件覆盖新进程
+      if (this.proc !== proc) {
+        console.log(`[AnalysisEngine] Old process exited with code ${code} (ignored, new process already running)`);
+        return;
+      }
       console.log(`[AnalysisEngine] Process exited with code ${code}`);
       this.cleanupPending(new Error(`KataGo exited with code ${code}`));
       this.started = false;
@@ -164,24 +193,31 @@ export class KataGoAnalysisManager {
   }
 
   async stop(): Promise<void> {
-    if (!this.proc) return;
+    const proc = this.proc;
+    if (!proc) return;
     try {
-      this.proc.stdin?.end();
+      proc.stdin?.end();
       await new Promise<void>((resolve) => {
         const timer = setTimeout(() => {
-          this.proc?.kill("SIGKILL");
+          // 只有当前进程仍是我们要停止的那个时才 kill，防止误杀新进程
+          if (this.proc === proc) {
+            proc.kill("SIGKILL");
+          }
           resolve();
         }, 5000);
-        this.proc!.on("exit", () => {
+        proc.on("exit", () => {
           clearTimeout(timer);
           resolve();
         });
       });
     } finally {
-      this.proc = null;
-      this.rl?.close();
-      this.rl = null;
-      this.started = false;
+      // 只有当前进程仍是我们要停止的那个时才清理状态
+      if (this.proc === proc) {
+        this.proc = null;
+        this.rl?.close();
+        this.rl = null;
+        this.started = false;
+      }
       this.cleanupPending(new Error("Engine stopped"));
     }
   }
