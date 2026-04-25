@@ -104,18 +104,19 @@ let currentModelPath: string | null = null;
 interface EngineConfig {
   gameModel: string;       // 对弈专用模型
   gameVisits: { easy: number; medium: number; hard: number };
-  analysisModel: string;   // 分析专用模型
+  analysisModel: string;   // 分析专用模型（单引擎模式下跟随 gameModel）
   analysisVisits: { easy: number; medium: number; hard: number };
+  dualEngine: boolean;     // true=双引擎独立，false=单引擎共用（默认）
 }
 
 const DEFAULT_GAME_MODEL = 'rect15';
-const DEFAULT_ANALYSIS_MODEL = 'b24c64';
 
 let engineConfig: EngineConfig = {
   gameModel: DEFAULT_GAME_MODEL,
   gameVisits: { easy: 50, medium: 100, hard: 200 },
-  analysisModel: DEFAULT_ANALYSIS_MODEL,
+  analysisModel: DEFAULT_GAME_MODEL,  // 默认跟随 gameModel（单引擎）
   analysisVisits: { easy: 30, medium: 60, hard: 120 },
+  dualEngine: false,  // 默认单引擎模式
 };
 
 function getGameEngine(): KataGoAnalysisManager {
@@ -123,6 +124,9 @@ function getGameEngine(): KataGoAnalysisManager {
 }
 
 function getAnalysisEngine(): KataGoAnalysisManager {
+  if (!engineConfig.dualEngine) {
+    return getGameEngine();  // 单引擎模式：共用对弈引擎
+  }
   return getEnginePool().getEngine(engineConfig.analysisModel);
 }
 
@@ -383,23 +387,31 @@ function getGnuGoLevel(difficulty: string): number {
 }
 
 
-// 预热KataGo双引擎：服务启动时后台加载对弈+分析模型，避免首个请求冷启动
+// 预热KataGo引擎：服务启动时后台加载模型，避免首个请求冷启动
+// 单引擎模式只加载对弈引擎，双引擎模式加载对弈+分析引擎
 export async function warmupKataGo(): Promise<void> {
   try {
     if (!isKataGoAvailable()) {
       console.log('[warmup] KataGo not available (binary/model/config missing), skipping warmup');
       return;
     }
-    console.log('[warmup] Starting KataGo dual-engine warmup...');
-    const start = Date.now();
     const pool = getEnginePool();
-    // 预热对弈引擎
+    const start = Date.now();
+
+    // 预热对弈引擎（始终需要）
+    console.log(`[warmup] Starting game engine (${engineConfig.gameModel})...`);
     const gameEngine = pool.getEngine(engineConfig.gameModel);
     await gameEngine.start();
-    // 预热分析引擎
-    const analysisEngine = pool.getEngine(engineConfig.analysisModel);
-    await analysisEngine.start();
-    console.log(`[warmup] KataGo dual-engine ready in ${Date.now() - start}ms (game=${engineConfig.gameModel}, analysis=${engineConfig.analysisModel})`);
+
+    // 双引擎模式下额外预热分析引擎
+    if (engineConfig.dualEngine && engineConfig.analysisModel !== engineConfig.gameModel) {
+      console.log(`[warmup] Starting analysis engine (${engineConfig.analysisModel})...`);
+      const analysisEngine = pool.getEngine(engineConfig.analysisModel);
+      await analysisEngine.start();
+      console.log(`[warmup] KataGo dual-engine ready in ${Date.now() - start}ms (game=${engineConfig.gameModel}, analysis=${engineConfig.analysisModel})`);
+    } else {
+      console.log(`[warmup] KataGo single-engine ready in ${Date.now() - start}ms (model=${engineConfig.gameModel})`);
+    }
   } catch (err) {
     console.warn('[warmup] KataGo warmup failed:', err instanceof Error ? err.message : String(err));
   }
@@ -963,7 +975,7 @@ export async function POST(request: NextRequest) {
     const isInternal = internalKey === process.env.INTERNAL_API_KEY && !!process.env.INTERNAL_API_KEY;
     const internalUser: JWTPayload | null = isInternal ? { userId: 0, nickname: 'ai-test-worker', isAdmin: true } : null;
 
-    // 配置更新请求：修改双引擎配置
+    // 配置更新请求：修改引擎配置（支持单引擎/双引擎切换）
     // 时间戳: 2026-04-25 02:50:17
     if (action === 'setConfig') {
       const updates: Record<string, unknown> = {};
@@ -976,39 +988,83 @@ export async function POST(request: NextRequest) {
         console.log(`[go-engine] analysisSeconds updated: ${oldSeconds}s → ${analysisSeconds}s`);
       }
 
-      // 辅助函数：验证并切换模型
-      const validateAndSetModel = (key: 'gameModel' | 'analysisModel', value: string) => {
+      // 辅助函数：验证模型key
+      const validateModelKey = (value: string): string | null => {
         const modelKey = getModelKeyFromPath(value) || (MODEL_PATHS[value] ? value : null);
-        if (modelKey && MODEL_PATHS[modelKey]) {
-          engineConfig[key] = modelKey;
-          return modelKey;
-        }
+        if (modelKey && MODEL_PATHS[modelKey]) return modelKey;
         return null;
       };
 
-      // 切换对弈引擎模型
+      // === 处理 dualEngine 模式切换 ===
+      const newDualEngine = body.dualEngine;
+      const isSwitchingToSingle = typeof newDualEngine === 'boolean' && !newDualEngine && engineConfig.dualEngine;
+      const isSwitchingToDual = typeof newDualEngine === 'boolean' && newDualEngine && !engineConfig.dualEngine;
+
+      if (isSwitchingToSingle) {
+        // 从双引擎切回单引擎：释放分析引擎进程，analysisModel 跟随 gameModel
+        const oldAnalysisModel = engineConfig.analysisModel;
+        engineConfig.dualEngine = false;
+        engineConfig.analysisModel = engineConfig.gameModel;
+        updates.dualEngine = false;
+        updates.analysisModel = { key: engineConfig.gameModel, name: getModelDisplayName(MODEL_PATHS[engineConfig.gameModel]) };
+        console.log(`[go-engine] Switched to single-engine mode (analysis=${oldAnalysisModel} → ${engineConfig.gameModel})`);
+        // 异步停止独立的分析引擎进程以释放内存
+        if (oldAnalysisModel !== engineConfig.gameModel) {
+          getEnginePool().getEngine(oldAnalysisModel).stop().catch((err: Error) => {
+            console.warn(`[go-engine] Failed to stop old analysis engine:`, err.message);
+          });
+        }
+      }
+
+      // === 切换对弈引擎模型 ===
       if (typeof body.gameModel === 'string') {
-        const gameKey = validateAndSetModel('gameModel', body.gameModel);
+        const gameKey = validateModelKey(body.gameModel);
         if (gameKey) {
+          engineConfig.gameModel = gameKey;
           updates.gameModel = { key: gameKey, name: getModelDisplayName(MODEL_PATHS[gameKey]) };
           console.log(`[go-engine] Game model updated: ${engineConfig.gameModel}`);
-          // 预热新对弈引擎（后台）
+          // 单引擎模式下，analysisModel 同步跟随
+          if (!engineConfig.dualEngine) {
+            engineConfig.analysisModel = gameKey;
+            updates.analysisModel = { key: gameKey, name: getModelDisplayName(MODEL_PATHS[gameKey]) };
+          }
+          // 预热新对弈引擎（后台，不阻塞）
           getEnginePool().getEngine(gameKey).start().catch(() => {});
         } else {
           return NextResponse.json({ error: 'Invalid gameModel', available: Object.keys(MODEL_PATHS) }, { status: 400 });
         }
       }
 
-      // 切换分析引擎模型
-      if (typeof body.analysisModel === 'string') {
-        const analysisKey = validateAndSetModel('analysisModel', body.analysisModel);
-        if (analysisKey) {
-          updates.analysisModel = { key: analysisKey, name: getModelDisplayName(MODEL_PATHS[analysisKey]) };
-          console.log(`[go-engine] Analysis model updated: ${engineConfig.analysisModel}`);
-          // 预热新分析引擎（后台）
-          getEnginePool().getEngine(analysisKey).start().catch(() => {});
-        } else {
+      // === 切换分析引擎模型（仅双引擎模式或切换到双引擎时处理） ===
+      if (typeof body.analysisModel === 'string' && body.dualEngine !== false) {
+        const analysisKey = validateModelKey(body.analysisModel);
+        if (!analysisKey) {
           return NextResponse.json({ error: 'Invalid analysisModel', available: Object.keys(MODEL_PATHS) }, { status: 400 });
+        }
+
+        // 如果当前已经是这个分析模型且已在双引擎模式，跳过
+        if (engineConfig.dualEngine && engineConfig.analysisModel === analysisKey) {
+          console.log(`[go-engine] Analysis model unchanged: ${analysisKey}`);
+        } else {
+          // 同步等待引擎启动验证（关键：失败不修改配置）
+          try {
+            const testEngine = getEnginePool().getEngine(analysisKey);
+            await testEngine.start();
+            // 启动成功，应用配置
+            engineConfig.dualEngine = true;
+            engineConfig.analysisModel = analysisKey;
+            updates.analysisModel = { key: analysisKey, name: getModelDisplayName(MODEL_PATHS[analysisKey]) };
+            updates.dualEngine = true;
+            console.log(`[go-engine] Analysis model started and updated: ${analysisKey}`);
+          } catch (startErr) {
+            const errMsg = startErr instanceof Error ? startErr.message : String(startErr);
+            console.error(`[go-engine] Analysis engine startup failed: ${errMsg}`);
+            return NextResponse.json({
+              error: `分析引擎启动失败: ${errMsg}`,
+              rollback: true,
+              currentConfig: engineConfig,
+            }, { status: 500 });
+          }
         }
       }
 
@@ -1035,12 +1091,14 @@ export async function POST(request: NextRequest) {
       // 向后兼容：单个 model 字段同时设置两个引擎（过渡期）
       const newModel = body.model;
       if (typeof newModel === 'string') {
-        const modelKey = getModelKeyFromPath(newModel) || (MODEL_PATHS[newModel] ? newModel : null);
+        const modelKey = validateModelKey(newModel);
         if (modelKey && MODEL_PATHS[modelKey]) {
           engineConfig.gameModel = modelKey;
           engineConfig.analysisModel = modelKey;
+          engineConfig.dualEngine = false;  // 兼容模式默认为单引擎
           updates.legacyModel = { key: modelKey, name: getModelDisplayName(MODEL_PATHS[modelKey]) };
-          console.log(`[go-engine] Both engines set to: ${modelKey}`);
+          updates.dualEngine = false;
+          console.log(`[go-engine] Both engines set to: ${modelKey} (single-engine mode)`);
           getEnginePool().getEngine(modelKey).start().catch(() => {});
         } else {
           return NextResponse.json({ error: 'Model not found', available: Object.keys(MODEL_PATHS) }, { status: 400 });
@@ -1048,7 +1106,7 @@ export async function POST(request: NextRequest) {
       }
 
       if (Object.keys(updates).length === 0) {
-        return NextResponse.json({ error: 'Invalid config (expected gameModel, analysisModel, gameVisits, analysisVisits, analysisSeconds, or model)' }, { status: 400 });
+        return NextResponse.json({ error: 'Invalid config (expected gameModel, analysisModel, gameVisits, analysisVisits, analysisSeconds, dualEngine, or model)' }, { status: 400 });
       }
 
       return NextResponse.json({ success: true, engineConfig, ...updates });

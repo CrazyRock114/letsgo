@@ -18,6 +18,7 @@ interface EngineConfig {
   gameVisits: EngineVisitsConfig;
   analysisModel: string;
   analysisVisits: EngineVisitsConfig;
+  dualEngine: boolean;
 }
 
 interface ModelInfo {
@@ -88,11 +89,12 @@ export default function MonitorPage() {
   const [data, setData] = useState<MonitorData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<Array<{ time: string; mem: number; cpu: number; active: number }>>([]);
-  // 双引擎配置状态
+  // 引擎配置状态
   const [selectedGameModel, setSelectedGameModel] = useState<string>("");
   const [selectedAnalysisModel, setSelectedAnalysisModel] = useState<string>("");
   const [selectedGameVisits, setSelectedGameVisits] = useState<EngineVisitsConfig>({ easy: 50, medium: 100, hard: 200 });
   const [selectedAnalysisVisits, setSelectedAnalysisVisits] = useState<EngineVisitsConfig>({ easy: 30, medium: 60, hard: 120 });
+  const [isDualEngine, setIsDualEngine] = useState<boolean>(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [configMsg, setConfigMsg] = useState<string | null>(null);
 
@@ -102,13 +104,16 @@ export default function MonitorPage() {
       if (!res.ok) throw new Error("获取失败");
       const d = await res.json();
       setData(d);
-      // 同步双引擎配置到选择器
+      // 同步引擎配置到选择器
       const cfg = d?.engineQueue?.katago?.engineConfig;
       if (cfg) {
         setSelectedGameModel(cfg.gameModel || "");
-        setSelectedAnalysisModel(cfg.analysisModel || "");
         setSelectedGameVisits(cfg.gameVisits || { easy: 50, medium: 100, hard: 200 });
         setSelectedAnalysisVisits(cfg.analysisVisits || { easy: 30, medium: 60, hard: 120 });
+        setIsDualEngine(cfg.dualEngine ?? false);
+        // 单引擎模式下，分析引擎下拉框显示空值（对应"同步共用"选项）
+        // 双引擎模式下，显示当前分析模型
+        setSelectedAnalysisModel(cfg.dualEngine ? (cfg.analysisModel || "") : "");
       }
       setError(null);
       // 记录历史数据（最多60个点=5分钟）
@@ -137,10 +142,18 @@ export default function MonitorPage() {
       if (selectedGameModel && selectedGameModel !== (currentCfg?.gameModel ?? "")) {
         payload.gameModel = selectedGameModel;
       }
-      // 分析引擎模型
-      if (selectedAnalysisModel && selectedAnalysisModel !== (currentCfg?.analysisModel ?? "")) {
+
+      // 分析引擎模式切换
+      const wasDual = currentCfg?.dualEngine ?? false;
+      const willBeDual = selectedAnalysisModel !== "";
+      if (wasDual !== willBeDual) {
+        payload.dualEngine = willBeDual;
+      }
+      // 分析引擎模型（仅双引擎模式时发送）
+      if (willBeDual && selectedAnalysisModel && selectedAnalysisModel !== (currentCfg?.analysisModel ?? "")) {
         payload.analysisModel = selectedAnalysisModel;
       }
+
       // 对弈 visits
       if (JSON.stringify(selectedGameVisits) !== JSON.stringify(currentCfg?.gameVisits ?? {})) {
         payload.gameVisits = selectedGameVisits;
@@ -166,19 +179,26 @@ export default function MonitorPage() {
       if (res.ok && result.success) {
         const parts: string[] = [];
         if (result.gameModel) parts.push(`对弈=${result.gameModel.key}`);
-        if (result.analysisModel) parts.push(`分析=${result.analysisModel.key}`);
+        if (result.dualEngine) parts.push(`分析=${result.analysisModel?.key}`);
+        if (result.dualEngine === false) parts.push("单引擎模式");
         if (result.gameVisits) parts.push(`对弈visits已更新`);
         if (result.analysisVisits) parts.push(`分析visits已更新`);
         setConfigMsg(`已更新: ${parts.join(" + ")}`);
+        setIsDualEngine(result.engineConfig?.dualEngine ?? false);
         fetchData();
       } else {
+        // 引擎启动失败回退
+        if (result.rollback) {
+          setSelectedAnalysisModel("");
+          setIsDualEngine(false);
+        }
         setConfigMsg(`失败: ${result.error || "未知错误"}`);
       }
     } catch {
       setConfigMsg("网络错误");
     } finally {
       setConfigSaving(false);
-      setTimeout(() => setConfigMsg(null), 3000);
+      setTimeout(() => setConfigMsg(null), 5000);
     }
   }, [selectedGameModel, selectedAnalysisModel, selectedGameVisits, selectedAnalysisVisits, data, fetchData]);
 
@@ -229,9 +249,13 @@ export default function MonitorPage() {
     : `${Math.floor(uptime / 60)}m ${uptime % 60}s`;
 
   const currentCfg = data?.engineQueue?.katago?.engineConfig;
+  const analysisModelChanged =
+    (!currentCfg?.dualEngine && selectedAnalysisModel !== "") ||
+    (currentCfg?.dualEngine && selectedAnalysisModel === "") ||
+    (currentCfg?.dualEngine && selectedAnalysisModel !== "" && selectedAnalysisModel !== (currentCfg?.analysisModel ?? ""));
   const hasConfigChanges =
     (selectedGameModel && selectedGameModel !== (currentCfg?.gameModel ?? "")) ||
-    (selectedAnalysisModel && selectedAnalysisModel !== (currentCfg?.analysisModel ?? "")) ||
+    analysisModelChanged ||
     JSON.stringify(selectedGameVisits) !== JSON.stringify(currentCfg?.gameVisits ?? {}) ||
     JSON.stringify(selectedAnalysisVisits) !== JSON.stringify(currentCfg?.analysisVisits ?? {});
 
@@ -256,7 +280,12 @@ export default function MonitorPage() {
           <StatCard label="注册用户" value={fmt(data?.users.total ?? 0)} sub={`活跃 ${data?.users.recentlyActive ?? 0}`} color="blue" />
           <StatCard label="活跃对弈" value={fmt(data?.games.active ?? 0)} sub={`总计 ${fmt(data?.games.total ?? 0)}`} color="green" />
           <StatCard label="对弈引擎" value={data?.engineQueue?.katago?.gameModel?.name?.split('(')[0]?.trim() ?? '-'} sub={data?.engineQueue?.katago?.gameModel?.key ?? '未配置'} color="purple" />
-          <StatCard label="分析引擎" value={data?.engineQueue?.katago?.analysisModel?.name?.split('(')[0]?.trim() ?? '-'} sub={data?.engineQueue?.katago?.analysisModel?.key ?? '未配置'} color="amber" />
+          <StatCard
+            label="分析引擎"
+            value={isDualEngine ? (data?.engineQueue?.katago?.analysisModel?.name?.split('(')[0]?.trim() ?? '-') : '共用对弈引擎'}
+            sub={isDualEngine ? (data?.engineQueue?.katago?.analysisModel?.key ?? '未配置') : data?.engineQueue?.katago?.gameModel?.key ?? '-'}
+            color="amber"
+          />
         </div>
 
         {/* 1小时统计 */}
@@ -321,7 +350,8 @@ export default function MonitorPage() {
                   onChange={e => setSelectedAnalysisModel(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
                 >
-                  {availableModels.length === 0 && <option value="">无可用模型</option>}
+                  <option value="">同步共用对弈引擎 (单引擎模式)</option>
+                  {availableModels.length === 0 && <option value="" disabled>无可用模型</option>}
                   {availableModels.map(m => (
                     <option key={m.path} value={m.path}>
                       {m.displayName} ({m.sizeMB}MB)
@@ -365,7 +395,7 @@ export default function MonitorPage() {
                 : "bg-purple-600 hover:bg-purple-500 text-white"
             }`}
           >
-            {configSaving ? "保存中..." : "应用双引擎配置"}
+            {configSaving ? "保存中..." : "应用引擎配置"}
           </button>
           {configMsg && (
             <span className={`text-sm ${configMsg.startsWith("已") ? "text-green-400" : "text-red-400"}`}>
@@ -376,7 +406,12 @@ export default function MonitorPage() {
 
         {/* 引擎状态面板 */}
         <div className="bg-gray-900 rounded-xl p-4 mb-6">
-          <h2 className="text-sm font-semibold text-gray-400 mb-3">双引擎状态</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gray-400">引擎状态</h2>
+            <span className={`text-xs px-2 py-0.5 rounded-full ${isDualEngine ? 'bg-purple-500/20 text-purple-400' : 'bg-green-500/20 text-green-400'}`}>
+              {isDualEngine ? '双引擎模式' : '单引擎模式'}
+            </span>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <div className="flex items-center gap-2">
@@ -390,12 +425,20 @@ export default function MonitorPage() {
             </div>
             <div className="space-y-2">
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 bg-green-500 rounded-full" />
-                <span className="text-sm text-green-400">分析引擎常驻进程</span>
+                <span className={`w-2 h-2 rounded-full ${isDualEngine ? 'bg-green-500' : 'bg-gray-600'}`} />
+                <span className={`text-sm ${isDualEngine ? 'text-green-400' : 'text-gray-500'}`}>
+                  {isDualEngine ? '分析引擎常驻进程' : '分析引擎与对弈共用'}
+                </span>
               </div>
               <div className="text-xs text-gray-500 pl-4">
-                模型: {data?.engineQueue?.katago?.analysisModel?.name ?? '-'}
-                <br />文件: {data?.engineQueue?.katago?.analysisModel?.path ?? '-'}
+                {isDualEngine ? (
+                  <>
+                    模型: {data?.engineQueue?.katago?.analysisModel?.name ?? '-'}
+                    <br />文件: {data?.engineQueue?.katago?.analysisModel?.path ?? '-'}
+                  </>
+                ) : (
+                  <>analyze / genmove 共用同一进程，节省内存</>
+                )}
               </div>
             </div>
           </div>
