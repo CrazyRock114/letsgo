@@ -134,6 +134,24 @@ export default function MonitorPage() {
   const handleSaveConfig = useCallback(async () => {
     setConfigSaving(true);
     setConfigMsg(null);
+
+    // 防止用户意外刷新/关闭页面
+    const beforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+
+    // 目标状态，用于网络中断后的轮询确认
+    const targetDual = selectedAnalysisModel !== "";
+    const targetAnalysisModel = selectedAnalysisModel;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+
     try {
       const payload: Record<string, unknown> = { action: "setConfig" };
       const currentCfg = data?.engineQueue?.katago?.engineConfig;
@@ -166,6 +184,7 @@ export default function MonitorPage() {
       if (Object.keys(payload).length === 1) {
         setConfigMsg("未做任何更改");
         setConfigSaving(false);
+        cleanup();
         setTimeout(() => setConfigMsg(null), 3000);
         return;
       }
@@ -194,11 +213,46 @@ export default function MonitorPage() {
         }
         setConfigMsg(`失败: ${result.error || "未知错误"}`);
       }
-    } catch {
-      setConfigMsg("网络错误");
-    } finally {
       setConfigSaving(false);
+      cleanup();
       setTimeout(() => setConfigMsg(null), 5000);
+    } catch {
+      // 网络错误（可能是代理超时断开），后端可能仍在启动引擎
+      // 开始轮询确认状态，而不是直接失败
+      setConfigMsg("连接中断，正在后台确认引擎状态，请勿刷新...");
+      let pollCount = 0;
+      const checkStatus = async () => {
+        pollCount++;
+        try {
+          const res = await fetch("/api/monitor");
+          if (!res.ok) throw new Error("poll failed");
+          const d = await res.json();
+          const cfg = d?.engineQueue?.katago?.engineConfig;
+          if (targetDual && cfg?.dualEngine && cfg?.analysisModel === targetAnalysisModel) {
+            setConfigSaving(false);
+            setConfigMsg("引擎启动成功（后台完成）");
+            setIsDualEngine(true);
+            cleanup();
+            return;
+          }
+          if (!targetDual && !cfg?.dualEngine) {
+            setConfigSaving(false);
+            setConfigMsg("已切换为单引擎模式");
+            cleanup();
+            return;
+          }
+        } catch {
+          // 轮询失败，继续
+        }
+        if (pollCount < 20) {
+          pollTimer = setTimeout(checkStatus, 3000);
+        } else {
+          setConfigSaving(false);
+          setConfigMsg("状态确认超时，请手动刷新页面");
+          cleanup();
+        }
+      };
+      pollTimer = setTimeout(checkStatus, 3000);
     }
   }, [selectedGameModel, selectedAnalysisModel, selectedGameVisits, selectedAnalysisVisits, data, fetchData]);
 
