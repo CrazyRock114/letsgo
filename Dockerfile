@@ -48,12 +48,12 @@ scoringRule = AREA
 taxRule = NONE
 multiStoneSuicideLegal = false
 hasResignedRule = true
-numSearchThreads = 2
-nnMaxBatchSize = 8
+numSearchThreads = 1
+nnMaxBatchSize = 4
 maxVisits = 1000
 
-# 内存优化（默认 nnCacheSizePowerOfTwo=20 约 1.5GB → 15 约 49MB）
-nnCacheSizePowerOfTwo = 15
+# 内存优化（默认 nnCacheSizePowerOfTwo=20 约 1.5GB → 14 约 24MB）
+nnCacheSizePowerOfTwo = 14
 logAllGTPCommunication = false
 logSearchInfo = false
 # 人类风格模型需要此配置
@@ -72,17 +72,17 @@ scoringRule = AREA
 taxRule = NONE
 multiStoneSuicideLegal = false
 
-# 搜索线程（Hobby plan 2 CPU）
-numSearchThreads = 2
+# 搜索线程（Railway Hobby 内存限制，降为 1 线程降低内存）
+numSearchThreads = 1
 
 # 分析引擎设置
 reportAnalysisWinratesAs = BLACK
 analysisPVLen = 15
 
-# 内存优化（默认 nnCacheSizePowerOfTwo=20 约 1.5GB → 15 约 49MB）
-nnCacheSizePowerOfTwo = 15
-nnMutexPoolSizePowerOfTwo = 14
-nnMaxBatchSize = 4
+# 内存优化（默认 nnCacheSizePowerOfTwo=20 约 1.5GB → 14 约 24MB）
+nnCacheSizePowerOfTwo = 14
+nnMutexPoolSizePowerOfTwo = 13
+nnMaxBatchSize = 2
 
 # 友好 pass（中国规则）
 conservativePass = true

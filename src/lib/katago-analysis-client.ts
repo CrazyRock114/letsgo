@@ -124,6 +124,9 @@ export class KataGoAnalysisManager {
       return;
     }
 
+    // 清空上次启动残留的 stderr，避免 checkReady 误判
+    this.stderrBuf = [];
+
     // 优雅关闭旧进程
     await this.stop();
 
@@ -318,7 +321,8 @@ export class KataGoAnalysisManager {
       // 监听进程异常退出
       const onExit = (code: number | null, signal: string | null) => {
         clearTimeout(timer);
-        reject(new Error(`KataGo exited with code ${code}, signal ${signal} during startup`));
+        const stderr = this.stderrBuf.slice(-30).join('\n');
+        reject(new Error(`KataGo exited with code ${code}, signal ${signal} during startup. Stderr:\n${stderr}`));
       };
       const onError = (err: Error) => {
         clearTimeout(timer);
