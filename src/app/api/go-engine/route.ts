@@ -257,7 +257,7 @@ export function getEngineMonitorData() {
       gameModel: gameModelPath ? { path: gameModelPath, name: getModelDisplayName(gameModelPath), key: engineConfig.gameModel } : null,
       analysisModel: analysisModelPath ? { path: analysisModelPath, name: getModelDisplayName(analysisModelPath), key: engineConfig.analysisModel } : null,
       engineConfig,
-      availableModels: available.map(m => ({ ...m, displayName: getModelDisplayName(m.path) })),
+      availableModels: available.map(m => ({ ...m, displayName: getModelDisplayName(m.path), key: getModelKeyFromPath(m.path) })),
     },
     gnugo: { queueLength: 0, processing: false, note: '独立并行，不走EngineQueue' },
     activeSessions: Array.from(activeSessions.values()).map(s => ({
@@ -1478,7 +1478,7 @@ export async function GET(request: NextRequest) {
     analysisSeconds,
     userQueuePosition: userQueueInfo.userPosition,
     queue: { length: queueLength, processing: isProcessing },
-    availableModels: availableModels.map(m => ({ ...m, displayName: getModelDisplayName(m.path) })),
+    availableModels: availableModels.map(m => ({ ...m, displayName: getModelDisplayName(m.path), key: getModelKeyFromPath(m.path) })),
     gameModel: gameModelPath ? { path: gameModelPath, name: getModelDisplayName(gameModelPath), key: engineConfig.gameModel } : null,
     analysisModel: analysisModelPath ? { path: analysisModelPath, name: getModelDisplayName(analysisModelPath), key: engineConfig.analysisModel } : null,
     engineConfig,

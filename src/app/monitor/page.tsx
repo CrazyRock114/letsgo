@@ -59,7 +59,7 @@ interface MonitorData {
       gameModel: ModelInfo | null;
       analysisModel: ModelInfo | null;
       engineConfig: EngineConfig;
-      availableModels: Array<{ name: string; path: string; sizeMB: number; displayName: string }>;
+      availableModels: Array<{ name: string; path: string; sizeMB: number; displayName: string; key: string | null }>;
     };
     gnugo: { queueLength: number; processing: boolean };
   };
@@ -309,9 +309,11 @@ export default function MonitorPage() {
                 >
                   {availableModels.length === 0 && <option value="">无可用模型</option>}
                   {availableModels.map(m => (
-                    <option key={m.path} value={m.path}>
-                      {m.displayName} ({m.sizeMB}MB)
-                    </option>
+                    m.key ? (
+                      <option key={m.path} value={m.key}>
+                        {m.displayName} ({m.sizeMB}MB)
+                      </option>
+                    ) : null
                   ))}
                 </select>
               </div>
@@ -353,9 +355,11 @@ export default function MonitorPage() {
                   <option value="">同步共用对弈引擎 (单引擎模式)</option>
                   {availableModels.length === 0 && <option value="" disabled>无可用模型</option>}
                   {availableModels.map(m => (
-                    <option key={m.path} value={m.path}>
-                      {m.displayName} ({m.sizeMB}MB)
-                    </option>
+                    m.key ? (
+                      <option key={m.path} value={m.key}>
+                        {m.displayName} ({m.sizeMB}MB)
+                      </option>
+                    ) : null
                   ))}
                 </select>
               </div>
