@@ -714,6 +714,8 @@ export default function GoGamePage() {
     setShowGameEndDialog(true);
       setGameResult(result);
       setCurrentPlayer(playerColor);
+      // 游戏结束强制保存（不依赖自动保存的 isCommentaryStreaming 条件）
+      setTimeout(() => { forceSaveFinishedGame(); }, 500);
       isProcessingMoveRef.current = false;
       return;
     }
@@ -804,14 +806,28 @@ export default function GoGamePage() {
                   setGameEnded(true);
     setShowGameEndDialog(true);
                   setGameResult(result);
+                  // 游戏结束强制保存（不依赖自动保存的 isCommentaryStreaming 条件）
+                  setTimeout(() => { forceSaveFinishedGame(); }, 500);
                 }
                 setCurrentPlayer(playerColor);
                 if (gameEpochRef.current === epochAtStart) setIsAIThinking(false);
                 isProcessingMoveRef.current = false;
                 return;
+              } else if (data.fallback && data.move) {
+                // fallback 模式：引擎主分析超时，但快速 fallback 给出了结果
+                aiMove = data.move;
+                usedEngine = true;
+                console.warn(`[engine] ${engine} used fallback analyze (visits=${data.actualVisits}). Data:`, data);
+                toast.warning('AI引擎思考时间较长', { description: `已使用快速分析继续（visits=${data.actualVisits}），棋力可能略有下降`, duration: 4000 });
+              } else if (data.fallback && data.pass) {
+                // fallback 模式：pass
+                usedEngine = true;
+                console.warn(`[engine] ${engine} fallback returned pass. Data:`, data);
+                toast.warning('AI引擎思考超时', { description: '已使用快速分析，AI选择停手', duration: 4000 });
               } else {
                 // 引擎错误(engineError)或move无效/null，回退到本地AI
                 console.warn(`[engine] ${engine} returned invalid/null move (engineError=${data.engineError}), falling back to local AI. Data:`, data);
+                toast.error('AI引擎异常', { description: '已切换本地AI继续对弈，棋力将显著下降', duration: 6000 });
               }
             } else if (res.status === 403) {
               const data = await res.json().catch(() => ({}));
@@ -820,12 +836,13 @@ export default function GoGamePage() {
                 toast.error('积分不足', { description: data.error || `需要${data.required}积分，当前${data.current}积分` });
                 refreshUser(); // 刷新用户积分信息
               }
-              // 积分不足，回退到本地AI
+              toast.warning('积分不足', { description: '已切换本地AI继续对弈', duration: 4000 });
             } else if (res.status === 401) {
               console.warn(`[engine] 未登录，回退到本地AI`);
-              // 未登录，回退到本地AI
+              toast.warning('未登录', { description: '已切换本地AI继续对弈', duration: 4000 });
             } else {
               console.warn(`[engine] ${engine} API returned ${res.status}`);
+              toast.error('AI引擎服务异常', { description: `状态码 ${res.status}，已切换本地AI`, duration: 6000 });
             }
           } catch (engineErr) {
             // 请求被中止：如果epoch变了说明用户重新开始，直接返回；否则回退本地AI
@@ -833,8 +850,10 @@ export default function GoGamePage() {
               if (gameEpochRef.current !== epochAtStart) { isProcessingMoveRef.current = false; return; }
               // 超时或被新请求中止，回退到本地AI继续
               console.warn(`[engine] ${engine} request aborted (not epoch change), falling back to local AI`);
+              toast.error('AI引擎请求超时', { description: '等待时间超过180秒，已切换本地AI继续对弈', duration: 6000 });
             } else {
               console.warn(`[engine] ${engine} fetch failed:`, engineErr);
+              toast.error('AI引擎连接失败', { description: '已切换本地AI继续对弈', duration: 6000 });
             }
           }
         }
@@ -925,6 +944,8 @@ export default function GoGamePage() {
           setGameEnded(true);
     setShowGameEndDialog(true);
           setGameResult(result);
+          // 游戏结束强制保存（不依赖自动保存的 isCommentaryStreaming 条件）
+          setTimeout(() => { forceSaveFinishedGame(); }, 500);
         }
       } else {
         // AI无合法落子，自动停手
@@ -936,6 +957,8 @@ export default function GoGamePage() {
           setGameEnded(true);
     setShowGameEndDialog(true);
           setGameResult(result);
+          // 游戏结束强制保存（不依赖自动保存的 isCommentaryStreaming 条件）
+          setTimeout(() => { forceSaveFinishedGame(); }, 500);
         }
       }
 
@@ -1033,10 +1056,10 @@ export default function GoGamePage() {
     }
     const controller = new AbortController();
     abortControllerRef.current = controller;
-    // 120秒超时（排队时可能等待其他用户的分析完成，30秒太短）
+    // 180秒超时（测试阶段：高 visits 需要更长时间，排队时也可能等待）
     setTimeout(() => {
       try { controller.abort(); } catch {}
-    }, 120000);
+    }, 180000);
     return controller.signal;
   }, []);
 
@@ -1673,6 +1696,42 @@ export default function GoGamePage() {
     }
     setIsSaving(false);
   }, [user, token, savedGameId, boardSize, difficulty, engine, history, commentaries, board, score, saveTitle, isSaving]);
+
+  // ===== 游戏结束强制保存（不弹窗、不影响UI状态）=====
+  const forceSaveFinishedGame = useCallback(async () => {
+    if (!user || !token) return;
+    try {
+      const res = await fetch('/api/games', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          id: savedGameIdRef.current || savedGameId,
+          board_size: boardSize,
+          difficulty,
+          engine,
+          moves: history,
+          commentaries,
+          teachHistory: teachHistory.map(e => ({ moveIndex: e.moveIndex, content: e.content, hintPosition: e.hintPosition, faded: e.faded })),
+          final_board: board,
+          black_score: score.black,
+          white_score: score.white,
+          status: 'finished',
+          config: { playerColor },
+          title: `${boardSize}路 ${difficulty === 'easy' ? '初级' : difficulty === 'medium' ? '中级' : '高级'} ${engine === 'katago' ? 'KataGo' : engine === 'gnugo' ? 'GnuGo' : '本地AI'} ${new Date().toLocaleDateString('zh-CN')}`,
+        }),
+      });
+      const data = await res.json();
+      if (data.game) {
+        setSavedGameId(data.game.id);
+        savedGameIdRef.current = data.game.id;
+        console.log('[forceSave] Game saved as finished, id=', data.game.id);
+      } else {
+        console.warn('[forceSave] Save failed:', data.error);
+      }
+    } catch (err) {
+      console.error('[forceSave] Failed:', err);
+    }
+  }, [user, token, savedGameId, boardSize, difficulty, engine, history, commentaries, board, score, playerColor, teachHistory]);
 
   // ===== 载入棋局列表 =====
   const loadGames = useCallback(async () => {

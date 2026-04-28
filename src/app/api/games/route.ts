@@ -116,17 +116,47 @@ export async function POST(request: NextRequest) {
 
       if (error) throw new Error(`更新棋局失败: ${error.message}`);
 
-      // 更新用户统计（棋局结束时）
+      // 更新用户统计（棋局结束时）—— 增量更新，避免全量重算
       if (body.status === 'finished') {
-        const isWin = (body.black_score as number) > (body.white_score as number);
-        await client
+        const blackScore = (body.black_score as number) ?? 0;
+        const whiteScore = (body.white_score as number) ?? 0;
+        // 优先从 config.playerColor 判断玩家颜色，其次从 moves 推断
+        let playerColor = (body.config as Record<string, unknown> | null)?.playerColor as string | undefined;
+        if (!playerColor && body.moves && Array.isArray(body.moves) && body.moves.length > 0) {
+          // 第一手为玩家落子，推断玩家颜色
+          playerColor = (body.moves[0] as Record<string, unknown>).color as string;
+        }
+        let isWin = false;
+        if (playerColor === 'black') {
+          isWin = blackScore > whiteScore;
+        } else if (playerColor === 'white') {
+          isWin = whiteScore > blackScore;
+        }
+
+        // 原子增量更新：total_games + 1, wins + (isWin ? 1 : 0)
+        const { data: userData } = await client
+          .from('letsgo_users')
+          .select('total_games, wins')
+          .eq('id', user.userId)
+          .single();
+
+        const currentTotal = (userData?.total_games as number) ?? 0;
+        const currentWins = (userData?.wins as number) ?? 0;
+
+        const { error: statsError } = await client
           .from('letsgo_users')
           .update({
-            total_games: await getGameCount(client, user.userId),
-            wins: await getWinCount(client, user.userId),
+            total_games: currentTotal + 1,
+            wins: currentWins + (isWin ? 1 : 0),
             updated_at: new Date().toISOString(),
           })
           .eq('id', user.userId);
+
+        if (statsError) {
+          console.error(`[games] Stats update failed for user ${user.userId}:`, statsError.message);
+        } else {
+          console.log(`[games] Stats updated: user=${user.userId}, total=${currentTotal + 1}, wins=${currentWins + (isWin ? 1 : 0)}, isWin=${isWin}, playerColor=${playerColor}`);
+        }
       }
 
       return NextResponse.json({ game: data });

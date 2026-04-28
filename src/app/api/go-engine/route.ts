@@ -398,11 +398,11 @@ function getKataGoVisits(difficulty: string, engineType: 'game' | 'analysis' = '
   return visits.hard;
 }
 
-// JS 层超时保护（秒）
+// JS 层超时保护（秒）—— 测试阶段适当放宽，避免高 visits 下频繁超时
 function getKataGoMaxTime(difficulty: string): number {
-  if (difficulty === "easy") return 15;
-  if (difficulty === "medium") return 20;
-  return 30;
+  if (difficulty === "easy") return 40;
+  if (difficulty === "medium") return 80;
+  return 120;
 }
 
 // GnuGo难度映射
@@ -452,7 +452,7 @@ async function getKataGoMove(
   moves: EngineMove[],
   difficulty: string,
   aiColor: 'black' | 'white' = 'white'
-): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string; engineError?: boolean; actualVisits?: number; modelUsed?: string; warning?: string }> {
+): Promise<{ move: { row: number; col: number } | null; pass?: boolean; resign?: boolean; engine: string; engineError?: boolean; actualVisits?: number; modelUsed?: string; warning?: string; fallback?: boolean }> {
   const manager = getGameEngine();
   const maxVisits = getKataGoVisits(difficulty, 'game');
   const maxTime = getKataGoMaxTime(difficulty);
@@ -470,10 +470,11 @@ async function getKataGoMove(
     return { move: null, engineError: true, engine: 'katago' };
   }
 
+  // 第一次尝试：完整深度
   try {
     const result = await manager.genmove(boardSize, moves as Array<{ row: number; col: number; color: "black" | "white"; isPass?: boolean }>, aiColor, {
       maxVisits,
-      maxTime: maxTime + 10, // JS 层超时 = 预期时间 + 10s 缓冲
+      maxTime: maxTime + 20, // JS 层超时 = 预期时间 + 20s 缓冲
       komi: getKomi(boardSize),
       rules: 'chinese',
     });
@@ -506,7 +507,42 @@ async function getKataGoMove(
   } catch (err) {
     const elapsed = Date.now() - startTime;
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error(`[KataGo] genmove failed after ${elapsed}ms:`, errMsg);
+    console.warn(`[KataGo] genmove primary failed after ${elapsed}ms: ${errMsg}. Attempting fallback with 50 visits...`);
+
+    // Fallback：用 50 visits 快速分析获取当前最佳结论，不直接丢弃思考成果
+    try {
+      const fallbackStart = Date.now();
+      const fallbackResult = await manager.analyze(boardSize, moves as Array<{ row: number; col: number; color: "black" | "white"; isPass?: boolean }>, {
+        maxVisits: 50,
+        maxTime: 30,
+        komi: getKomi(boardSize),
+        rules: 'chinese',
+      });
+      const fallbackElapsed = Date.now() - fallbackStart;
+      if (fallbackResult && fallbackResult.bestMoves.length > 0) {
+        const best = fallbackResult.bestMoves[0];
+        if (best.move === 'pass') {
+          console.log(`[KataGo] FALLBACK PASS (game) ${fallbackElapsed}ms model=${modelUsed} visits=${fallbackResult.actualVisits}`);
+          return { move: null, pass: true, engine: 'katago', modelUsed, actualVisits: fallbackResult.actualVisits, fallback: true };
+        }
+        if (best.move === 'resign') {
+          console.log(`[KataGo] FALLBACK RESIGN (game) ${fallbackElapsed}ms model=${modelUsed} visits=${fallbackResult.actualVisits}`);
+          return { move: null, resign: true, engine: 'katago', modelUsed, actualVisits: fallbackResult.actualVisits, fallback: true };
+        }
+        const pos = gtpToBoardCoord(best.move, boardSize);
+        if (pos) {
+          console.log(`[KataGo] FALLBACK MOVE (game): (${pos.row},${pos.col}) ${fallbackElapsed}ms model=${modelUsed} visits=${fallbackResult.actualVisits}`);
+          return { move: pos, engine: 'katago', modelUsed, actualVisits: fallbackResult.actualVisits, fallback: true };
+        }
+      }
+      console.warn(`[KataGo] Fallback analyze also failed or returned no moves`);
+    } catch (fallbackErr) {
+      const fallbackErrMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      console.warn(`[KataGo] Fallback analyze failed: ${fallbackErrMsg}`);
+    }
+
+    // 主分析和 fallback 都失败了，才返回 engineError
+    console.error(`[KataGo] genmove fully failed after ${elapsed}ms (primary + fallback)`);
     return { move: null, engineError: true, engine: 'katago', modelUsed };
   }
 }
@@ -543,7 +579,7 @@ async function getKataGoAnalysis(
       maxVisits = getKataGoVisits('medium', 'analysis');
     }
     console.log(`[kata-analysis] maxVisits=${maxVisits}, difficulty=${difficulty || '-'}, engineConfig.analysisVisits=${JSON.stringify(engineConfig.analysisVisits)}`);
-    const jsTimeout = Math.max(30, maxVisits * 0.5) + 10; // JS 层超时保护
+    const jsTimeout = Math.max(60, maxVisits * 1.0) + 20; // JS 层超时保护（测试阶段放宽）
     const result = await manager.analyze(boardSize, moves, {
       maxVisits,
       maxTime: jsTimeout,
@@ -747,6 +783,7 @@ interface EngineQueueResult {
   analysis?: KataGoAnalysis | null; // genmove+analysis时返回
   actualVisits?: number;
   modelUsed?: string;
+  fallback?: boolean; // true = 主分析超时后使用快速fallback
 }
 
 class EngineQueue {
@@ -843,7 +880,8 @@ class EngineQueue {
           try {
             const moveResult = await getKataGoMove(entry.boardSize, entry.moves, entry.difficulty, entry.aiColor);
             result = { ...moveResult };
-            console.log(`[engine-queue] KataGo success: ${entry.id}, move=${result.move ? `(${result.move.row},${result.move.col})` : result.pass ? 'PASS' : 'null'}, engineError=${result.engineError}`);
+            const fallbackTag = (result as any).fallback ? ' [FALLBACK]' : '';
+            console.log(`[engine-queue] KataGo success: ${entry.id}, move=${result.move ? `(${result.move.row},${result.move.col})` : result.pass ? 'PASS' : 'null'}, engineError=${result.engineError}, model=${result.modelUsed ?? '-'}${fallbackTag}`);
           } catch (katagoError) {
             const errMsg = katagoError instanceof Error ? katagoError.message : String(katagoError);
             console.error(`[engine-queue] KataGo FAILED: ${entry.id}, error=${errMsg}`);

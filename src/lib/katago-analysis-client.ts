@@ -324,7 +324,7 @@ export class KataGoAnalysisManager {
     console.log(`[AnalysisEngine] Query: ${line}`);
 
     return new Promise<KataGoAnalysis | null>((resolve, reject) => {
-      const timeoutMs = (options.maxTime || 15) * 1000 + 10000;
+      const timeoutMs = (options.maxTime || 40) * 1000 + 20000; // 测试阶段放宽超时
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Analysis timeout after ${timeoutMs}ms`));
