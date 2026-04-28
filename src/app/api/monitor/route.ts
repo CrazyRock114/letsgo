@@ -76,15 +76,11 @@ export async function GET() {
     const cpuModel = cpus[0]?.model || "Unknown";
     const cpuCores = cpus.length;
 
-    // CPU使用率（通过1秒采样计算）
+    // CPU使用率（非阻塞估算：基于负载平均值）
     let cpuUsage = 0;
     try {
-      const startUsage = process.cpuUsage();
-      const startTime = Date.now();
-      await new Promise(r => setTimeout(r, 2000)); // 采样2秒
-      const endUsage = process.cpuUsage(startUsage);
-      const elapsed = (Date.now() - startTime) * 1000; // 微秒
-      cpuUsage = ((endUsage.user + endUsage.system) / elapsed) * 100;
+      const loadAvg = os.loadavg();
+      cpuUsage = Math.round((loadAvg[0] / cpuCores) * 100 * 10) / 10;
     } catch {
       cpuUsage = 0;
     }

@@ -166,7 +166,11 @@ export default function GoGamePage() {
   useEffect(() => {
     if (history.length > 0) {
       const last = history[history.length - 1];
-      setLastMove({ row: last.position.row, col: last.position.col });
+      if (last?.position) {
+        setLastMove({ row: last.position.row, col: last.position.col });
+      } else {
+        setLastMove(null);
+      }
     } else {
       setLastMove(null);
     }
@@ -217,7 +221,7 @@ export default function GoGamePage() {
 
         if (data.game) {
           const game = data.game;
-          const moves = (game.moves as MoveEntry[]) || [];
+          const moves = ((game.moves as MoveEntry[]) || []).filter(m => m?.position != null);
           const bs = game.board_size as number;
 
           setSpectatorGame({
@@ -234,7 +238,7 @@ export default function GoGamePage() {
           setBoard(game.final_board ? (game.final_board as Board) : createEmptyBoard(bs));
           setScore({ black: game.black_score ?? 0, white: game.white_score ?? getKomi(bs) });
           setCurrentPlayer(moves.length % 2 === 0 ? 'black' : 'white');
-          if (moves.length > 0) {
+          if (moves.length > 0 && moves[moves.length - 1]?.position) {
             setLastMove(moves[moves.length - 1].position);
           } else {
             setLastMove(null);
@@ -258,7 +262,7 @@ export default function GoGamePage() {
             setDifficulty(game.difficulty as string);
           }
           if (game.commentaries) {
-            setCommentaries(game.commentaries as CommentaryEntry[]);
+            setCommentaries((game.commentaries as CommentaryEntry[]).filter(c => c?.position != null));
           }
         } else {
           setSpectatorGame(null);
@@ -330,6 +334,7 @@ export default function GoGamePage() {
   }, [isAIThinking, user?.userId]);
   // KataGo分析数据（来自引擎响应，传给解说/教学API）
   const latestAnalysisRef = useRef<{winRate: number; scoreLead: number; bestMoves: {move: string; winrate: number; scoreMean: number}[]} | null>(null);
+  const previousAnalysisRef = useRef<{winRate: number; scoreLead: number; bestMoves: {move: string; winrate: number; scoreMean: number}[]} | null>(null);
   const [gameEnded, setGameEnded] = useState(false);
   const [gameResult, setGameResult] = useState<{ winner: string; detail: string } | null>(null);
   const [showGameEndDialog, setShowGameEndDialog] = useState(false);
@@ -352,6 +357,8 @@ export default function GoGamePage() {
   const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
   const [authError, setAuthError] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [showDailyBonusDialog, setShowDailyBonusDialog] = useState(false);
+  const [dailyBonusInfo, setDailyBonusInfo] = useState<{ amount: number; currentPoints: number } | null>(null);
 
   // ===== 切换确认 =====
   const [difficultyToast, setDifficultyToast] = useState<string>('');
@@ -410,8 +417,8 @@ export default function GoGamePage() {
   const [autoSave, setAutoSave] = useState(false);
   const [autoSaving, setAutoSaving] = useState(false);
   const [commentaryVersion, setCommentaryVersion] = useState(0); // 解说完成时递增，触发自动保存
-  const MAX_TEACH_PER_GAME = 10; // 每局最多使用次数
-  const TEACH_COST = 20; // 每次消耗积分
+  const MAX_TEACH_PER_GAME = 50; // 每局最多使用次数
+  const TEACH_COST = 10; // 每次消耗积分
 
   // ===== 聊天 =====
   const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
@@ -593,6 +600,8 @@ export default function GoGamePage() {
           moveColor,
           captured: capturedCount,
           moveHistory: currentHistory,
+          analysis: latestAnalysisRef.current,
+          previousAnalysis: previousAnalysisRef.current,
         }),
       });
       if (response.ok) {
@@ -777,6 +786,7 @@ export default function GoGamePage() {
               }
               // 如果genmove返回了analysis数据，保存供解说/教学使用
               if (data.analysis) {
+                previousAnalysisRef.current = latestAnalysisRef.current;
                 latestAnalysisRef.current = data.analysis;
               }
               // queuePosition 由轮询机制实时更新，不再从响应中读取
@@ -917,7 +927,7 @@ export default function GoGamePage() {
           final_board: board,
           black_score: score.black,
           white_score: score.white,
-          status: 'playing',
+          status: gameEnded ? 'finished' : 'playing',
           title: saveTitle || `${boardSize}路 ${difficulty === 'easy' ? '初级' : difficulty === 'medium' ? '中级' : '高级'} ${engine === 'katago' ? 'KataGo' : engine === 'gnugo' ? 'GnuGo' : '本地AI'} ${new Date().toLocaleDateString('zh-CN')}`,
           autoSave: true, // 标记为自动保存，后端扣1积分
         }),
@@ -937,7 +947,7 @@ export default function GoGamePage() {
   // AI落子完成后触发自动保存（等解说流式完成后再保存）
   useEffect(() => {
     // 条件：自动保存开启 + AI已思考完 + 有落子历史 + 轮到玩家 + 游戏未结束 + 解说已结束
-    if (autoSave && !isAIThinking && history.length > 0 && currentPlayer === playerColor && !gameEnded && !isCommentaryStreaming) {
+    if (autoSave && !isAIThinking && history.length > 0 && currentPlayer === playerColor && !isCommentaryStreaming) {
       const timer = setTimeout(() => { autoSaveGame(); }, 1000);
       return () => clearTimeout(timer);
     }
@@ -1514,6 +1524,7 @@ export default function GoGamePage() {
           black_score: score.black,
           white_score: score.white,
           status: gameEnded ? 'finished' : 'playing',
+          config: { playerColor },
           title: saveTitle || `${boardSize}路 ${difficulty === 'easy' ? '初级' : difficulty === 'medium' ? '中级' : '高级'} ${engine === 'katago' ? 'KataGo' : engine === 'gnugo' ? 'GnuGo' : '本地AI'} ${new Date().toLocaleDateString('zh-CN')}`,
         }),
       });
@@ -1565,8 +1576,11 @@ export default function GoGamePage() {
       setBoardSize(game.board_size);
       setDifficulty(game.difficulty);
       if (game.engine) setEngine(game.engine as EngineId);
-      setHistory(game.moves || []);
-      setCommentaries(game.commentaries || []);
+      // 防御：过滤掉 position 为 null 的脏数据
+      const cleanMoves = (game.moves || []).filter(m => m?.position != null);
+      const cleanCommentaries = (game.commentaries || []).filter(c => c?.position != null);
+      setHistory(cleanMoves);
+      setCommentaries(cleanCommentaries);
       setTeachHistory(((game as unknown as Record<string, unknown>).teach_history || []) as TeachEntry[]);
       setSavedGameId(game.id ?? null);
       setSaveTitle((game as unknown as Record<string, unknown>).title as string || ''); // 载入棋局名称
@@ -1579,7 +1593,7 @@ export default function GoGamePage() {
       setCurrentPlayer(playerColor);
 
       // 存储复盘数据
-      setReplayMoves(game.moves || []);
+      setReplayMoves(cleanMoves);
 
       setShowLoadDialog(false);
     } catch (err) {
@@ -1629,9 +1643,9 @@ export default function GoGamePage() {
       return;
     }
 
-    // 截取到当前步的落子历史
-    const truncatedMoves = replayMoves.slice(0, replayIndex);
-    const truncatedCommentaries = commentaries.filter(c => c.moveIndex < replayIndex);
+    // 截取到当前步的落子历史（过滤脏数据）
+    const truncatedMoves = replayMoves.slice(0, replayIndex).filter(m => m?.position != null);
+    const truncatedCommentaries = commentaries.filter(c => c.moveIndex < replayIndex && c?.position != null);
 
     // 重放到当前步的棋盘状态
     let newBoard = createEmptyBoard(boardSize);
@@ -1648,7 +1662,8 @@ export default function GoGamePage() {
     setBoard(newBoard);
     setHistory(truncatedMoves);
     setCommentaries(truncatedCommentaries);
-    setLastMove(replayIndex > 0 ? replayMoves[replayIndex - 1].position : null);
+    const lastReplayMove = replayIndex > 0 ? replayMoves[replayIndex - 1] : null;
+    setLastMove(lastReplayMove?.position ?? null);
     setGameEnded(false);
     setShowGameEndDialog(false);
     setConsecutivePasses(0);
@@ -2293,12 +2308,15 @@ export default function GoGamePage() {
                   {commentaries.map((entry, idx) => {
                     // 围棋中 moveIndex 偶数=黑方，奇数=白方，以此为准避免颜色标记错误
                     const displayColor: 'black' | 'white' = entry.moveIndex % 2 === 0 ? 'black' : 'white';
+                    const coordText = entry.position
+                      ? positionToCoordinate(entry.position.row, entry.position.col, boardSize)
+                      : '停一手';
                     return (
                     <div key={idx} className={`rounded-lg px-3 py-2 ${displayColor === 'black' ? 'bg-gray-50 border-l-3 border-gray-700' : 'bg-orange-50 border-l-3 border-orange-400'}`}>
                       <div className="flex items-center gap-1.5 mb-0.5">
                         <div className={`w-4 h-4 rounded-full ${displayColor === 'black' ? 'bg-gray-800' : 'bg-white border border-gray-300'}`} />
                         <span className="text-xs font-medium text-gray-600">
-                          第{entry.moveIndex + 1}手 | {displayColor === 'black' ? '黑方' : '白方'} {positionToCoordinate(entry.position.row, entry.position.col, boardSize)}
+                          第{entry.moveIndex + 1}手 | {displayColor === 'black' ? '黑方' : '白方'} {coordText}
                         </span>
                       </div>
                       <p className="text-xs text-gray-700 leading-relaxed">{entry.commentary}</p>
@@ -2611,7 +2629,7 @@ export default function GoGamePage() {
           <DialogHeader>
             <DialogTitle>{authTab === 'login' ? '登录' : '注册'}</DialogTitle>
             <DialogDescription>
-              {authTab === 'login' ? '登录后即可与AI对弈' : '注册账号，获取1000积分'}
+              {authTab === 'login' ? '登录后即可与AI对弈' : '注册账号，获取2000积分'}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -2632,7 +2650,8 @@ export default function GoGamePage() {
                   if (!result.success) { setAuthError(result.error || '登录失败'); return; }
                   setShowAuthDialog(false);
                   if (result.dailyBonusAwarded && result.dailyBonusAmount) {
-                    toast.success(`每日登录奖励 +${result.dailyBonusAmount}积分！`);
+                    setDailyBonusInfo({ amount: result.dailyBonusAmount, currentPoints: result.currentPoints ?? user?.points ?? 0 });
+                    setShowDailyBonusDialog(true);
                   }
                 } else {
                   const result = await register(n, p);
@@ -2676,6 +2695,27 @@ export default function GoGamePage() {
               )}
             </p>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* 每日登录奖励弹窗 */}
+      <Dialog open={showDailyBonusDialog} onOpenChange={setShowDailyBonusDialog}>
+        <DialogContent className="sm:max-w-sm text-center">
+          <DialogHeader className="items-center">
+            <div className="w-16 h-16 rounded-full bg-amber-100 flex items-center justify-center mb-2">
+              <span className="text-3xl">🎁</span>
+            </div>
+            <DialogTitle className="text-lg">每日登录奖励</DialogTitle>
+          </DialogHeader>
+          {dailyBonusInfo && (
+            <div className="space-y-3 py-2">
+              <p className="text-2xl font-bold text-amber-600">+{dailyBonusInfo.amount} 积分</p>
+              <p className="text-sm text-gray-500">当前总积分：<span className="font-semibold text-gray-700">{dailyBonusInfo.currentPoints}</span></p>
+            </div>
+          )}
+          <Button onClick={() => setShowDailyBonusDialog(false)} className="w-full bg-amber-600 hover:bg-amber-700 text-white">
+            确定
+          </Button>
         </DialogContent>
       </Dialog>
     </div>

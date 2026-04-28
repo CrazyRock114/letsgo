@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import { generateToken } from '@/lib/auth';
 
-const DAILY_BONUS = 1000;
+const DAILY_BONUS = 2000;
 
 export async function POST(request: NextRequest) {
   try {

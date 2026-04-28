@@ -13,6 +13,9 @@
 
 import { ChildProcess, spawn } from "child_process";
 import { createInterface } from "readline";
+import fs from "fs";
+import https from "https";
+import path from "path";
 
 // ============================================================
 // 类型定义（与现有 KataGoAnalysis 兼容）
@@ -79,7 +82,8 @@ interface PendingQuery {
 // 配置常量
 // ============================================================
 
-const KATAGO_DIR = process.env.KATAGO_DIR || "/usr/local/katago";
+const KATAGO_HOME = process.env.HOME || process.env.USERPROFILE || '';
+const KATAGO_DIR = process.env.KATAGO_DIR || (fs.existsSync(`${KATAGO_HOME}/katago/katago`) ? `${KATAGO_HOME}/katago` : "/usr/local/katago");
 export const MODEL_PATHS: Record<string, string> = {
   rect15: `${KATAGO_DIR}/rect15-b20c256-s343365760-d96847752.bin.gz`,
   kata9x9: `${KATAGO_DIR}/kata9x9-b18c384nbt-20231025.bin.gz`,
@@ -87,10 +91,71 @@ export const MODEL_PATHS: Record<string, string> = {
   b6c64: `${KATAGO_DIR}/lionffen_b6c64.txt.gz`,
   b24c64: `${KATAGO_DIR}/lionffen_b24c64_3x3_v3_12300.bin.gz`,
   g170: `${KATAGO_DIR}/g170-b6c96-s175395328-d26788732.bin.gz`,
+  b10c128: `${KATAGO_DIR}/kata1-b10c128-s1141046784-d204142634.txt.gz`,
+  b18c384: `${KATAGO_DIR}/kata1-b18c384nbt-s7709731328-d3715293823.bin.gz`,
+  b28c512: `${KATAGO_DIR}/kata1-b28c512nbt-s12763923712-d5805955894.bin.gz`,
 };
 
-const KATAGO_BIN = process.env.KATAGO_PATH || "/usr/local/katago/katago";
-const CONFIG_PATH = process.env.KATAGO_ANALYSIS_CONFIG || "/usr/local/katago/analysis.cfg";
+// 模型下载地址（用于 Railway/新环境自动下载）
+const MODEL_DOWNLOAD_URLS: Record<string, string> = {
+  b10c128: 'https://media.katagotraining.org/uploaded/networks/models/kata1/kata1-b10c128-s1141046784-d204142634.txt.gz',
+  b18c384: 'https://media.katagotraining.org/uploaded/networks/models/kata1/kata1-b18c384nbt-s7709731328-d3715293823.bin.gz',
+  b28c512: 'https://media.katagotraining.org/uploaded/networks/models/kata1/kata1-b28c512nbt-s12763923712-d5805955894.bin.gz',
+};
+
+/** 下载单个文件 */
+function downloadFile(url: string, dest: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dest);
+    https.get(url, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        const redirectUrl = res.headers.location;
+        if (!redirectUrl) { reject(new Error('Redirect without location')); return; }
+        downloadFile(redirectUrl, dest).then(resolve).catch(reject);
+        return;
+      }
+      if (res.statusCode !== 200) { reject(new Error(`Download failed: ${res.statusCode}`)); return; }
+      res.pipe(file);
+      file.on('finish', () => { file.close(); resolve(); });
+    }).on('error', (err) => { fs.unlink(dest, () => {}); reject(err); });
+  });
+}
+
+/** 自动下载缺失的 KataGo 模型（用于 Railway 部署等无模型环境） */
+export async function downloadMissingModels(): Promise<void> {
+  for (const [key, filePath] of Object.entries(MODEL_PATHS)) {
+    if (fs.existsSync(filePath)) continue;
+    const url = MODEL_DOWNLOAD_URLS[key];
+    if (!url) continue;
+    const fileName = path.basename(filePath);
+    console.log(`[ModelDownload] Downloading ${key}: ${fileName}...`);
+    try {
+      await downloadFile(url, filePath);
+      const sizeMB = Math.round(fs.statSync(filePath).size / 1024 / 1024 * 10) / 10;
+      console.log(`[ModelDownload] ${key} downloaded (${sizeMB}MB)`);
+    } catch (err) {
+      console.error(`[ModelDownload] Failed to download ${key}:`, err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
+function findKataGoConfig(): string {
+  if (process.env.KATAGO_ANALYSIS_CONFIG && fs.existsSync(process.env.KATAGO_ANALYSIS_CONFIG)) {
+    return process.env.KATAGO_ANALYSIS_CONFIG;
+  }
+  const candidates = [
+    `${KATAGO_DIR}/analysis.cfg`,
+    `${KATAGO_HOME}/katago/analysis.cfg`,
+    "/usr/local/katago/analysis.cfg",
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return candidates[0]; // fallback
+}
+
+const KATAGO_BIN = process.env.KATAGO_PATH || `${KATAGO_DIR}/katago`;
+const CONFIG_PATH = findKataGoConfig();
 
 let idCounter = 0;
 function generateId(): string {
@@ -157,6 +222,7 @@ export class KataGoAnalysisManager {
     if (!modelPath) throw new Error(`Unknown model: ${this.model}`);
 
     console.log(`[AnalysisEngine] Starting with model: ${this.model} (${modelPath})`);
+    console.log(`[AnalysisEngine] Using config: ${CONFIG_PATH} (exists=${fs.existsSync(CONFIG_PATH)})`);
 
     const proc = spawn(KATAGO_BIN, [
       "analysis",
@@ -257,6 +323,7 @@ export class KataGoAnalysisManager {
     };
 
     const line = JSON.stringify(query);
+    console.log(`[AnalysisEngine] Query: ${line}`);
 
     return new Promise<KataGoAnalysis | null>((resolve, reject) => {
       const timeoutMs = (options.maxTime || 15) * 1000 + 10000;
@@ -402,27 +469,24 @@ export class KataGoAnalysisManager {
 
   private toKataGoAnalysis(resp: AnalysisResponse): KataGoAnalysis {
     const root = resp.rootInfo;
-    const isWhiteToMove = root.currentPlayer === "W";
 
-    // 转换为黑方视角
-    const winRate = isWhiteToMove
-      ? Math.round((1 - root.winrate) * 1000) / 10
-      : Math.round(root.winrate * 1000) / 10;
+    // analysis.cfg 中设置了 reportAnalysisWinratesAs = BLACK
+    // KataGo 返回的 winrate / scoreLead / moveInfos[].winrate / moveInfos[].scoreLead
+    // 全部已经是黑方视角，无需按 currentPlayer 转换
+    const winRate = Math.round(root.winrate * 1000) / 10;
+    const scoreLead = Math.round(root.scoreLead * 10) / 10;
 
-    const scoreLead = isWhiteToMove
-      ? Math.round(-root.scoreLead * 10) / 10
-      : Math.round(root.scoreLead * 10) / 10;
-
-    const bestMoves = resp.moveInfos.slice(0, 5).map((m) => {
-      const mWinRate = isWhiteToMove ? 1 - m.winrate : m.winrate;
-      const mScore = isWhiteToMove ? -m.scoreLead : m.scoreLead;
-      return {
+    // 按黑方胜率从高到低排序，使推荐顺序与胜率直观一致
+    // （KataGo 原始 order 基于 MCTS visits，低 visits 下可能与胜率不一致）
+    const bestMoves = resp.moveInfos
+      .slice(0, 5)
+      .sort((a, b) => b.winrate - a.winrate)
+      .map((m) => ({
         move: m.move,
-        winrate: Math.round(mWinRate * 1000) / 10,
-        scoreMean: Math.round(mScore * 10) / 10,
+        winrate: Math.round(m.winrate * 1000) / 10,
+        scoreMean: Math.round(m.scoreLead * 10) / 10,
         visits: m.visits,
-      };
-    });
+      }));
 
     return {
       winRate,

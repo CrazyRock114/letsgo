@@ -98,3 +98,6 @@ Desktop.ini
 .turbo
 
 .coze-logs
+.claude/
+.next 2/
+*.log

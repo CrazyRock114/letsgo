@@ -23,6 +23,7 @@ function buildGameData(body: Record<string, unknown>, userId: number) {
     white_score: body.white_score,
     status: body.status,
     title: body.title,
+    config: body.config ?? {},
   };
 }
 
@@ -90,6 +91,7 @@ export async function POST(request: NextRequest) {
         status: body.status,
         title: body.title,
         engine: body.engine,
+        config: body.config ?? {},
         updated_at: new Date().toISOString(),
       };
 
@@ -259,11 +261,19 @@ async function getGameCount(client: ReturnType<typeof getSupabaseClient>, userId
 
 // 辅助函数：获取用户胜局数
 async function getWinCount(client: ReturnType<typeof getSupabaseClient>, userId: number): Promise<number> {
-  const { count } = await client
+  const { data: games, error } = await client
     .from('letsgo_games')
-    .select('*', { count: 'exact', head: true })
+    .select('black_score,white_score,config')
     .eq('user_id', userId)
     .eq('status', 'finished');
-  // 简化：胜局数需要根据黑白方和比分判断，这里先返回0，后续优化
-  return count ?? 0;
+  if (error || !games) return 0;
+  return games.filter((g) => {
+    const playerColor = (g.config as Record<string, unknown> | null)?.playerColor as string | undefined;
+    if (!playerColor) return false;
+    const blackScore = (g.black_score as number) ?? 0;
+    const whiteScore = (g.white_score as number) ?? 0;
+    if (playerColor === 'black') return blackScore > whiteScore;
+    if (playerColor === 'white') return whiteScore > blackScore;
+    return false;
+  }).length;
 }

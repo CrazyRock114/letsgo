@@ -15,7 +15,7 @@ interface AuthContextType {
   user: UserInfo | null;
   loading: boolean;
   token: string | null;
-  login: (nickname: string, password: string) => Promise<{ success: boolean; error?: string; dailyBonusAwarded?: boolean; dailyBonusAmount?: number }>;
+  login: (nickname: string, password: string) => Promise<{ success: boolean; error?: string; dailyBonusAwarded?: boolean; dailyBonusAmount?: number; currentPoints?: number }>;
   register: (nickname: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   refreshUser: () => Promise<void>;
@@ -148,7 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(interval);
   }, [token, refreshUser]);
 
-  const login = async (nickname: string, password: string): Promise<{ success: boolean; error?: string; dailyBonusAwarded?: boolean; dailyBonusAmount?: number }> => {
+  const login = async (nickname: string, password: string): Promise<{ success: boolean; error?: string; dailyBonusAwarded?: boolean; dailyBonusAmount?: number; currentPoints?: number }> => {
     console.log(`[auth] login called: nickname=${nickname}`);
     try {
       const res = await fetch('/api/auth/login', {
@@ -181,6 +181,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         success: true,
         dailyBonusAwarded: data.dailyBonusAwarded || false,
         dailyBonusAmount: data.dailyBonusAmount || 0,
+        currentPoints: data.user?.points ?? userInfo.points,
       };
     } catch (e) {
       console.error('[auth] login error:', e);

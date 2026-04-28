@@ -9,6 +9,7 @@ import { getSupabaseClient } from "@/storage/database/supabase-client";
 import { getUserFromAuthHeader, type JWTPayload } from "@/lib/auth";
 import { logAiEvent } from "@/lib/ai-logger";
 import { getEnginePool, KataGoAnalysisManager, MODEL_PATHS } from "@/lib/katago-analysis-client";
+import { getCommentaryDebugShared, setCommentaryDebugShared } from "@/lib/engine-shared-config";
 
 // KataGo分析结果类型
 interface KataGoAnalysis {
@@ -107,17 +108,35 @@ interface EngineConfig {
   analysisModel: string;   // 分析专用模型（单引擎模式下跟随 gameModel）
   analysisVisits: { easy: number; medium: number; hard: number };
   dualEngine: boolean;     // true=双引擎独立，false=单引擎共用（默认）
+  commentaryDebug: boolean; // 解说是否输出客观参数（调试模式）
 }
 
 const DEFAULT_GAME_MODEL = 'rect15';
 
-let engineConfig: EngineConfig = {
-  gameModel: DEFAULT_GAME_MODEL,
-  gameVisits: { easy: 50, medium: 100, hard: 200 },
-  analysisModel: DEFAULT_GAME_MODEL,  // 默认跟随 gameModel（单引擎）
-  analysisVisits: { easy: 30, medium: 60, hard: 120 },
-  dualEngine: false,  // 默认单引擎模式
-};
+// 使用 globalThis 持久化引擎配置，防止 Next.js HMR/模块重载导致配置丢失
+const ENGINE_CONFIG_KEY = '__LETSGO_ENGINE_CONFIG__';
+function getEngineConfig(): EngineConfig {
+  const g = globalThis as Record<string, unknown>;
+  if (!g[ENGINE_CONFIG_KEY]) {
+    g[ENGINE_CONFIG_KEY] = {
+      gameModel: DEFAULT_GAME_MODEL,
+      gameVisits: { easy: 30, medium: 80, hard: 150 },
+      analysisModel: DEFAULT_GAME_MODEL,
+      analysisVisits: { easy: 30, medium: 80, hard: 150 },
+      dualEngine: false,
+      commentaryDebug: false,
+    } as EngineConfig;
+  }
+  return g[ENGINE_CONFIG_KEY] as EngineConfig;
+}
+
+let engineConfig: EngineConfig = getEngineConfig();
+
+export function getCommentaryDebug(): boolean {
+  const value = getCommentaryDebugShared();
+  console.log(`[go-engine] getCommentaryDebug called, value=${value}`);
+  return value;
+}
 
 function getGameEngine(): KataGoAnalysisManager {
   return getEnginePool().getEngine(engineConfig.gameModel);
@@ -158,8 +177,10 @@ function getModelDisplayName(path: string): string {
   if (/lionffen_b24c64/.test(basename)) return 'Lionffen-B24C64 (较大, 4.8MB, 比b6c64强)';
   if (/lionffen/.test(basename)) return 'Lionffen-B6C64 (小模型, 2MB, 快)';
   if (/g170-b6c96/.test(basename)) return 'G170-B6C96 (官方小模型, 3.7MB, 均衡)';
+  if (/b28c512/.test(basename)) return 'Kata1-B28C512 (超大模型, 271MB, 超专业级)';
+  if (/b10c128/.test(basename)) return 'Kata1-B10C128 (中模型, 11MB, ~1-3级)';
   if (/b20c256/.test(basename)) return 'B20C256 (中模型)';
-  if (/b18c384/.test(basename)) return 'B18C384 (大模型, 100MB+)';
+  if (/b18c384/.test(basename)) return 'Kata1-B18C384 (大模型, 98MB, 专业级)';
   if (/b40c256/.test(basename)) return 'B40C256 (超大模型)';
   return basename;
 }
@@ -173,18 +194,25 @@ function getModelKeyFromPath(path: string): string | null {
   if (/lionffen_b24c64/.test(basename)) return 'b24c64';
   if (/lionffen_b6c64/.test(basename)) return 'b6c64';
   if (/g170-b6c96/.test(basename)) return 'g170';
+  if (/b28c512/.test(basename)) return 'b28c512';
+  if (/b10c128/.test(basename)) return 'b10c128';
+  // b18c384 要放在最后（humanv0 和 kata9x9 已优先匹配）
+  if (/b18c384/.test(basename)) return 'b18c384';
   return null;
 }
 
 // 将 Analysis Engine 模型名映射为显示用的路径（兼容旧格式）
 function getModelPathFromKey(key: string): string | null {
   const map: Record<string, string> = {
-    rect15: '/usr/local/katago/rect15-b20c256-s343365760-d96847752.bin.gz',
-    kata9x9: '/usr/local/katago/kata9x9-b18c384nbt-20231025.bin.gz',
-    humanv0: '/usr/local/katago/b18c384nbt-humanv0.bin.gz',
-    g170: '/usr/local/katago/g170-b6c96-s175395328-d26788732.bin.gz',
-    b6c64: '/usr/local/katago/lionffen_b6c64.txt.gz',
-    b24c64: '/usr/local/katago/lionffen_b24c64_3x3_v3_12300.bin.gz',
+    rect15: `${KATAGO_DIR}/rect15-b20c256-s343365760-d96847752.bin.gz`,
+    kata9x9: `${KATAGO_DIR}/kata9x9-b18c384nbt-20231025.bin.gz`,
+    humanv0: `${KATAGO_DIR}/b18c384nbt-humanv0.bin.gz`,
+    g170: `${KATAGO_DIR}/g170-b6c96-s175395328-d26788732.bin.gz`,
+    b6c64: `${KATAGO_DIR}/lionffen_b6c64.txt.gz`,
+    b24c64: `${KATAGO_DIR}/lionffen_b24c64_3x3_v3_12300.bin.gz`,
+    b10c128: `${KATAGO_DIR}/kata1-b10c128-s1141046784-d204142634.txt.gz`,
+    b18c384: `${KATAGO_DIR}/kata1-b18c384nbt-s7709731328-d3715293823.bin.gz`,
+    b28c512: `${KATAGO_DIR}/kata1-b28c512nbt-s12763923712-d5805955894.bin.gz`,
   };
   return map[key] || null;
 }
@@ -256,7 +284,10 @@ export function getEngineMonitorData() {
       queueEntries: engineQueue.getQueueEntries(),  // 队列中每个任务的详情
       gameModel: gameModelPath ? { path: gameModelPath, name: getModelDisplayName(gameModelPath), key: engineConfig.gameModel } : null,
       analysisModel: analysisModelPath ? { path: analysisModelPath, name: getModelDisplayName(analysisModelPath), key: engineConfig.analysisModel } : null,
-      engineConfig,
+      engineConfig: {
+        ...engineConfig,
+        commentaryDebug: getCommentaryDebugShared(),
+      },
       availableModels: available.map(m => ({ ...m, displayName: getModelDisplayName(m.path), key: getModelKeyFromPath(m.path) })),
     },
     gnugo: { queueLength: 0, processing: false, note: '独立并行，不走EngineQueue' },
@@ -516,6 +547,7 @@ async function getKataGoAnalysis(
     } else {
       maxVisits = getKataGoVisits('medium', 'analysis');
     }
+    console.log(`[kata-analysis] maxVisits=${maxVisits}, difficulty=${difficulty || '-'}, engineConfig.analysisVisits=${JSON.stringify(engineConfig.analysisVisits)}`);
     const jsTimeout = Math.max(30, maxVisits * 0.5) + 10; // JS 层超时保护
     const result = await manager.analyze(boardSize, moves, {
       maxVisits,
@@ -1099,6 +1131,14 @@ export async function POST(request: NextRequest) {
         console.log(`[go-engine] Analysis visits updated:`, engineConfig.analysisVisits);
       }
 
+      // 更新解说调试模式
+      if (typeof body.commentaryDebug === 'boolean') {
+        setCommentaryDebugShared(body.commentaryDebug);
+        engineConfig.commentaryDebug = body.commentaryDebug;
+        updates.commentaryDebug = body.commentaryDebug;
+        console.log(`[go-engine] Commentary debug mode SAVED: ${body.commentaryDebug}`);
+      }
+
       // 向后兼容：单个 model 字段同时设置两个引擎（过渡期）
       const newModel = body.model;
       if (typeof newModel === 'string') {
@@ -1123,19 +1163,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, engineConfig, ...updates });
     }
 
-    // 按需分析请求：仅当用户点击"提示与教学"时触发（消耗20积分）
+    // 按需分析请求：提示与教学（消耗20积分）或 解说分析（消耗5积分）
     if (action === 'analyze') {
       const authHeader = request.headers.get('Authorization');
       const user = internalUser || getUserFromAuthHeader(authHeader);
       const isAITest = body.isAITest === true || isInternal;
+      const forCommentary = body.forCommentary === true;
       const reqAnalysisSeconds = typeof body.analysisSeconds === 'number' ? body.analysisSeconds : undefined;
       const reqDifficulty = typeof body.difficulty === 'string' ? body.difficulty : undefined;
-      console.log(`[go-engine] POST analyze: user=${user?.userId || 'unknown'}(${user?.nickname || '?'}), board=${boardSize}, moves=${moves?.length || 0}, isAITest=${isAITest}, difficulty=${reqDifficulty || '-'}, seconds=${reqAnalysisSeconds ?? 'global'}`);
+      const ANALYSIS_COST = forCommentary ? 5 : 10;
+      const ANALYSIS_TYPE = forCommentary ? 'commentary' : 'teach';
+      const ANALYSIS_DESC = forCommentary ? '解说分析' : '提示与教学';
+      console.log(`[go-engine] POST analyze: type=${ANALYSIS_TYPE}, user=${user?.userId || 'unknown'}(${user?.nickname || '?'}), board=${boardSize}, moves=${moves?.length || 0}, isAITest=${isAITest}, difficulty=${reqDifficulty || '-'}, seconds=${reqAnalysisSeconds ?? 'global'}`);
       if (!user || !isKataGoAvailable()) {
         return NextResponse.json({ analysis: null, error: !user ? '请先登录' : 'KataGo不可用' });
       }
-      // 提示与教学积分消耗：20积分
-      const TEACH_COST = 20;
       // AI测试模式：跳过积分扣除和队列限制
       if (!isAITest) {
       try {
@@ -1148,44 +1190,46 @@ export async function POST(request: NextRequest) {
         if (teachUserError || !teachUserData) {
           return NextResponse.json({ analysis: null, error: '用户信息获取失败' });
         }
-        if (teachUserData.points < TEACH_COST) {
-          return NextResponse.json({ 
-            analysis: null, 
+        if (teachUserData.points < ANALYSIS_COST) {
+          return NextResponse.json({
+            analysis: null,
             insufficientPoints: true,
-            error: `积分不足（提示与教学需要${TEACH_COST}积分，当前${teachUserData.points}积分）`,
-            required: TEACH_COST,
+            error: `积分不足（${ANALYSIS_DESC}需要${ANALYSIS_COST}积分，当前${teachUserData.points}积分）`,
+            required: ANALYSIS_COST,
             current: teachUserData.points,
           }, { status: 403 });
         }
         // 扣除积分
         const { error: teachUpdateError } = await teachSupabase
           .from('letsgo_users')
-          .update({ points: teachUserData.points - TEACH_COST, updated_at: new Date().toISOString() })
+          .update({ points: teachUserData.points - ANALYSIS_COST, updated_at: new Date().toISOString() })
           .eq('id', user.userId)
-          .gte('points', TEACH_COST);
+          .gte('points', ANALYSIS_COST);
         if (teachUpdateError) {
-          console.error('[go-engine] Teach: Failed to deduct points:', teachUpdateError);
+          console.error(`[go-engine] ${ANALYSIS_DESC}: Failed to deduct points:`, teachUpdateError);
           return NextResponse.json({ analysis: null, error: '积分扣除失败' }, { status: 500 });
         }
         await teachSupabase.from('letsgo_point_transactions').insert({
           user_id: user.userId,
-          amount: -TEACH_COST,
-          type: 'teach_use',
-          description: '提示与教学',
+          amount: -ANALYSIS_COST,
+          type: forCommentary ? 'commentary_analyze' : 'teach_use',
+          description: ANALYSIS_DESC,
         });
-        console.log(`[go-engine] Teach: Deducted ${TEACH_COST} points from user ${user.userId}`);
+        console.log(`[go-engine] ${ANALYSIS_DESC}: Deducted ${ANALYSIS_COST} points from user ${user.userId}`);
       } catch (pointsErr) {
-        console.error('[go-engine] Teach points error:', pointsErr);
+        console.error(`[go-engine] ${ANALYSIS_DESC} points error:`, pointsErr);
         return NextResponse.json({ analysis: null, error: '积分处理失败' }, { status: 500 });
       }
-      } // end non-AI-test teach logic
+      } // end non-AI-test logic
       // AI测试模式 或 积分扣除成功后：执行分析（直接调用分析引擎，无队列）
       try {
         const analysisStart = Date.now();
+        // 解说分析默认用1秒（较浅），教学默认用全局配置（较深）
+        const effectiveSeconds = reqAnalysisSeconds ?? (forCommentary ? 1 : undefined);
         const analysisResult = await getKataGoAnalysis(
           boardSize,
           moves as Array<{row: number, col: number, color: 'black' | 'white'}>,
-          reqAnalysisSeconds,
+          effectiveSeconds,
           reqDifficulty
         );
         const analysisElapsed = Date.now() - analysisStart;
@@ -1199,10 +1243,10 @@ export async function POST(request: NextRequest) {
 
         // 分析日志
         const modelName = engineConfig.analysisModel;
-        logAiEvent({ type: 'analyze', model: modelName, boardSize, durationMs: analysisElapsed, metadata: { visits: analysisResult.actualVisits, bestMovesCount: analysisResult.bestMoves?.length } });
+        logAiEvent({ type: 'analyze', model: modelName, boardSize, durationMs: analysisElapsed, metadata: { visits: analysisResult.actualVisits, bestMovesCount: analysisResult.bestMoves?.length, forCommentary } });
         return NextResponse.json({
           analysis: analysisResult,
-          pointsUsed: isAITest ? 0 : TEACH_COST,
+          pointsUsed: isAITest ? 0 : ANALYSIS_COST,
           komi: getKomi(boardSize),
           rules: 'chinese',
           actualVisits: analysisResult.actualVisits,
@@ -1217,11 +1261,11 @@ export async function POST(request: NextRequest) {
             const refundSupabase = getSupabaseClient();
             const { data: refundData } = await refundSupabase.from('letsgo_users').select('points').eq('id', user.userId).single();
             if (refundData) {
-              await refundSupabase.from('letsgo_users').update({ points: refundData.points + TEACH_COST }).eq('id', user.userId);
+              await refundSupabase.from('letsgo_users').update({ points: refundData.points + ANALYSIS_COST }).eq('id', user.userId);
               await refundSupabase.from('letsgo_point_transactions').insert({
-                user_id: user.userId, amount: TEACH_COST, type: 'teach_refund', description: '提示与教学-分析失败退回'
+                user_id: user.userId, amount: ANALYSIS_COST, type: forCommentary ? 'commentary_refund' : 'teach_refund', description: `${ANALYSIS_DESC}-分析失败退回`
               });
-              console.log(`[go-engine] Teach: Refunded ${TEACH_COST} points to user ${user.userId} (analysis error)`);
+              console.log(`[go-engine] ${ANALYSIS_DESC}: Refunded ${ANALYSIS_COST} points to user ${user.userId} (analysis error)`);
             }
           } catch { /* ignore refund error */ }
         }

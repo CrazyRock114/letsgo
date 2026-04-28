@@ -19,6 +19,7 @@ interface EngineConfig {
   analysisModel: string;
   analysisVisits: EngineVisitsConfig;
   dualEngine: boolean;
+  commentaryDebug: boolean;
 }
 
 interface ModelInfo {
@@ -95,6 +96,7 @@ export default function MonitorPage() {
   const [selectedGameVisits, setSelectedGameVisits] = useState<EngineVisitsConfig>({ easy: 50, medium: 100, hard: 200 });
   const [selectedAnalysisVisits, setSelectedAnalysisVisits] = useState<EngineVisitsConfig>({ easy: 30, medium: 60, hard: 120 });
   const [isDualEngine, setIsDualEngine] = useState<boolean>(false);
+  const [commentaryDebug, setCommentaryDebug] = useState<boolean>(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [configMsg, setConfigMsg] = useState<string | null>(null);
 
@@ -108,9 +110,10 @@ export default function MonitorPage() {
       const cfg = d?.engineQueue?.katago?.engineConfig;
       if (cfg) {
         setSelectedGameModel(cfg.gameModel || "");
-        setSelectedGameVisits(cfg.gameVisits || { easy: 50, medium: 100, hard: 200 });
-        setSelectedAnalysisVisits(cfg.analysisVisits || { easy: 30, medium: 60, hard: 120 });
+        setSelectedGameVisits(cfg.gameVisits || { easy: 30, medium: 80, hard: 150 });
+        setSelectedAnalysisVisits(cfg.analysisVisits || { easy: 30, medium: 80, hard: 150 });
         setIsDualEngine(cfg.dualEngine ?? false);
+        setCommentaryDebug(cfg.commentaryDebug ?? false);
         // 单引擎模式下，分析引擎下拉框显示空值（对应"同步共用"选项）
         // 双引擎模式下，显示当前分析模型
         setSelectedAnalysisModel(cfg.dualEngine ? (cfg.analysisModel || "") : "");
@@ -179,6 +182,11 @@ export default function MonitorPage() {
       // 分析 visits
       if (JSON.stringify(selectedAnalysisVisits) !== JSON.stringify(currentCfg?.analysisVisits ?? {})) {
         payload.analysisVisits = selectedAnalysisVisits;
+      }
+
+      // 解说客观参数调试开关
+      if (commentaryDebug !== (currentCfg?.commentaryDebug ?? false)) {
+        payload.commentaryDebug = commentaryDebug;
       }
 
       if (Object.keys(payload).length === 1) {
@@ -254,7 +262,7 @@ export default function MonitorPage() {
       };
       pollTimer = setTimeout(checkStatus, 3000);
     }
-  }, [selectedGameModel, selectedAnalysisModel, selectedGameVisits, selectedAnalysisVisits, data, fetchData]);
+  }, [selectedGameModel, selectedAnalysisModel, selectedGameVisits, selectedAnalysisVisits, commentaryDebug, data, fetchData]);
 
   useEffect(() => {
     fetchData();
@@ -311,7 +319,8 @@ export default function MonitorPage() {
     (selectedGameModel && selectedGameModel !== (currentCfg?.gameModel ?? "")) ||
     analysisModelChanged ||
     JSON.stringify(selectedGameVisits) !== JSON.stringify(currentCfg?.gameVisits ?? {}) ||
-    JSON.stringify(selectedAnalysisVisits) !== JSON.stringify(currentCfg?.analysisVisits ?? {});
+    JSON.stringify(selectedAnalysisVisits) !== JSON.stringify(currentCfg?.analysisVisits ?? {}) ||
+    commentaryDebug !== (currentCfg?.commentaryDebug ?? false);
 
   const availableModels = data?.engineQueue?.katago?.availableModels ?? [];
 
@@ -440,6 +449,23 @@ export default function MonitorPage() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* 解说调试开关 */}
+        <div className="bg-gray-900 rounded-xl p-4 mb-6">
+          <h2 className="text-sm font-semibold text-cyan-400 mb-3">解说调试</h2>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={commentaryDebug}
+              onChange={e => setCommentaryDebug(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-600 text-cyan-500 focus:ring-cyan-500 bg-gray-800"
+            />
+            <div>
+              <div className="text-sm text-white">解说输出客观参数</div>
+              <div className="text-xs text-gray-500">开启后，AI解说末尾会自动附上胜率、目差、推荐落点等KataGo分析原始数据，方便测试阶段对比判断</div>
+            </div>
+          </label>
         </div>
 
         {/* 保存按钮行 */}

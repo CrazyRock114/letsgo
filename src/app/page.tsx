@@ -251,6 +251,10 @@ export default function GoGamePage() {
   }, [isAIThinking, user?.userId]);
   // KataGo分析数据（来自引擎响应，传给解说/教学API）
   const latestAnalysisRef = useRef<{winRate: number; scoreLead: number; bestMoves: {move: string; winrate: number; scoreMean: number}[]} | null>(null);
+  const previousAnalysisRef = useRef<{winRate: number; scoreLead: number; bestMoves: {move: string; winrate: number; scoreMean: number}[]} | null>(null);
+  // 解说开关（默认关闭，不持久化，每次打开页面都是关闭状态）
+  const [commentaryEnabled, setCommentaryEnabled] = useState(false);
+  const [showCommentaryConfirm, setShowCommentaryConfirm] = useState(false);
   const [gameEnded, setGameEnded] = useState(false);
   const [gameResult, setGameResult] = useState<{ winner: string; detail: string } | null>(null);
   const [showGameEndDialog, setShowGameEndDialog] = useState(false);
@@ -273,6 +277,8 @@ export default function GoGamePage() {
   const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
   const [authError, setAuthError] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [showDailyBonusDialog, setShowDailyBonusDialog] = useState(false);
+  const [dailyBonusInfo, setDailyBonusInfo] = useState<{ amount: number; currentPoints: number } | null>(null);
 
   // ===== 切换确认 =====
   const [difficultyToast, setDifficultyToast] = useState<string>('');
@@ -305,8 +311,6 @@ export default function GoGamePage() {
 
   // 解说请求ID，用于取消旧请求的流式输出
   const commentaryRequestId = useRef(0);
-  // 当前正在进行的解说Promise，AI落子时需要等它完成后再发起新解说
-  const commentaryPromiseRef = useRef<Promise<void> | null>(null);
 
   // ===== 复盘模式 =====
   const [isReplayMode, setIsReplayMode] = useState(false);
@@ -331,8 +335,9 @@ export default function GoGamePage() {
   const [autoSave, setAutoSave] = useState(false);
   const [autoSaving, setAutoSaving] = useState(false);
   const [commentaryVersion, setCommentaryVersion] = useState(0); // 解说完成时递增，触发自动保存
-  const MAX_TEACH_PER_GAME = 10; // 每局最多使用次数
-  const TEACH_COST = 20; // 每次消耗积分
+  const MAX_TEACH_PER_GAME = 50; // 每局最多使用次数
+  const TEACH_COST = 10; // 每次消耗积分
+  const COMMENTARY_COST = 5; // 每次解说消耗积分
 
   // ===== 聊天 =====
   const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
@@ -526,6 +531,8 @@ export default function GoGamePage() {
           moveColor,
           captured: capturedCount,
           moveHistory: currentHistory,
+          analysis: latestAnalysisRef.current,
+          previousAnalysis: previousAnalysisRef.current,
           isPass,
         }),
       });
@@ -641,9 +648,63 @@ export default function GoGamePage() {
     setShowHint(null);
     setConsecutivePasses(0);
 
-    // 玩家落子解说 - 非阻塞启动，后台流式显示
-    const playerCommentaryPromise = requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx, historyWithThisMove);
-    commentaryPromiseRef.current = playerCommentaryPromise;
+    // 玩家落子解说
+    if (commentaryEnabled) {
+      // 非本地引擎：异步analyze当前局面（不阻塞AI落子）， analyze完成后自动调用解说
+      if (engine !== 'local') {
+        (async () => {
+          try {
+            const moveHistoryForEngine = historyWithThisMove.map(m => ({
+              row: m.position.row,
+              col: m.position.col,
+              color: m.color,
+              ...(m.isPass ? { isPass: true } : {}),
+            }));
+            const analyzeRes = await fetch('/api/go-engine', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+              body: JSON.stringify({
+                action: 'analyze',
+                forCommentary: true,
+                boardSize,
+                moves: moveHistoryForEngine,
+                difficulty: 'medium',
+              }),
+            });
+            if (analyzeRes.ok) {
+              const data = await analyzeRes.json();
+              if (data.analysis) {
+                previousAnalysisRef.current = latestAnalysisRef.current;
+                latestAnalysisRef.current = data.analysis;
+              }
+              if (data.pointsUsed > 0) {
+                deductPoints(data.pointsUsed);
+              }
+              // analyze完成后调用解说（使用分析引擎，与对弈引擎并行）
+              requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx, historyWithThisMove);
+            } else if (analyzeRes.status === 403) {
+              const data = await analyzeRes.json().catch(() => ({}));
+              if (data.insufficientPoints) {
+                toast.error('积分不足', { description: data.error || `解说分析需要${COMMENTARY_COST}积分` });
+              }
+            }
+          } catch (analyzeErr) {
+            console.warn('[commentary] analyze failed:', analyzeErr);
+          }
+        })();
+      } else {
+        // 本地引擎：直接解说，无需analyze
+        requestCommentary(newBoard, { row, col }, currentPlayer, captured, moveIdx, historyWithThisMove);
+      }
+    } else {
+      // 解说关闭：只添加基础落子信息到右侧面板
+      setCommentaries(prev => [...prev, {
+        moveIndex: moveIdx,
+        color: currentPlayer,
+        position: { row, col },
+        commentary: '',
+      }]);
+    }
 
     // 检查游戏是否应该结束
     const endCheck = checkGameEnd(newBoard, 0, historyWithThisMove.length);
@@ -663,11 +724,6 @@ export default function GoGamePage() {
       const epochAtStart = gameEpochRef.current;
       setIsAIThinking(true);
       setQueuePosition(0);
-
-      // 等待玩家落子解说完成，避免解说流式输出被打断
-      if (commentaryPromiseRef.current) {
-        await commentaryPromiseRef.current;
-      }
 
       // AI思考延迟，让体验更自然（模拟思考时间）
       await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
@@ -715,6 +771,7 @@ export default function GoGamePage() {
               }
               // 如果genmove返回了analysis数据，保存供解说/教学使用
               if (data.analysis) {
+                previousAnalysisRef.current = latestAnalysisRef.current;
                 latestAnalysisRef.current = data.analysis;
               }
               // queuePosition 由轮询机制实时更新，不再从响应中读取
@@ -727,7 +784,17 @@ export default function GoGamePage() {
                 const historyWithPass = [...historyWithThisMove, passEntry];
                 setHistory(historyWithPass);
                 // AI停手解说
-                requestCommentary(newBoard, { row: 0, col: 0 }, aiColor, 0, moveIdx + 1, historyWithPass, true);
+                if (commentaryEnabled) {
+                  requestCommentary(newBoard, { row: 0, col: 0 }, aiColor, 0, moveIdx + 1, historyWithPass, true);
+                } else {
+                  setCommentaries(prev => [...prev, {
+                    moveIndex: moveIdx + 1,
+                    color: aiColor,
+                    position: { row: 0, col: 0 },
+                    commentary: '',
+                    isPass: true,
+                  }]);
+                }
 
                 const newPasses = consecutivePasses + 1;
                 setConsecutivePasses(newPasses);
@@ -799,8 +866,57 @@ export default function GoGamePage() {
         setLastMove({ row: aiMove.row, col: aiMove.col });
         setHistory(historyWithAIMove);
 
-        // AI落子解说 - 同步发起，因为玩家解说已经完成
-        requestCommentary(finalBoard, aiMove, aiColor, aiCaptured, aiMoveIdx, historyWithAIMove);
+        // AI落子解说 - 异步analyze当前局面（复用玩家analyze逻辑），分析完成后调用解说
+        if (commentaryEnabled) {
+          (async () => {
+            try {
+              const moveHistoryForEngine = historyWithAIMove.map(m => ({
+                row: m.position.row,
+                col: m.position.col,
+                color: m.color,
+                ...(m.isPass ? { isPass: true } : {}),
+              }));
+              const analyzeRes = await fetch('/api/go-engine', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                body: JSON.stringify({
+                  action: 'analyze',
+                  forCommentary: true,
+                  boardSize,
+                  moves: moveHistoryForEngine,
+                  difficulty: 'medium',
+                }),
+              });
+              if (analyzeRes.ok) {
+                const data = await analyzeRes.json();
+                if (data.analysis) {
+                  previousAnalysisRef.current = latestAnalysisRef.current;
+                  latestAnalysisRef.current = data.analysis;
+                }
+                if (data.pointsUsed > 0) {
+                  deductPoints(data.pointsUsed);
+                }
+                requestCommentary(finalBoard, aiMove, aiColor, aiCaptured, aiMoveIdx, historyWithAIMove);
+              } else if (analyzeRes.status === 403) {
+                const data = await analyzeRes.json().catch(() => ({}));
+                if (data.insufficientPoints) {
+                  toast.error('积分不足', { description: data.error || `解说分析需要${COMMENTARY_COST}积分` });
+                }
+              }
+            } catch (analyzeErr) {
+              console.warn('[commentary] AI move analyze failed:', analyzeErr);
+              // analyze失败仍尝试解说（可能无分析数据）
+              requestCommentary(finalBoard, aiMove, aiColor, aiCaptured, aiMoveIdx, historyWithAIMove);
+            }
+          })();
+        } else {
+          setCommentaries(prev => [...prev, {
+            moveIndex: aiMoveIdx,
+            color: aiColor,
+            position: aiMove,
+            commentary: '',
+          }]);
+        }
 
         // 检查游戏是否应该结束
         const endCheck2 = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
@@ -830,7 +946,7 @@ export default function GoGamePage() {
       }
     }
     isProcessingMoveRef.current = false;
-  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, engine, history, requestCommentary, gameEnded, consecutivePasses, boardSize, playerColor, token, deductPoints, refreshUser]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, difficulty, engine, history, requestCommentary, gameEnded, consecutivePasses, boardSize, playerColor, token, deductPoints, refreshUser, commentaryEnabled]);
 
   // ===== 自动保存 =====
   const autoSaveGame = useCallback(async () => {
@@ -861,7 +977,8 @@ export default function GoGamePage() {
           final_board: board,
           black_score: score.black,
           white_score: score.white,
-          status: 'playing',
+          status: gameEnded ? 'finished' : 'playing',
+          config: { playerColor },
           title: saveTitle || `${boardSize}路 ${difficulty === 'easy' ? '初级' : difficulty === 'medium' ? '中级' : '高级'} ${engine === 'katago' ? 'KataGo' : engine === 'gnugo' ? 'GnuGo' : '本地AI'} ${new Date().toLocaleDateString('zh-CN')}`,
           autoSave: true, // 标记为自动保存，后端扣1积分
         }),
@@ -880,8 +997,8 @@ export default function GoGamePage() {
 
   // AI落子完成后触发自动保存（等解说流式完成后再保存）
   useEffect(() => {
-    // 条件：自动保存开启 + AI已思考完 + 有落子历史 + 轮到玩家 + 游戏未结束 + 解说已结束
-    if (autoSave && !isAIThinking && history.length > 0 && currentPlayer === playerColor && !gameEnded && !isCommentaryStreaming) {
+    // 条件：自动保存开启 + AI已思考完 + 有落子历史 + 轮到玩家 + 解说已结束
+    if (autoSave && !isAIThinking && history.length > 0 && currentPlayer === playerColor && !isCommentaryStreaming) {
       const timer = setTimeout(() => { autoSaveGame(); }, 1000);
       return () => clearTimeout(timer);
     }
@@ -989,7 +1106,11 @@ export default function GoGamePage() {
                 setBoard(newBoard);
                 setHistory([{ position: { row, col }, color: aiColor, captured }]);
                 setCurrentPlayer(playerColor);
-                void requestCommentary(newBoard, { row, col }, aiColor, captured, 0, []);
+                if (commentaryEnabled) {
+                  void requestCommentary(newBoard, { row, col }, aiColor, captured, 0, []);
+                } else {
+                  setCommentaries([{ moveIndex: 0, color: aiColor, position: { row, col }, commentary: '' }]);
+                }
               }
             } else if (data.noEngine) {
               // 引擎不可用，用本地AI
@@ -1000,7 +1121,11 @@ export default function GoGamePage() {
                   setBoard(nb);
                   setHistory([{ position: { row: aiMove.row, col: aiMove.col }, color: aiColor, captured: cap }]);
                   setCurrentPlayer(playerColor);
-                  void requestCommentary(nb, { row: aiMove.row, col: aiMove.col }, aiColor, cap, 0, []);
+                  if (commentaryEnabled) {
+                    void requestCommentary(nb, { row: aiMove.row, col: aiMove.col }, aiColor, cap, 0, []);
+                  } else {
+                    setCommentaries([{ moveIndex: 0, color: aiColor, position: { row: aiMove.row, col: aiMove.col }, commentary: '' }]);
+                  }
                 }
               }
             }
@@ -1016,7 +1141,7 @@ export default function GoGamePage() {
         })();
       }, 200);
     }
-  }, [boardSize, playerColor, difficulty, engine, token, requestCommentary]);
+  }, [boardSize, playerColor, difficulty, engine, token, requestCommentary, commentaryEnabled]);
 
   // ===== 切换 KataGo 模型 =====
   const handleSwitchModel = useCallback(async (modelPath: string) => {
@@ -1056,7 +1181,17 @@ export default function GoGamePage() {
     const historyWithPass = [...history, passEntry];
     setHistory(historyWithPass);
     const passMoveIdx = history.length;
-    requestCommentary(board, { row: 0, col: 0 }, playerColor, 0, passMoveIdx, historyWithPass, true);
+    if (commentaryEnabled) {
+      requestCommentary(board, { row: 0, col: 0 }, playerColor, 0, passMoveIdx, historyWithPass, true);
+    } else {
+      setCommentaries(prev => [...prev, {
+        moveIndex: passMoveIdx,
+        color: playerColor,
+        position: { row: 0, col: 0 },
+        commentary: '',
+        isPass: true,
+      }]);
+    }
 
     const newPasses = consecutivePasses + 1;
     setConsecutivePasses(newPasses);
@@ -1073,11 +1208,6 @@ export default function GoGamePage() {
 
     // AI回合
     setIsAIThinking(true);
-
-    // 等待解说完成，避免流式输出被打断
-    if (commentaryPromiseRef.current) {
-      await commentaryPromiseRef.current;
-    }
 
     // AI思考延迟
     await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
@@ -1133,7 +1263,17 @@ export default function GoGamePage() {
             const aiPassEntry = { position: { row: 0, col: 0 }, color: aiColor, captured: 0, isPass: true };
             const historyWithAIPass = [...historyWithPass, aiPassEntry];
             setHistory(historyWithAIPass);
-            requestCommentary(board, { row: 0, col: 0 }, aiColor, 0, historyWithPass.length, historyWithAIPass, true);
+            if (commentaryEnabled) {
+              requestCommentary(board, { row: 0, col: 0 }, aiColor, 0, historyWithPass.length, historyWithAIPass, true);
+            } else {
+              setCommentaries(prev => [...prev, {
+                moveIndex: historyWithPass.length,
+                color: aiColor,
+                position: { row: 0, col: 0 },
+                commentary: '',
+                isPass: true,
+              }]);
+            }
 
             const newPasses2 = consecutivePasses + 2; // 玩家+AI都停手
             setConsecutivePasses(newPasses2);
@@ -1188,7 +1328,16 @@ export default function GoGamePage() {
     setConsecutivePasses(0);
 
     // AI落子解说 - 同步发起
-    requestCommentary(finalBoard, aiMove, aiColor, aiCaptured, moveIdx, historyWithAIMove);
+    if (commentaryEnabled) {
+      requestCommentary(finalBoard, aiMove, aiColor, aiCaptured, moveIdx, historyWithAIMove);
+    } else {
+      setCommentaries(prev => [...prev, {
+        moveIndex: moveIdx,
+        color: aiColor,
+        position: aiMove,
+        commentary: '',
+      }]);
+    }
 
     // 检查游戏结束
     const passEndCheck = checkGameEnd(finalBoard, 0, historyWithAIMove.length);
@@ -1205,7 +1354,7 @@ export default function GoGamePage() {
       setIsAIThinking(false);
     setQueuePosition(0);
     }
-  }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, engine, history, requestCommentary, boardSize, playerColor, token]);
+  }, [board, currentPlayer, isAIThinking, isReplayMode, gameEnded, consecutivePasses, difficulty, engine, history, requestCommentary, boardSize, playerColor, token, commentaryEnabled]);
 
   // ===== 提示与教学（一体化流程：先KataGo分析→提示点位+教学内容） =====
   const getTeaching = useCallback(async () => {
@@ -1500,6 +1649,7 @@ export default function GoGamePage() {
           black_score: score.black,
           white_score: score.white,
           status: gameEnded ? 'finished' : 'playing',
+          config: { playerColor },
           title: saveTitle || `${boardSize}路 ${difficulty === 'easy' ? '初级' : difficulty === 'medium' ? '中级' : '高级'} ${engine === 'katago' ? 'KataGo' : engine === 'gnugo' ? 'GnuGo' : '本地AI'} ${new Date().toLocaleDateString('zh-CN')}`,
         }),
       });
@@ -1709,7 +1859,17 @@ export default function GoGamePage() {
                   const aiPassEntry = { position: { row: 0, col: 0 }, color: aiColorCalc as Stone, captured: 0, isPass: true };
                   const historyWithAIPass = [...truncatedMoves, aiPassEntry];
                   setHistory(historyWithAIPass);
-                  requestCommentary(newBoard, { row: 0, col: 0 }, aiColorCalc, 0, truncatedMoves.length, historyWithAIPass, true);
+                  if (commentaryEnabled) {
+                    requestCommentary(newBoard, { row: 0, col: 0 }, aiColorCalc, 0, truncatedMoves.length, historyWithAIPass, true);
+                  } else {
+                    setCommentaries(prev => [...prev, {
+                      moveIndex: truncatedMoves.length,
+                      color: aiColorCalc as Stone,
+                      position: { row: 0, col: 0 },
+                      commentary: '',
+                      isPass: true,
+                    }]);
+                  }
 
                   setConsecutivePasses(prev => {
                     const newPasses = prev + 1;
@@ -1773,7 +1933,16 @@ export default function GoGamePage() {
               setLastMove({ row: aiMove.row, col: aiMove.col });
               setHistory(historyWithAIMove);
               setCurrentPlayer(playerColor);
-              requestCommentary(finalBoard, aiMove, aiColorCalc, aiCaptured, aiMoveIdx, historyWithAIMove);
+              if (commentaryEnabled) {
+                requestCommentary(finalBoard, aiMove, aiColorCalc, aiCaptured, aiMoveIdx, historyWithAIMove);
+              } else {
+                setCommentaries(prev => [...prev, {
+                  moveIndex: aiMoveIdx,
+                  color: aiColorCalc as Stone,
+                  position: aiMove,
+                  commentary: '',
+                }]);
+              }
             }
           } catch (err) {
             if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -1784,7 +1953,7 @@ export default function GoGamePage() {
         })();
       }, 300);
     }
-  }, [isReplayMode, replayIndex, replayMoves, boardSize, commentaries, exitReplay, playerColor, engine, difficulty, requestCommentary]);
+  }, [isReplayMode, replayIndex, replayMoves, boardSize, commentaries, exitReplay, playerColor, engine, difficulty, requestCommentary, commentaryEnabled]);
 
   // 教程与百科数据
   const allTutorialSteps = getAllSteps();
@@ -1957,6 +2126,46 @@ export default function GoGamePage() {
               {emoji} {label}
             </Button>
           ))}
+
+          {/* 解说开关 */}
+          <Button
+            size="sm"
+            variant={commentaryEnabled ? 'default' : 'outline'}
+            onClick={() => {
+              if (!user) {
+                toast.error('请先登录', { description: `解说需要登录后使用（${COMMENTARY_COST}积分/步）` });
+                setAuthTab('login');
+                setShowAuthDialog(true);
+                return;
+              }
+              if (commentaryEnabled) {
+                setCommentaryEnabled(false);
+              } else {
+                setShowCommentaryConfirm(true);
+              }
+            }}
+            disabled={!user}
+            className={`
+              h-7 text-xs
+              ${commentaryEnabled && user ? 'bg-amber-700 hover:bg-amber-800' : ''}
+              ${!user ? 'opacity-50 cursor-not-allowed' : ''}
+            `}
+            title={!user ? '请先登录使用解说' : commentaryEnabled ? '解说已开启（每步消耗5积分）' : '解说已关闭'}
+          >
+            {commentaryEnabled ? (
+              <>
+                <span className="mr-1">🔊</span>
+                <span>解说中</span>
+                <span className="ml-1 text-[9px] opacity-70">{COMMENTARY_COST}分</span>
+              </>
+            ) : (
+              <>
+                <span className="mr-1">🔇</span>
+                <span>解说</span>
+                <span className="ml-1 text-[9px] opacity-70">{COMMENTARY_COST}分</span>
+              </>
+            )}
+          </Button>
 
           {/* 执子选择 */}
           <div className="flex items-center gap-1">
@@ -2355,15 +2564,16 @@ export default function GoGamePage() {
                   {commentaries.map((entry, idx) => {
                     // 围棋中 moveIndex 偶数=黑方，奇数=白方，以此为准避免颜色标记错误
                     const displayColor: 'black' | 'white' = entry.moveIndex % 2 === 0 ? 'black' : 'white';
+                    const hasCommentary = entry.commentary.trim().length > 0;
                     return (
                     <div key={idx} className={`rounded-lg px-3 py-2 ${displayColor === 'black' ? 'bg-gray-50 border-l-3 border-gray-700' : 'bg-orange-50 border-l-3 border-orange-400'}`}>
-                      <div className="flex items-center gap-1.5 mb-0.5">
+                      <div className="flex items-center gap-1.5">
                         <div className={`w-4 h-4 rounded-full ${displayColor === 'black' ? 'bg-gray-800' : 'bg-white border border-gray-300'}`} />
                         <span className="text-xs font-medium text-gray-600">
                           第{entry.moveIndex + 1}手 | {displayColor === 'black' ? '黑方' : '白方'} {entry.isPass ? '停一手' : positionToCoordinate(entry.position.row, entry.position.col, boardSize)}
                         </span>
                       </div>
-                      <p className="text-xs text-gray-700 leading-relaxed">{entry.commentary}</p>
+                      {hasCommentary && <p className="text-xs text-gray-700 leading-relaxed mt-0.5">{entry.commentary}</p>}
                     </div>
                     );
                   })}
@@ -2657,6 +2867,29 @@ export default function GoGamePage() {
         </DialogContent>
       </Dialog>
 
+      {/* 解说开启确认弹窗 */}
+      <Dialog open={showCommentaryConfirm} onOpenChange={(open) => { if (!open) setShowCommentaryConfirm(false); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>开启解说</DialogTitle>
+            <DialogDescription>
+              开启后每步棋将自动进行AI解说，每步消耗 {COMMENTARY_COST} 积分。是否开启？
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-3 justify-end pt-2">
+            <Button variant="outline" onClick={() => setShowCommentaryConfirm(false)}>
+              取消
+            </Button>
+            <Button className="bg-amber-700 hover:bg-amber-800 text-white" onClick={() => {
+              setCommentaryEnabled(true);
+              setShowCommentaryConfirm(false);
+            }}>
+              确认开启
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* 难度调整提示 */}
       {difficultyToast && (
         <div
@@ -2673,7 +2906,7 @@ export default function GoGamePage() {
           <DialogHeader>
             <DialogTitle>{authTab === 'login' ? '登录' : '注册'}</DialogTitle>
             <DialogDescription>
-              {authTab === 'login' ? '登录后即可与AI对弈' : '注册账号，获取1000积分'}
+              {authTab === 'login' ? '登录后即可与AI对弈' : '注册账号，获取2000积分'}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -2694,7 +2927,8 @@ export default function GoGamePage() {
                   if (!result.success) { setAuthError(result.error || '登录失败'); return; }
                   setShowAuthDialog(false);
                   if (result.dailyBonusAwarded && result.dailyBonusAmount) {
-                    toast.success(`每日登录奖励 +${result.dailyBonusAmount}积分！`);
+                    setDailyBonusInfo({ amount: result.dailyBonusAmount, currentPoints: result.currentPoints ?? user?.points ?? 0 });
+                    setShowDailyBonusDialog(true);
                   }
                 } else {
                   const result = await register(n, p);
@@ -2738,6 +2972,27 @@ export default function GoGamePage() {
               )}
             </p>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* 每日登录奖励弹窗 */}
+      <Dialog open={showDailyBonusDialog} onOpenChange={setShowDailyBonusDialog}>
+        <DialogContent className="sm:max-w-sm text-center">
+          <DialogHeader className="items-center">
+            <div className="w-16 h-16 rounded-full bg-amber-100 flex items-center justify-center mb-2">
+              <span className="text-3xl">🎁</span>
+            </div>
+            <DialogTitle className="text-lg">每日登录奖励</DialogTitle>
+          </DialogHeader>
+          {dailyBonusInfo && (
+            <div className="space-y-3 py-2">
+              <p className="text-2xl font-bold text-amber-600">+{dailyBonusInfo.amount} 积分</p>
+              <p className="text-sm text-gray-500">当前总积分：<span className="font-semibold text-gray-700">{dailyBonusInfo.currentPoints}</span></p>
+            </div>
+          )}
+          <Button onClick={() => setShowDailyBonusDialog(false)} className="w-full bg-amber-600 hover:bg-amber-700 text-white">
+            确定
+          </Button>
         </DialogContent>
       </Dialog>
     </div>

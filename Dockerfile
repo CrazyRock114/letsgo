@@ -140,6 +140,24 @@ RUN curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networ
       "https://media.katagotraining.org/uploaded/networks/models_extra/kata9x9-b18c384nbt-20231025.bin.gz" && \
     echo "kata9x9 download attempted"
 
+# 7. b10c128 (14MB, 中模型, ~1-3级)
+RUN curl -sL --max-time 300 \
+      -o /usr/local/katago/kata1-b10c128-s1141046784-d204142634.txt.gz \
+      "https://media.katagotraining.org/uploaded/networks/models/kata1/kata1-b10c128-s1141046784-d204142634.txt.gz" && \
+    echo "b10c128 download attempted"
+
+# 8. b18c384 (98MB, 大模型, 专业级)
+RUN curl -sL --max-time 300 \
+      -o /usr/local/katago/kata1-b18c384nbt-s7709731328-d3715293823.bin.gz \
+      "https://media.katagotraining.org/uploaded/networks/models/kata1/kata1-b18c384nbt-s7709731328-d3715293823.bin.gz" && \
+    echo "b18c384 download attempted"
+
+# 9. b28c512 (271MB, 超大模型, 超专业级)
+RUN curl -sL --max-time 600 \
+      -o /usr/local/katago/kata1-b28c512nbt-s12763923712-d5805955894.bin.gz \
+      "https://media.katagotraining.org/uploaded/networks/models/kata1/kata1-b28c512nbt-s12763923712-d5805955894.bin.gz" && \
+    echo "b28c512 download attempted"
+
 # 验证各模型是否下载成功
 RUN for f in /usr/local/katago/*.gz; do \
       if [ -f "$f" ]; then \

@@ -39,7 +39,7 @@ export const letsgoUsers = pgTable("letsgo_users", {
 	id: serial().primaryKey().notNull(),
 	nickname: varchar({ length: 50 }).notNull(),
 	passwordHash: varchar("password_hash", { length: 255 }).notNull(),
-	points: integer().default(1000).notNull(),
+	points: integer().default(2000).notNull(),
 	totalGames: integer("total_games").default(0).notNull(),
 	wins: integer().default(0).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),

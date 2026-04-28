@@ -11,7 +11,7 @@
 - **Language**: TypeScript 5
 - **UI 组件**: shadcn/ui (基于 Radix UI)
 - **Styling**: Tailwind CSS 4
-- **AI 集成**: coze-coding-dev-sdk (LLM流式输出) + DeepSeek API (Railway/外部部署)
+- **AI 集成**: DeepSeek API (LLM流式输出，OpenAI 兼容格式) + SiliconFlow BGE-M3 (embedding)
 - **数据库**: Supabase（表名前缀 `letsgo_`，与其他项目共用同一Supabase实例）
 
 ## 项目结构
@@ -27,7 +27,11 @@ src/
 │   │   ├── go-ai/
 │   │   │   └── route.ts     # AI教学与解说API（LLM流式输出）
 │   │   ├── go-engine/
-│   │   │   └── route.ts     # KataGo/GnuGo围棋AI引擎（GTP协议桥接+排队+积分扣除）
+│   │   │   └── route.ts     # KataGo/GnuGo围棋AI引擎（Analysis Engine协议+排队+积分扣除）
+│   │   ├── go-knowledge/
+│   │   │   ├── import/route.ts  # SGF导入+embedding+写入pgvector
+│   │   │   ├── search/route.ts  # 向量搜索相似棋局位置
+│   │   │   └── stats/route.ts   # 知识库统计查询
 │   │   ├── games/
 │   │   │   ├── route.ts     # 棋局保存/载入/列表/删除API（需登录）
 │   │   │   └── [id]/route.ts # 单个棋局载入/删除API
@@ -50,6 +54,11 @@ src/
 │   ├── go-logic.ts          # 围棋游戏核心逻辑
 │   ├── go-encyclopedia.ts   # 围棋百科数据（35+核心术语）
 │   ├── go-tutorial.ts       # 围棋教程数据（8章40+步骤）
+│   ├── move-facts.ts        # MoveFacts/BoardSnapshot/ParsedGame 类型定义
+│   ├── sgf-parser.ts        # SGF 格式解析器（递归下降）
+│   ├── board-snapshot.ts    # 棋盘快照生成器（每步结构化描述）
+│   ├── embedding.ts         # SiliconFlow BGE-M3 embedding 客户端
+│   ├── go-knowledge.ts      # pgvector 格式转换、批量入库工具
 │   └── utils.ts              # 通用工具函数
 ├── storage/
 │   └── database/            # Supabase数据库
@@ -64,22 +73,32 @@ src/
 - 黑白双方轮流落子，自动提子
 - 最后一手标记（圆点标识）
 - **玩家颜色选择**：可选执黑(先手)或执白(后手)，执白时AI先下
-- AI方：KataGo深度学习引擎（GTP协议，优先） + GnuGo回退 + 本地AI兜底
-  - 初级：KataGo maxVisits=15 / GnuGo Level 3 / 本地随机+避傻
-  - 中级：KataGo maxVisits=50 / GnuGo Level 7 / 本地评分选择
-  - 高级：KataGo maxVisits=150 / GnuGo Level 10 / 本地1步前瞻
+- AI方：KataGo深度学习引擎（Analysis Engine协议，优先） + GnuGo回退（GTP协议） + 本地AI兜底
+  - 初级：KataGo visits=30 / GnuGo Level 3 / 本地随机+避傻
+  - 中级：KataGo visits=80 / GnuGo Level 7 / 本地评分选择
+  - 高级：KataGo visits=150 / GnuGo Level 10 / 本地1步前瞻
+  - 默认模型：rect15-b20c256（87MB，通用模型，已验证稳定）
 - 停手(Pass)功能：双方连续停手结束棋局
-- 贴目规则：9路2.5目、13路3.5目、19路6.5目（白方补偿）
+- 贴目规则（fair komi，网络训练时的固定参数）：
+  - 9路：7.0目（Tromp-Taylor）/ 6.0目（Japanese）
+  - 13路：7.5目 / 8.0目
+  - 19路：7.5目（中国规则标准）
+  - ⚠️ komi 不是可调参数，偏离 fair komi 会扭曲 KataGo 胜率评估
 - 自动结束：步数上限（9路150步/13路300步/19路500步）+ 最低步数门槛 + 领地优势绝对判定
 
 ### 2. 每步AI解说
 - 每步棋后自动获取AI简短解说（1句）
 - 真正的LLM流式输出（打字机效果）
-- **KataGo分析数据驱动**：所有引擎的解说都基于KataGo分析数据（winRate=黑方胜率0-100，scoreLead=黑方领先目数）
+- **KataGo分析数据驱动**：所有引擎的解说都基于KataGo分析数据
+  - winRate：黑方胜率 0-100（已修复为黑方视角）
+  - scoreLead：黑方领先目数（⚠️ 仍为 side-to-move 视角，白方落子时符号会翻转，待修复）
+  - bestMoves：推荐落点及对应评估（黑方视角）
 - 解说包含落子位置、作用、鼓励、形势判断
 - **专业术语嵌入**：解说中自然融入围棋术语并在括号中解释
 - **智能气数提及**：只在打吃(1气)或提子时提及气数，3气以上不提
 - **棋型识别**：自动识别星位占角、挂角、连接、切断、做眼、拆边等棋型
+  - 当前：自然语言字符串数组（go-ai/route.ts 中 recognizePatterns）
+  - 改造中：结构化 JSON 事实骨架（MoveFacts），LLM 禁止自行推断棋型
 - **解说防丢失**：快速落子时，旧解说仍会被保存到解说列表，不会被新请求覆盖
 
 ### 3. AI教学
@@ -97,7 +116,7 @@ src/
   - GnuGo: 2积分/步（经典引擎）
   - 本地AI: 0积分/步（免费，无需登录）
 - **积分扣除**：引擎API先扣积分再返回落子，积分不足回退本地AI
-- **引擎排队**：EngineQueue类（FIFO队列），仅KataGo串行处理；GnuGo独立并行spawn进程，不走队列
+- **引擎管理**：KataGo 通过 EnginePool 管理多模型常驻进程（每个模型一个进程，模型加载一次后复用）；GnuGo 每次 spawn 新进程并行执行，不阻塞 KataGo
 - **棋局关联**：保存棋局关联user_id，登录用户只看自己的棋局
 - **前端体验**：用户面板显示昵称/积分/局数/胜场，积分不足时toast提示
 - **未登录**：可使用本地AI对弈，不可保存棋局或使用KataGo/GnuGo
@@ -158,12 +177,15 @@ LLM流式响应，Content-Type: text/event-stream
 **通用参数：**
 - `board`: 棋盘状态数组
 - `currentPlayer`: "black" | "white"
-- `analysis`: KataGo分析数据（可选）`{ winRate(黑方胜率0-100), scoreLead(黑方领先目数), bestMoves: [{move, winrate(黑方胜率), scoreMean(黑方视角)}] }`
+- `analysis`: KataGo分析数据（可选）`{ winRate(黑方胜率0-100), scoreLead(⚠️side-to-move视角，待修复), bestMoves: [{move, winrate(黑方胜率), scoreMean(黑方视角)}] }`
 
 ### POST /api/go-engine
-KataGo/GnuGo AI引擎桥接（GTP协议+排队+积分扣除）
-- **GnuGo**：直接spawn进程并行执行，不走EngineQueue，不阻塞KataGo
-- **KataGo**：通过EngineQueue串行排队处理
+KataGo/GnuGo AI引擎桥接（排队+积分扣除）
+- **KataGo**：使用 Analysis Engine JSON 协议（单进程 + 按需切换模型），通过 EnginePool 管理
+  - 默认模型：rect15-b20c256（87MB，通用模型）
+  - 难度通过 visits 控制：easy=30, medium=80, hard=150（对弈和分析统一）
+  - 支持 monitor 页面动态切换模型和 visits
+- **GnuGo**：每次 spawn 新进程并行执行，不走队列，不阻塞 KataGo
 
 **请求头：**
 - `Authorization: Bearer <token>`（KataGo/GnuGo必须登录，local无需登录）
@@ -183,7 +205,7 @@ KataGo/GnuGo AI引擎桥接（GTP协议+排队+积分扣除）
 - `pointsUsed`: number（本次扣除积分数）
 - `remainingPoints`: number（剩余积分）
 - `insufficientPoints`: boolean（积分不足，仅403响应时）
-- `analysis`: KataGo分析数据 `{ winRate(黑方胜率0-100), scoreLead(黑方领先目数), bestMoves }` 或 null
+- `analysis`: KataGo分析数据 `{ winRate(黑方胜率0-100), scoreLead(⚠️side-to-move视角), bestMoves }` 或 null
 
 **错误响应：**
 - 401: `{ error, needLogin: true }` — 未登录使用收费引擎
@@ -197,22 +219,56 @@ KataGo/GnuGo AI引擎桥接（GTP协议+排队+积分扣除）
 - `queueLength`: number（当前排队人数）
 - `isProcessing`: boolean
 
+### POST /api/go-knowledge/import
+导入 SGF 文件到向量知识库
+
+**请求参数：**
+- `sgf`: string — SGF 文件内容
+- `metadata`（可选）: { blackPlayer, whitePlayer, event, date }
+
+**流程：** 解析 SGF → 生成 BoardSnapshot 序列 → SiliconFlow BGE-M3 embedding → 写入 Supabase pgvector
+
+### POST /api/go-knowledge/search
+向量搜索相似棋局位置
+
+**请求参数：**
+- `boardSize`: number — 棋盘大小过滤
+- `description`: string — 当前局面描述文本（用于生成 embedding）
+- `moveNumber`（可选）: number — 当前手数（用于步数窗口过滤 ±30%）
+- `region`（可选）: 'corner' | 'edge' | 'center' — 区域过滤
+- `limit`（可选）: number — 返回条数，默认 5
+
+**响应：** [{ id, board_size, move_number, region, description, similarity, game_meta, snapshot }]
+
+### GET /api/go-knowledge/stats
+查询知识库统计
+
+**响应：**
+- `totalCount`: number — 总记录数
+- `boardSizeCounts`: { boardSize, count }[] — 各棋盘大小分布
+- `regionCounts`: { region, count }[] — 各区域分布
+- `latestImport`: string — 最近导入时间
+
 ## 引擎安装与恢复
 
 ### KataGo（深度学习引擎）
-- **安装路径**: `/usr/local/katago/`
-- **持久化进程**: `go-engine/route.ts` 中的 `PersistentKataGo` 类管理长期运行的KataGo进程
-  - 进程只启动一次，模型只加载一次（避免每步重新加载模型导致超时）
-  - 通过 `kata-set-param maxVisits` 动态调整难度
-  - 每次落子：发送 `boardsize` + `clear_board` + 重放落子历史 + `genmove`
+- **安装路径**: 支持环境变量 `KATAGO_DIR` 覆盖，默认自动探测：
+  - 生产：`/usr/local/katago/`
+  - 本地开发：`~/katago/`
+- **Analysis Engine 协议**: `go-engine/route.ts` 使用 KataGo Analysis Engine JSON 协议（非 GTP）
+  - 通过 `EnginePool` + `KataGoAnalysisManager` 管理多模型常驻进程
+  - 每个模型一个常驻进程，模型加载一次后复用
+  - 落子请求通过 JSON query（含棋盘状态、rules、komi、maxVisits）获取分析结果
+  - 支持 monitor 页面动态切换模型和 visits
   - 进程崩溃自动重启，下次请求时恢复
 - **自动安装**: `scripts/install-katago.sh`
   - 从源码编译 KataGo v1.15.3 Eigen/AVX2 CPU 后端（无需GPU）
-  - 自动下载所有可用模型（lionffen小模型 + rect15通用模型）
+  - 自动下载可用模型（rect15通用模型 + 其他）
   - 配置生成时自动注释重复键（避免KataGo因重复键崩溃）
   - `scripts/prepare.sh` 会在每次 `pnpm install` 时自动检测并安装
-- **模型自动发现**: `go-engine/route.ts` 中的 `findKataGoModel()` 自动扫描 `/usr/local/katago/` 下的模型文件
-  - 优先级：lionffen(2MB,快,支持所有棋盘) > g170-b6c96(小,快) > rect15(87MB,通用) > 其他
+- **模型配置**: `go-engine/route.ts` 中 `getModelPathFromKey()` 映射模型键到文件路径
+  - 主要模型：`rect15`（rect15-b20c256, 87MB, 通用, 默认）
+  - 其他模型：`kata9x9`（9x9专用）、`humanv0`（人类风格）、`g170`（官方小模型）、`b6c64`/`b24c64`（lionffen系列，备选）
 - **沙箱重置**: KataGo 编译产物在系统目录，沙箱重置后会丢失，`prepare.sh` 会自动恢复
 
 ### GnuGo（经典引擎）
@@ -260,6 +316,21 @@ KataGo/GnuGo AI引擎桥接（GTP协议+排队+积分扣除）
 | status | VARCHAR(20) | playing/finished |
 | title | VARCHAR(200) | 棋局标题 |
 | created_at / updated_at | TIMESTAMPTZ | 时间 |
+
+### letsgo_position_index（向量知识库）
+| 列名 | 类型 | 说明 |
+|------|------|------|
+| id | UUID PK | 记录ID |
+| board_size | INTEGER | 棋盘大小（9/13/19） |
+| move_number | INTEGER | 手数 |
+| region | VARCHAR(20) | 区域（corner/edge/center） |
+| description | TEXT | 自然语言描述（用于embedding） |
+| embedding | vector(1024) | BGE-M3向量（pgvector格式） |
+| snapshot | JSONB | 完整BoardSnapshot |
+| game_meta | JSONB | 对局元数据（棋手、结果等） |
+| created_at | TIMESTAMPTZ | 创建时间 |
+
+**索引**：HNSW向量索引（cosine相似度）+ board_size/move_number/region 联合过滤索引
 
 **迁移方式**：`docker-start.sh` 使用psql自动迁移（需设置 `COZE_SUPABASE_DB_URL` 环境变量，Session pooler模式）
 
