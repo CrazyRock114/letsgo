@@ -88,8 +88,6 @@ export const MODEL_PATHS: Record<string, string> = {
   rect15: `${KATAGO_DIR}/rect15-b20c256-s343365760-d96847752.bin.gz`,
   kata9x9: `${KATAGO_DIR}/kata9x9-b18c384nbt-20231025.bin.gz`,
   humanv0: `${KATAGO_DIR}/b18c384nbt-humanv0.bin.gz`,
-  b6c64: `${KATAGO_DIR}/lionffen_b6c64.txt.gz`,
-  b24c64: `${KATAGO_DIR}/lionffen_b24c64_3x3_v3_12300.bin.gz`,
   g170: `${KATAGO_DIR}/g170-b6c96-s175395328-d26788732.bin.gz`,
   b10c128: `${KATAGO_DIR}/kata1-b10c128-s1141046784-d204142634.txt.gz`,
   b18c384: `${KATAGO_DIR}/kata1-b18c384nbt-s7709731328-d3715293823.bin.gz`,

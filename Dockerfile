@@ -101,13 +101,7 @@ logSearchInfo = false
 ANALYSISCFG
 
 # 下载神经网络模型（并行下载多个，供运行时切换选择）
-# 1. lionffen b6c64 (2MB, 快, 支持所有棋盘)
-RUN curl -fSL --retry 3 --max-time 180 -H "Referer: https://katagotraining.org/extra_networks/" \
-      -o /usr/local/katago/lionffen_b6c64.txt.gz \
-      "https://media.katagotraining.org/uploaded/networks/models_extra/lionffen_b6c64_3x3_v10.txt.gz" && \
-    echo "lionffen download attempted"
-
-# 2. rect15 b20c256 (87MB, 通用, 棋力强)
+# 1. rect15 b20c256 (87MB, 通用, 棋力强)
 RUN curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networks/" \
       -o /usr/local/katago/rect15-b20c256-s343365760-d96847752.bin.gz \
       "https://media.katagotraining.org/uploaded/networks/models_extra/rect15-b20c256-s343365760-d96847752.bin.gz" && \
@@ -122,13 +116,7 @@ RUN curl -sL --max-time 300 \
       "https://github.com/lightvector/KataGo/releases/download/v1.12.3/g170-b6c96-s175395328-d26788732.bin.gz" || \
     echo "g170-b6c96 download failed, skipping"
 
-# 4. lionffen b24c64 (4.8MB, 比b6c64更大更深, 棋力更强)
-RUN curl -fSL --retry 3 --max-time 180 -H "Referer: https://katagotraining.org/extra_networks/" \
-      -o /usr/local/katago/lionffen_b24c64_3x3_v3_12300.bin.gz \
-      "https://media.katagotraining.org/uploaded/networks/models_extra/lionffen_b24c64_3x3_v3_12300.bin.gz" && \
-    echo "lionffen_b24c64 download attempted"
-
-# 5. b18c384nbt-humanv0 (99MB, 人类风格模型, 下法更自然)
+# 4. b18c384nbt-humanv0 (99MB, 人类风格模型, 下法更自然)
 RUN curl -sL --max-time 300 -H "Referer: https://katagotraining.org/extra_networks/" \
       -o /usr/local/katago/b18c384nbt-humanv0.bin.gz \
       "https://media.katagotraining.org/uploaded/networks/models_extra/b18c384nbt-humanv0.bin.gz" && \

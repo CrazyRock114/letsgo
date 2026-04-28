@@ -175,8 +175,6 @@ function getModelDisplayName(path: string): string {
   if (/kata9x9/.test(basename)) return 'Kata9x9-B18C384 (9x9专用, 97MB, 小棋盘极强)';
   if (/b18c384nbt-humanv0/.test(basename)) return 'HumanV0-B18C384 (人类风格, 99MB, 自然)';
   if (/rect15-b20c256/.test(basename)) return 'Rect15-B20C256 (通用, 87MB, 强)';
-  if (/lionffen_b24c64/.test(basename)) return 'Lionffen-B24C64 (较大, 4.8MB, 比b6c64强)';
-  if (/lionffen/.test(basename)) return 'Lionffen-B6C64 (小模型, 2MB, 快)';
   if (/g170-b6c96/.test(basename)) return 'G170-B6C96 (官方小模型, 3.7MB, 均衡)';
   if (/b28c512/.test(basename)) return 'Kata1-B28C512 (超大模型, 271MB, 超专业级)';
   if (/b10c128/.test(basename)) return 'Kata1-B10C128 (中模型, 11MB, ~1-3级)';
@@ -192,8 +190,6 @@ function getModelKeyFromPath(path: string): string | null {
   if (/kata9x9/.test(basename)) return 'kata9x9';
   if (/b18c384nbt-humanv0/.test(basename)) return 'humanv0';
   if (/rect15-b20c256/.test(basename)) return 'rect15';
-  if (/lionffen_b24c64/.test(basename)) return 'b24c64';
-  if (/lionffen_b6c64/.test(basename)) return 'b6c64';
   if (/g170-b6c96/.test(basename)) return 'g170';
   if (/b28c512/.test(basename)) return 'b28c512';
   if (/b10c128/.test(basename)) return 'b10c128';
@@ -209,8 +205,6 @@ function getModelPathFromKey(key: string): string | null {
     kata9x9: `${KATAGO_DIR}/kata9x9-b18c384nbt-20231025.bin.gz`,
     humanv0: `${KATAGO_DIR}/b18c384nbt-humanv0.bin.gz`,
     g170: `${KATAGO_DIR}/g170-b6c96-s175395328-d26788732.bin.gz`,
-    b6c64: `${KATAGO_DIR}/lionffen_b6c64.txt.gz`,
-    b24c64: `${KATAGO_DIR}/lionffen_b24c64_3x3_v3_12300.bin.gz`,
     b10c128: `${KATAGO_DIR}/kata1-b10c128-s1141046784-d204142634.txt.gz`,
     b18c384: `${KATAGO_DIR}/kata1-b18c384nbt-s7709731328-d3715293823.bin.gz`,
     b28c512: `${KATAGO_DIR}/kata1-b28c512nbt-s12763923712-d5805955894.bin.gz`,
@@ -312,16 +306,16 @@ function findKataGoModel(): string | null {
     return currentModelPath;
   }
 
-  // 优先级顺序：lionffen_b24c64(4.8MB,较强) > rect15(87MB,通用最强) > humanv0(99MB,人类风格)
-  // > kata9x9(97MB,9x9专用) > g170-b6c96(3.7MB) > lionffen_b6c64(2MB,最快) > 其他
+  // 优先级顺序：rect15(87MB,通用最强) > humanv0(99MB,人类风格) > kata9x9(97MB,9x9专用)
+  // > g170-b6c96(3.7MB) > b10c128(11MB) > b18c384(98MB) > b28c512(271MB) > 其他
   const priorityPatterns = [
-    /lionffen_b24c64/,    // lionffen较大版本(4.8MB)，比b6c64强
     /rect15/,             // rect15通用模型(87MB)，支持所有棋盘，棋力强
     /b18c384nbt-humanv0/, // 人类风格模型(99MB)
     /kata9x9/,            // 9x9专用模型(97MB)
     /g170-b6c96/,         // 官方小模型(3.7MB)，支持所有棋盘
-    /lionffen/,           // lionffen最小模型(2MB)，最快
-    /b6c96/,              // 通用小模型
+    /b10c128/,            // 中模型(11MB)
+    /b18c384/,            // 大模型(98MB)
+    /b28c512/,            // 超大模型(271MB)
     /b20c256/,            // b20系列
   ];
 
@@ -495,11 +489,11 @@ async function getKataGoMove(
         logAiEvent({ type: 'pass_bug', engine: 'katago', model: modelUsed, boardSize, difficulty, coord: 'pass', isPass: true, durationMs: elapsed });
         return { move: null, engineError: true, engine: 'katago', modelUsed, warning };
       }
-      console.log(`[KataGo] PASS (game) ${elapsed}ms visits=${result.actualVisits ?? '-'}`);
+      console.log(`[KataGo] PASS (game) ${elapsed}ms model=${modelUsed} visits=${result.actualVisits ?? '-'}`);
       return { move: null, pass: true, ...common };
     }
     if (result.resign) {
-      console.log(`[KataGo] RESIGN (game) ${elapsed}ms visits=${result.actualVisits ?? '-'}`);
+      console.log(`[KataGo] RESIGN (game) ${elapsed}ms model=${modelUsed} visits=${result.actualVisits ?? '-'}`);
       return { move: null, resign: true, ...common };
     }
     if (!result.move) {
@@ -507,7 +501,7 @@ async function getKataGoMove(
       return { move: null, engineError: true, ...common };
     }
 
-    console.log(`[KataGo] MOVE (game): (${result.move.row},${result.move.col}) ${elapsed}ms visits=${result.actualVisits ?? '-'}`);
+    console.log(`[KataGo] MOVE (game): (${result.move.row},${result.move.col}) ${elapsed}ms model=${modelUsed} visits=${result.actualVisits ?? '-'}`);
     return { move: result.move, ...common };
   } catch (err) {
     const elapsed = Date.now() - startTime;
@@ -556,7 +550,8 @@ async function getKataGoAnalysis(
       komi: getKomi(boardSize),
       rules: 'chinese',
     });
-    console.log(`[kata-analysis] Analysis Engine 完成: board=${boardSize}, moves=${moves.length}, difficulty=${difficulty || '-'}, visits=${result?.actualVisits ?? '-'}`);
+    const bestMovesSummary = result?.bestMoves?.slice(0, 3).map(m => `${m.move}(${m.visits}v,${m.winrate}%)`).join(', ') || 'none';
+    console.log(`[kata-analysis] Analysis Engine 完成: board=${boardSize}, moves=${moves.length}, difficulty=${difficulty || '-'}, model=${modelUsed}, visits=${result?.actualVisits ?? '-'}, topMoves=[${bestMovesSummary}]`);
     return result;
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -1503,7 +1498,12 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    console.log(`[go-engine] Diagnosis: katago_bin=${katagoBinExists}, model=${katagoModel}, cfg=${katagoCfgExists}, gnugo=${gnugoPath}, cwd=${process.cwd()}`);
+    // 诊断信息：显示当前实际配置的模型（而非自动查找结果）
+    const activeGameModel = MODEL_PATHS[engineConfig.gameModel] || '未配置';
+    const activeAnalysisModel = MODEL_PATHS[engineConfig.analysisModel] || '未配置';
+    console.log(`[go-engine] Diagnosis: katago_bin=${katagoBinExists}, cfg=${katagoCfgExists}, gnugo=${gnugoPath}, cwd=${process.cwd()}`);
+    console.log(`[go-engine] Active config: gameModel=${engineConfig.gameModel}(${getModelDisplayName(activeGameModel)}), analysisModel=${engineConfig.analysisModel}(${getModelDisplayName(activeAnalysisModel)}), dualEngine=${engineConfig.dualEngine}`);
+    console.log(`[go-engine] Auto-detected model (fallback): ${katagoModel}`);
     console.log(`[go-engine] KataGo ldd:\n${lddOutput}`);
     console.log(`[go-engine] KataGo version test:\n${katagoTestOutput}`);
 
