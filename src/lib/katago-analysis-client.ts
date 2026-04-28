@@ -476,11 +476,11 @@ export class KataGoAnalysisManager {
     const winRate = Math.round(root.winrate * 1000) / 10;
     const scoreLead = Math.round(root.scoreLead * 10) / 10;
 
-    // 按黑方胜率从高到低排序，使推荐顺序与胜率直观一致
-    // （KataGo 原始 order 基于 MCTS visits，低 visits 下可能与胜率不一致）
+    // 保持 KataGo 原始 order（基于 visits + 引擎置信度）
+    // 低 visits 下按胜率重排序会导致 visit 极少的手因偶然波动排到前面，
+    // 给用户造成"分析质量差/visits 很少"的错觉。
     const bestMoves = resp.moveInfos
       .slice(0, 5)
-      .sort((a, b) => b.winrate - a.winrate)
       .map((m) => ({
         move: m.move,
         winrate: Math.round(m.winrate * 1000) / 10,

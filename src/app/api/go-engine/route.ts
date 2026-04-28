@@ -122,7 +122,8 @@ function getEngineConfig(): EngineConfig {
       gameModel: DEFAULT_GAME_MODEL,
       gameVisits: { easy: 30, medium: 80, hard: 150 },
       analysisModel: DEFAULT_GAME_MODEL,
-      analysisVisits: { easy: 30, medium: 80, hard: 150 },
+      // 解说分析需要更高 visits，低 visits 下胜率估计不稳定，会导致排序异常
+      analysisVisits: { easy: 100, medium: 200, hard: 300 },
       dualEngine: false,
       commentaryDebug: false,
     } as EngineConfig;
